@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { probeGpu, runDiagnostics, type GpuProbes, type ResolvedTools } from '../src/main/deps';
 import { defaultSettings } from '../src/main/store';
 import {
+  DownloadClock,
   buildPlan,
   computeProgress,
   fallbackPlans,
@@ -173,5 +174,21 @@ describe('revisión Codex: intérprete junto al lanzador del venv', () => {
     const c = pythonNextToWhisper(['C:', 'venv', 'Scripts', 'whisper.exe'].join('\\')).map((p) => p.split('\\').join('/'));
     expect(c[0]).toBe('C:/venv/Scripts/python.exe');
     expect(c[1]).toBe('C:/venv/python.exe');
+  });
+});
+
+describe('revisión Codex: medida de la descarga del modelo', () => {
+  it('el fin de la descarga es la última barra de progreso, no el primer segmento', () => {
+    const c = new DownloadClock(0);
+    c.onDownloadLine(5_000);
+    c.onDownloadLine(20_000); // última barra (100 %)
+    // primer segmento a los 50 s y fin a los 80 s: 60 s de audio en 60 s reales desde la descarga
+    const t = c.timing(80_000, 60);
+    expect(t.downloadMs).toBe(20_000);
+    expect(t.speed).toBe(1);
+  });
+  it('sin descarga observada: velocidad conservadora sobre todo el tiempo', () => {
+    const t = new DownloadClock(0).timing(30_000, 60);
+    expect(t).toEqual({ speed: 2, downloadMs: undefined });
   });
 });

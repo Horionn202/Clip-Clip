@@ -213,6 +213,28 @@ export function isModelDownloadLine(line: string): boolean {
   return /\d+%\|.*\|\s*[\d.]+\s*[kMG]?i?B?\/[\d.]+\s*[kMG]?i?B?/.test(line) || /Downloading|\.pt\b.*%/.test(line);
 }
 
+/**
+ * Mide la descarga del modelo con las barras de progreso (puede haber varias, una por archivo):
+ * el fin es la última línea de progreso vista. La velocidad se calcula sobre el tiempo posterior,
+ * que incluye carga del modelo y primera ventana de audio (estimación conservadora). Sin descarga
+ * observada se usa todo el tiempo transcurrido.
+ */
+export class DownloadClock {
+  private lastLineAt: number | null = null;
+  constructor(private readonly startedAt: number) {}
+  onDownloadLine(now: number): void {
+    this.lastLineAt = now;
+  }
+  timing(now: number, audioSec: number): { speed?: number; downloadMs?: number } {
+    const boundary = this.lastLineAt ?? this.startedAt;
+    const workSec = (now - boundary) / 1000;
+    return {
+      speed: workSec > 0 ? Math.round((audioSec / workSec) * 100) / 100 : undefined,
+      downloadMs: this.lastLineAt !== null ? this.lastLineAt - this.startedAt : undefined,
+    };
+  }
+}
+
 export interface ProgressState {
   phase: TranscribeProgress['phase'];
   audioDone: number;

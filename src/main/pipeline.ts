@@ -16,6 +16,7 @@ import { readSourceInfo } from './source';
 import { analyzeClips } from './analysis';
 import {
   availability,
+  DownloadClock,
   computeProgress,
   fallbackPlans,
   fasterArgs,
@@ -338,11 +339,17 @@ async function transcribe(
 ): Promise<TranscribeResult> {
   const startedAt = Date.now();
   const st: ProgressState = { phase: needsDownload ? 'downloadingModel' : 'loadingModel', audioDone: 0, firstSegmentAt: null };
-  let downloadEndedAt: number | null = null;
+  // El fin de la descarga se marca con las propias barras de progreso, nunca con el primer segmento.
+  const dlClock = new DownloadClock(startedAt);
+  const onDownloadLine = (l: string) => {
+    if (!isModelDownloadLine(l) || st.phase === 'transcribing') return false;
+    dlClock.onDownloadLine(Date.now());
+    st.phase = 'downloadingModel';
+    return true;
+  };
   const emit = () => onProgress(computeProgress(st, duration, startedAt, Date.now(), plan.device));
   const onSegment = (end: number) => {
     if (st.phase !== 'transcribing') {
-      if (st.phase === 'downloadingModel') downloadEndedAt = Date.now();
       st.phase = 'transcribing';
       st.firstSegmentAt = Date.now();
     }
@@ -363,7 +370,6 @@ async function transcribe(
           try {
             const ev = JSON.parse(l) as { event?: string; end?: number };
             if (ev.event === 'loaded') {
-              if (st.phase === 'downloadingModel') downloadEndedAt = Date.now();
               st.phase = 'loadingModel';
             } else if (ev.event === 'segment' && typeof ev.end === 'number') onSegment(ev.end);
           } catch {
@@ -371,7 +377,7 @@ async function transcribe(
           }
         },
         onStderr: (l) => {
-          if (isModelDownloadLine(l) && st.phase !== 'transcribing') st.phase = 'downloadingModel';
+          onDownloadLine(l);
         },
       });
       return finish(r.code === 0, r.stderr, outFile);
@@ -389,8 +395,8 @@ async function transcribe(
         if (end !== null) onSegment(end);
       },
       onStderr: (l) => {
-        if (isModelDownloadLine(l) && st.phase !== 'transcribing') st.phase = 'downloadingModel';
-        else if (st.phase === 'downloadingModel' && /Detecting language|Detected language/i.test(l)) st.phase = 'loadingModel';
+        if (onDownloadLine(l)) return;
+        if (st.phase === 'downloadingModel' && /Detecting language|Detected language/i.test(l)) st.phase = 'loadingModel';
       },
     });
     return finish(r.code === 0, r.stderr, outFile);
@@ -400,15 +406,8 @@ async function transcribe(
   }
 
   function finish(ok: boolean, stderr: string, outFile: string): TranscribeResult {
-    const elapsed = (Date.now() - startedAt) / 1000;
-    const work = downloadEndedAt ? (Date.now() - downloadEndedAt) / 1000 : elapsed;
-    return {
-      ok,
-      stderr,
-      outFile,
-      speed: ok && work > 0 ? Math.round((duration / work) * 100) / 100 : undefined,
-      downloadMs: downloadEndedAt ? downloadEndedAt - startedAt : undefined,
-    };
+    const t = dlClock.timing(Date.now(), duration);
+    return { ok, stderr, outFile, speed: ok ? t.speed : undefined, downloadMs: t.downloadMs };
   }
 }
 
