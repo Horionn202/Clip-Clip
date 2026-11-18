@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { probeGpu, type GpuProbes, type ResolvedTools } from '../src/main/deps';
+import { probeGpu, runDiagnostics, type GpuProbes, type ResolvedTools } from '../src/main/deps';
 import { defaultSettings } from '../src/main/store';
 import {
   buildPlan,
@@ -10,6 +10,7 @@ import {
   isModelDownloadLine,
   isTorchCpuOnly,
   openaiArgs,
+  openaiCommand,
   parseNvidiaSmi,
   parseOpenaiSegmentEnd,
   selectEngine,
@@ -136,5 +137,32 @@ describe('progreso de transcripción', () => {
     expect(p.speed).toBeCloseTo(2, 1);
     expect(p.etaSec).toBeCloseTo((421.86 - 120) / 2, 0);
     expect(formatProgress(p)).toMatch(/\[GPU\] 28 % · 2 min de 7 min 2 s de audio · 1 min transcurridos · 2\.0× tiempo real · quedan ≈ 2 min 31 s/);
+  });
+});
+
+describe('revisión Codex: motor real y entorno diagnosticado', () => {
+  it('openai-whisper se ejecuta con el Python diagnosticado si ese entorno lo tiene', () => {
+    expect(openaiCommand({ python: 'C:/Cuda/python.exe', whisper: 'C:/Cpu/Scripts/whisper.exe' }, true)).toEqual({ exe: 'C:/Cuda/python.exe', prefix: ['-m', 'whisper'] });
+  });
+  it('si el Python diagnosticado no tiene whisper, usa whisper.exe; sin ninguno, null', () => {
+    expect(openaiCommand({ python: 'C:/Py/python.exe', whisper: 'C:/Cpu/Scripts/whisper.exe' }, false)).toEqual({ exe: 'C:/Cpu/Scripts/whisper.exe', prefix: [] });
+    expect(openaiCommand({ python: null, whisper: null }, false)).toBeNull();
+  });
+  it('faster-whisper CUDA sin whisper.exe cuenta como transcripción lista', async () => {
+    const noCli: ResolvedTools = { ...tools, whisper: null };
+    const g = await probeGpu(
+      noCli,
+      defaultSettings('x'),
+      'probe.py',
+      mk({ torch: null, whisper: false, faster_whisper: '1.2.1', ct2_cuda_devices: 1, ct2_cuda_compute_types: ['float16', 'int8_float16'] }),
+    );
+    expect(g.plan?.engine).toBe('faster-whisper-cuda');
+    const d = await runDiagnostics(noCli, defaultSettings('x'), { version: async () => 'v', ollamaModels: async () => ['llama3.2:3b'] }, g);
+    expect(d.items.find((i) => i.id === 'whisper')).toMatchObject({ ok: true });
+    expect(d.ok).toBe(true);
+  });
+  it('sin ningún motor la transcripción no está lista', async () => {
+    const d = await runDiagnostics({ ...tools, whisper: null }, defaultSettings('x'), { version: async () => 'v', ollamaModels: async () => ['llama3.2:3b'] }, { plan: null });
+    expect(d.items.find((i) => i.id === 'whisper')).toMatchObject({ ok: false, detail: 'Ningún motor disponible' });
   });
 });

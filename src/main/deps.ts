@@ -170,7 +170,13 @@ export const realProbes: DiagnosticProbes = {
   },
 };
 
-export async function runDiagnostics(tools: ResolvedTools, s: Settings, probes: DiagnosticProbes = realProbes): Promise<Diagnostics> {
+export async function runDiagnostics(
+  tools: ResolvedTools,
+  s: Settings,
+  probes: DiagnosticProbes = realProbes,
+  /** Si se pasa, la transcripción está lista cuando hay algún motor disponible (no sólo whisper.exe). */
+  gpu?: Pick<GpuInfo, 'plan'>,
+): Promise<Diagnostics> {
   const items: DepStatus[] = [];
   const check = async (id: DepId, label: string, exe: string | null, args: string[]) => {
     if (!exe) return items.push({ id, label, ok: false, detail: 'No encontrado', help: HELP[id] });
@@ -182,12 +188,20 @@ export async function runDiagnostics(tools: ResolvedTools, s: Settings, probes: 
     check('ffprobe', 'FFprobe', tools.ffprobe, ['-hide_banner', '-version']),
     check('ytDlp', 'yt-dlp', tools.ytDlp, ['--version']),
   ]);
-  // whisper --help es lento; basta con comprobar que existe el ejecutable
-  items.push(
-    tools.whisper
-      ? { id: 'whisper', label: 'Motor de transcripción (Whisper)', ok: true, detail: `${tools.whisper} (modelo ${s.whisperModel})` }
-      : { id: 'whisper', label: 'Motor de transcripción (Whisper)', ok: false, detail: 'No encontrado', help: HELP.whisper },
-  );
+  // Listo si hay un motor seleccionable (p. ej. faster-whisper vía Python sin el CLI de openai-whisper).
+  const label = 'Motor de transcripción (Whisper)';
+  if (gpu?.plan) {
+    items.push({ id: 'whisper', label, ok: true, detail: `${gpu.plan.engine} · ${gpu.plan.device.toUpperCase()} (modelo ${gpu.plan.model})` });
+  } else if (gpu) {
+    items.push({ id: 'whisper', label, ok: false, detail: 'Ningún motor disponible', help: HELP.whisper });
+  } else {
+    // sin diagnóstico de Python: basta con comprobar que existe el ejecutable (whisper --help es lento)
+    items.push(
+      tools.whisper
+        ? { id: 'whisper', label, ok: true, detail: `${tools.whisper} (modelo ${s.whisperModel})` }
+        : { id: 'whisper', label, ok: false, detail: 'No encontrado', help: HELP.whisper },
+    );
+  }
   items.push(
     tools.ollama
       ? { id: 'ollamaInstalled', label: 'Ollama instalado', ok: true, detail: tools.ollama }

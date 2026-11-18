@@ -167,6 +167,19 @@ export function openaiArgs(plan: EnginePlan, audio: string, outDir: string, lang
   return a;
 }
 
+/**
+ * Cómo lanzar openai-whisper: con el intérprete diagnosticado (`python -m whisper`) si ese entorno lo tiene,
+ * para que lo que se ejecuta coincida con lo detectado (CUDA o no); si no, el whisper.exe resuelto.
+ */
+export function openaiCommand(
+  tools: { python?: string | null; whisper: string | null },
+  pythonHasWhisper: boolean,
+): { exe: string; prefix: string[] } | null {
+  if (tools.python && pythonHasWhisper) return { exe: tools.python, prefix: ['-m', 'whisper'] };
+  if (tools.whisper) return { exe: tools.whisper, prefix: [] };
+  return null;
+}
+
 /** Argumentos para resources/python/fw_transcribe.py (faster-whisper). */
 export function fasterArgs(script: string, plan: EnginePlan, audio: string, outJson: string, language: string, allowDownload: boolean): string[] {
   const a = [script, '--audio', audio, '--model', plan.model, '--device', plan.device, '--compute-type', plan.computeType ?? 'float16', '--output', outJson];

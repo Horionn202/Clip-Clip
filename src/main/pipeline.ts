@@ -24,6 +24,7 @@ import {
   isModelCached,
   isModelDownloadLine,
   openaiArgs,
+  openaiCommand,
   parseOpenaiSegmentEnd,
   selectEngine,
   type ProgressState,
@@ -86,7 +87,9 @@ export function createPipeline(ctx: PipelineContext): JobRunner {
       // 1. Validación
       enter('validating', 'Comprobando dependencias…');
       const tools = ctx.tools();
-      const diag = await runDiagnostics(tools, s);
+      // El diagnóstico de Python/Torch decide qué motor hay (p. ej. faster-whisper sin whisper.exe).
+      const gpu = await ctx.gpuInfo();
+      const diag = await runDiagnostics(tools, s, undefined, gpu);
       const missing = missingDepMessage(diag);
       if (missing) throw new UserFacingError(missing);
       check(signal);
@@ -101,7 +104,6 @@ export function createPipeline(ctx: PipelineContext): JobRunner {
       update({ sourceTitle: info.title, sourceDuration: info.duration, progress: 0.6, message: 'Comprobando motor de transcripción…' });
 
       // Plan de transcripción (antes de descargar nada pesado).
-      const gpu = await ctx.gpuInfo();
       const selOpts: SelectOptions = {
         choice: s.transcriptionEngine,
         model: s.whisperModel,
@@ -201,6 +203,7 @@ export function createPipeline(ctx: PipelineContext): JobRunner {
         update({ engine: p });
         const r = await transcribe(ctx, tools, p, audioPath, dir, s.whisperLanguage, duration, !!job.allowModelDownload, !isModelCached(p.engine, p.model, gpu), signal, (d) =>
           update({ detail: d, progress: d.audioTotalSec ? Math.min(1, d.audioDoneSec / d.audioTotalSec) : 0, message: formatProgress(d) }),
+          gpu.whisperInstalled,
         );
         if (r.ok) {
           usedPlan = p;
@@ -331,6 +334,7 @@ async function transcribe(
   needsDownload: boolean,
   signal: AbortSignal,
   onProgress: (p: TranscribeProgress) => void,
+  pythonHasWhisper: boolean,
 ): Promise<TranscribeResult> {
   const startedAt = Date.now();
   const st: ProgressState = { phase: needsDownload ? 'downloadingModel' : 'loadingModel', audioDone: 0, firstSegmentAt: null };
@@ -373,7 +377,10 @@ async function transcribe(
       return finish(r.code === 0, r.stderr, outFile);
     }
     const outFile = path.join(dir, 'audio.json');
-    const r = await runProcess(tools.whisper!, openaiArgs(plan, audioPath, dir, language), {
+    // Se ejecuta en el mismo intérprete que se diagnosticó (python -m whisper); whisper.exe sólo como respaldo.
+    const cmd = openaiCommand(tools, pythonHasWhisper);
+    if (!cmd) return { ok: false, stderr: 'openai-whisper no encontrado', outFile: '' };
+    const r = await runProcess(cmd.exe, [...cmd.prefix, ...openaiArgs(plan, audioPath, dir, language)], {
       signal,
       timeoutMs: 6 * 60 * 60 * 1000,
       env,

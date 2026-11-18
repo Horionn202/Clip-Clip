@@ -91,7 +91,8 @@ export function registerIpc(ctx: IpcContext): void {
   const h = <A extends unknown[], R>(ch: string, fn: (...a: A) => Promise<R> | R) => ipcMain.handle(ch, wrap(ctx, ch, fn));
 
   h('deps:check', async () => {
-    const [d, gpu] = await Promise.all([runDiagnostics(ctx.tools(), ctx.settings.get()), ctx.gpuInfo(true)]);
+    const gpu = await ctx.gpuInfo(true);
+    const d = await runDiagnostics(ctx.tools(), ctx.settings.get(), undefined, gpu);
     return { ...d, gpu };
   });
   h('source:probe', async (url: unknown) => {
