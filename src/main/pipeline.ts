@@ -3,10 +3,10 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { Clip, EnginePlan, GpuInfo, Job, JobMetrics, MetricStage, Settings, TranscribeProgress } from '../shared/types';
 import { MAX_CLIPS, WHISPER_MODEL_OPTIONS } from '../shared/types';
-import { UserFacingError, assertClipInvariants, safeFileName } from '../shared/validation';
+import { UserFacingError, assertClipInvariants } from '../shared/validation';
 import { resultSummary } from '../shared/selection';
 import { missingDepMessage, realGpuProbes, runDiagnostics, type ResolvedTools } from './deps';
-import { buildAss, centerCrop, parseWhisperJson, renderArgs, type Word } from './media';
+import { parseWhisperJson, type Word } from './media';
 import { chatJson, modelPlacement, unloadModel } from './ollama';
 import { CancelledError, runProcess } from './proc';
 import { event, log, urlHost } from './logger';
@@ -14,6 +14,9 @@ import type { JobRunner } from './queue';
 import { friendlyYtDlpError } from './ytdlp';
 import { readSourceInfo } from './source';
 import { analyzeClips } from './analysis';
+import { renderClip, renderThumb, type RenderEnv } from './clipRender';
+import { frameEdgeAnalyzer, sampleFrames } from './visual';
+import { decideLayout } from '../shared/layouts';
 import { listFiles, locateTranscript, sanitizeArgs, tailLines } from './transcriptOutput';
 import {
   availability,
@@ -297,33 +300,34 @@ export function createPipeline(ctx: PipelineContext): JobRunner {
 
       // 7. Render
       assertClipInvariants(clips, { preset: job.preset, maxClips: job.maxClips, sourceDuration: duration });
-      enter('rendering', 'Renderizando clips…');
-      const crop = centerCrop(s.cropOffsetX).compute(width, height);
+      // 7a. Análisis visual ligero sólo sobre los clips elegidos (pocos fotogramas por clip) y layout seguro.
+      enter('rendering', 'Analizando la composición de los clips…');
       const clipsDir = path.join(dir, 'clips');
+      const framesDir = path.join(dir, 'frames');
+      update({ sourceVideo: { width, height } });
+      for (const [i, clip] of clips.entries()) {
+        check(signal);
+        update({ message: `Analizando composición: clip ${i + 1} de ${clips.length}…`, progress: (i / clips.length) * 0.1 });
+        const frames = await sampleFrames(tools.ffmpeg!, sourcePath, clip.start, clip.end, framesDir, 6, signal);
+        const visual = frameEdgeAnalyzer.analyze(frames);
+        const decision = decideLayout(s.defaultLayout, visual);
+        clip.visual = visual;
+        clip.camRect = visual.cam;
+        clip.layout = decision.layout;
+        clip.layoutSuggestion = decision.suggestion;
+        clip.layoutReason = decision.reason;
+        clip.thumb = (await renderThumb(tools.ffmpeg!, sourcePath, (clip.start + clip.end) / 2, framesDir, `${String(clip.index).padStart(2, '0')}.jpg`, signal)) ?? undefined;
+      }
+      event('visual', { job: job.id, clips: clips.map((c) => ({ i: c.index, cls: c.visual?.cls, conf: c.visual?.confidence, layout: c.layout, sug: c.layoutSuggestion })) });
+
+      // 7b. Render con el layout de cada clip.
+      const env: RenderEnv = { ffmpeg: tools.ffmpeg!, clipsDir, sourcePath, srcW: width, srcH: height, words: words as Word[], settings: s, signal };
       for (const [i, clip] of clips.entries()) {
         check(signal);
         const tc = Date.now();
-        const base = `${String(clip.index).padStart(2, '0')}_${safeFileName(clip.title)}`;
-        const assName = `${String(clip.index).padStart(2, '0')}.ass`;
-        fs.writeFileSync(path.join(clipsDir, assName), buildAss(words as Word[], clip.start, clip.end, s.subtitleFontSize), 'utf8');
-        const out = `${base}.mp4`;
         update({ message: `Renderizando clip ${i + 1} de ${clips.length}…` });
-        const total = clip.end - clip.start;
-        const r = await runProcess(
-          tools.ffmpeg!,
-          renderArgs({ source: sourcePath, start: clip.start, end: clip.end, crop, assFile: assName, output: out }),
-          {
-            cwd: clipsDir,
-            signal,
-            timeoutMs: 60 * 60 * 1000,
-            onStdout: (l) => {
-              const m = l.match(/^out_time_us=(\d+)/);
-              if (m) update({ progress: (i + Math.min(1, parseInt(m[1]) / 1e6 / total)) / clips.length });
-            },
-          },
-        );
-        if (r.code !== 0) throw new UserFacingError(`No se pudo renderizar el clip ${clip.index}.`, r.stderr);
-        clip.file = out;
+        clip.file = await renderClip(clip, env, (fr) => update({ progress: 0.1 + ((i + fr) / clips.length) * 0.9 }));
+        clip.dirty = false;
         metrics.renderMsPerClip.push(Date.now() - tc);
         update({ clips: [...clips], metrics: { ...metrics } });
       }

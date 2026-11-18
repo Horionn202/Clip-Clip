@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { WHISPER_MODEL_OPTIONS, type Diagnostics, type Job, type Settings } from '../../shared/types';
 import { AiModelPanel } from './AiModels';
+import { LAYOUT_IDS, LAYOUT_LABELS } from '../../shared/layouts';
 import { GpuPanel, LastRunPanel } from './Performance';
 import { api, errMsg } from '../api';
 
@@ -80,6 +81,18 @@ export function SettingsPage(props: { settings: Settings; onChange: (s: Settings
       </div>
 
       <h2>Encuadre y subtítulos</h2>
+      <label className="field">
+        <span>Plantilla vertical por defecto</span>
+        <select value={s.defaultLayout} onChange={(e) => patch({ defaultLayout: e.target.value as Settings['defaultLayout'] })}>
+          <option value="auto">Auto: según la detección de facecam (experimental, con fallback seguro)</option>
+          {LAYOUT_IDS.map((l) => (
+            <option key={l} value={l}>
+              {LAYOUT_LABELS[l]}
+            </option>
+          ))}
+        </select>
+        <small className="muted">Si la detección no es fiable se usa «Gameplay completo» y se muestra la sugerencia en cada clip. Puedes cambiar la plantilla de cada clip en Resultados.</small>
+      </label>
       <label className="field">
         <span>Desplazamiento horizontal del recorte: {s.cropOffsetX.toFixed(2)} (−1 izquierda, 0 centro, 1 derecha)</span>
         <input type="range" min={-1} max={1} step={0.05} value={s.cropOffsetX} onChange={(e) => patch({ cropOffsetX: Number(e.target.value) })} />

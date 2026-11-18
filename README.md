@@ -35,6 +35,25 @@ En el primer inicio la app abre **Configuración → Diagnóstico**, comprueba c
 
 La app no publica en redes sociales.
 
+## Plantillas verticales: gameplay + facecam (experimental)
+
+Tres etapas, todo local:
+1. **Selección textual**: transcripción + Ollama eligen los clips.
+2. **Análisis visual ligero sólo de los clips elegidos**: 6 fotogramas en gris a 160×90 por clip (una llamada a FFmpeg por clip; nunca se analiza el vídeo entero). El motor por defecto (`marco-fijo-v1`, sin dependencias) busca el **marco rectangular de una facecam superpuesta**: bordes rectos que se mantienen fijos en todos los fotogramas mientras el gameplay cambia. Clasifica: sin facecam, facecam arriba/abajo/izquierda/derecha, cámara a pantalla completa o incierto. No reconoce caras; la interfaz `VisualAnalyzer` permite añadir después un detector de caras (p. ej. OpenCV) o un VLM opcional sobre esos mismos fotogramas.
+3. **Render** con la plantilla de cada clip (`LayoutStrategy`, `src/main/layoutRender.ts`):
+
+| Plantilla | Resultado |
+|---|---|
+| Gameplay completo | Recorte vertical actual |
+| Gameplay arriba + facecam abajo | 1080×1216 de gameplay + 1080×704 de cámara |
+| Facecam arriba + gameplay abajo | Lo mismo, invertido |
+| Gameplay vertical + facecam flotante | Recorte vertical con la cámara superpuesta arriba a la derecha |
+| Sin facecam | Vídeo entero sobre fondo difuminado (no se recorta nada) |
+
+**Seguridad del resultado**: en «Auto» sólo se aplica una plantilla con facecam si la confianza es ≥ 60 % y hay rectángulo; si no, se usa «Gameplay completo» y el clip muestra la sugerencia. Ninguna plantilla inventa la posición de la cámara.
+
+**Resultados → Editar clip**: cambiar título, hook, inicio/fin (validado: dentro del vídeo, duración del preset y sin solapes), plantilla y recuadro de la facecam sobre el fotograma real (deslizadores accesibles por teclado), **Vista previa** (un fotograma con la plantilla) y **Guardar y volver a renderizar** sólo ese clip. Los clips con cambios sin renderizar no se exportan y el contador muestra `N/N clips listos`. El re-render necesita el vídeo original: si activas «Borrar el vídeo original al completar», no estará disponible.
+
 ## Aceleración por GPU (NVIDIA CUDA)
 
 **«GPU NVIDIA detectada» no es lo mismo que «CUDA habilitado»**. La app comprueba ambas cosas por separado en Configuración → *GPU y motor de transcripción*:

@@ -105,10 +105,13 @@ app.whenReady().then(() => {
     try {
       const u = new URL(req.url);
       const [jobId, file] = u.pathname.split('/').filter(Boolean).map(decodeURIComponent);
-      if (u.hostname !== 'job' || !/^[a-z0-9-]{8,64}$/.test(jobId ?? '') || !/^[\w.() -]+\.mp4$/.test(file ?? '')) {
+      // clip://job/<id>/<clip.mp4>  ·  clip://frame/<id>/<fotograma.jpg> (vistas previas y referencia de facecam)
+      const isFrame = u.hostname === 'frame';
+      const okName = isFrame ? /^[\w.-]+\.jpg$/.test(file ?? '') : /^[\w.() -]+\.mp4$/.test(file ?? '');
+      if ((u.hostname !== 'job' && !isFrame) || !/^[a-z0-9-]{8,64}$/.test(jobId ?? '') || !okName) {
         return new Response('Bad request', { status: 400 });
       }
-      const clipsDir = path.join(jobDir(paths.jobsDir, jobId), 'clips');
+      const clipsDir = path.join(jobDir(paths.jobsDir, jobId), isFrame ? 'frames' : 'clips');
       const full = path.join(clipsDir, file);
       if (!isInside(clipsDir, full) || !fs.existsSync(full)) return new Response('Not found', { status: 404 });
       return net.fetch(pathToFileURL(full).toString(), { headers: req.headers });

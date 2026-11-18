@@ -40,6 +40,7 @@ export function defaultSettings(exportDir: string): Settings {
     maxDownloadMB: 4096,
     minFreeDiskMB: 2048,
     cropOffsetX: 0,
+    defaultLayout: 'auto',
     subtitleFontSize: 72,
     onboardingDone: false,
   };

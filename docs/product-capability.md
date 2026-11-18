@@ -23,6 +23,12 @@ Dada una URL autorizada, un preset (15/30/45/60 s) y una **meta** N (1–20), la
 - Selección: rechazo de ideas repetidas (similitud ≥ 0,6), bonus de diversidad temporal, puntuación local con densidad, claridad, ajuste a la duración, bordes de frase, énfasis y coincidencia del hook.
 - Informe por trabajo visible en el historial: solicitados, máximo posible, meta efectiva, generados, candidatos, descartes por motivo, rondas y modelo.
 
+## Plantillas verticales (v0.4, experimental)
+- Análisis visual sólo de los clips elegidos (6 fotogramas 160×90 por clip) con `VisualAnalyzer` intercambiable; motor por defecto sin dependencias que detecta el marco fijo de una facecam.
+- `LayoutStrategy`: gameplay completo, gameplay arriba + facecam abajo, facecam arriba + gameplay abajo, facecam flotante y sin facecam (vídeo entero con fondo difuminado).
+- Invariantes: sin confianza ≥ 0,6 y rectángulo no se aplica una plantilla con facecam (fallback a gameplay completo + sugerencia); ninguna plantilla inventa la posición de la cámara; los clips con cambios sin renderizar no se exportan.
+- Edición por clip (título, hook, rango, plantilla, facecam) con validación y re-render sólo del clip modificado (archivo temporal + sustitución atómica).
+
 ## Rendimiento y motor de transcripción
 - Motores: faster-whisper GPU → openai-whisper GPU → openai-whisper CPU (automático o fijo). CUDA sólo cuenta como disponible si Torch/CTranslate2 lo confirman; una GPU NVIDIA con Torch `+cpu` se trata como CPU y se explica.
 - CPU: `--fp16 False`. GPU: FP16 (o `int8_float16` en faster-whisper si la VRAM va justa); FP32 opcional.
