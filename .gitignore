@@ -1,0 +1,51 @@
+# Dependencias y builds
+node_modules/
+dist/
+dist-electron/
+release/
+out/
+*.tsbuildinfo
+coverage/
+
+# Binarios redistribuibles (se colocan localmente antes de empaquetar)
+resources/bin/*
+!resources/bin/README.md
+
+# Medios, modelos y salidas pesadas
+*.mp4
+*.mkv
+*.webm
+*.mov
+*.wav
+*.mp3
+*.m4a
+*.pt
+*.bin
+*.gguf
+*.onnx
+*.safetensors
+*.exe
+*.dll
+*.msi
+*.blockmap
+*.ass
+*.srt
+*.vtt
+
+# Secretos y cookies
+.env
+.env.*
+!.env.example
+cookies*.txt
+*.cookies
+*.pem
+*.key
+
+# Logs y SO
+logs/
+*.log
+npm-debug.log*
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

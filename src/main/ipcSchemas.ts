@@ -1,0 +1,67 @@
+import { z } from 'zod';
+import { DURATION_PRESETS, MAX_CLIPS, type Settings } from '../shared/types';
+import { validateVideoUrl } from '../shared/validation';
+import { validateExecutablePath } from './paths';
+
+export const idSchema = z.string().regex(/^[a-z0-9-]{8,64}$/);
+
+export const createJobSchema = z
+  .object({
+    url: z.string().max(2048).transform((u, ctx) => {
+      try {
+        return validateVideoUrl(u);
+      } catch (e) {
+        ctx.addIssue({ code: 'custom', message: (e as Error).message });
+        return z.NEVER;
+      }
+    }),
+    preset: z.union(DURATION_PRESETS.map((p) => z.literal(p)) as [z.ZodLiteral<15>, z.ZodLiteral<30>, z.ZodLiteral<45>, z.ZodLiteral<60>]),
+    maxClips: z.number().int().min(1).max(MAX_CLIPS),
+    rightsConfirmed: z.literal(true, { message: 'Debes confirmar que tienes derechos para usar este contenido.' }),
+  })
+  .strict();
+
+const exe = z.string().max(1024).transform((v, ctx) => {
+  try {
+    return validateExecutablePath(v);
+  } catch (e) {
+    ctx.addIssue({ code: 'custom', message: (e as Error).message });
+    return z.NEVER;
+  }
+});
+
+export const settingsPatchSchema = z
+  .object({
+    ollamaHost: z
+      .string()
+      .max(200)
+      .regex(/^http:\/\/(127\.0\.0\.1|localhost|\[::1\]):\d{2,5}$/, 'Ollama debe ser local (http://127.0.0.1:11434).'),
+    ollamaModel: z.string().regex(/^[A-Za-z0-9._:/-]{1,100}$/, 'Nombre de modelo no válido.'),
+    whisperModel: z.enum(['tiny', 'base', 'small', 'medium', 'large', 'turbo']),
+    whisperLanguage: z.string().regex(/^([a-z]{2,3})?$/),
+    exportDir: z.string().max(1024),
+    ffmpegPath: exe,
+    ffprobePath: exe,
+    ytDlpPath: exe,
+    whisperPath: exe,
+    deleteSourceAfterCompletion: z.boolean(),
+    deleteTempAfterCompletion: z.boolean(),
+    maxConcurrentJobs: z.number().int().min(1).max(2),
+    maxSourceMinutes: z.number().int().min(1).max(600),
+    maxDownloadMB: z.number().int().min(10).max(20000),
+    minFreeDiskMB: z.number().int().min(100).max(500000),
+    cropOffsetX: z.number().min(-1).max(1),
+    subtitleFontSize: z.number().int().min(30).max(140),
+    onboardingDone: z.boolean(),
+  })
+  .partial()
+  .strict();
+
+// exportDir sólo puede cambiarse vía diálogo nativo (no desde el renderer).
+export const rendererSettingsPatchSchema = settingsPatchSchema.omit({ exportDir: true });
+
+export const renameClipSchema = z.tuple([idSchema, idSchema, z.string().trim().min(1).max(100)]);
+export const modelNameSchema = z.string().regex(/^[A-Za-z0-9._:/-]{1,100}$/);
+
+export type SettingsPatch = z.infer<typeof settingsPatchSchema>;
+export const _settingsKeysCheck: (keyof Settings)[] = Object.keys(settingsPatchSchema.shape) as (keyof Settings)[];
