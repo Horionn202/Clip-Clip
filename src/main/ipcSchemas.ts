@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { DURATION_PRESETS, MAX_CLIPS, type Settings } from '../shared/types';
+import { DURATION_PRESETS, ENGINE_IDS, MAX_CLIPS, type Settings } from '../shared/types';
 import { validateVideoUrl } from '../shared/validation';
 import { validateExecutablePath } from './paths';
 
@@ -18,6 +18,7 @@ export const createJobSchema = z
     preset: z.union(DURATION_PRESETS.map((p) => z.literal(p)) as [z.ZodLiteral<15>, z.ZodLiteral<30>, z.ZodLiteral<45>, z.ZodLiteral<60>]),
     maxClips: z.number().int().min(1).max(MAX_CLIPS),
     rightsConfirmed: z.literal(true, { message: 'Debes confirmar que tienes derechos para usar este contenido.' }),
+    allowModelDownload: z.boolean().optional(),
   })
   .strict();
 
@@ -44,6 +45,9 @@ export const settingsPatchSchema = z
     ffprobePath: exe,
     ytDlpPath: exe,
     whisperPath: exe,
+    pythonPath: exe,
+    transcriptionEngine: z.enum(['auto', ...ENGINE_IDS]),
+    whisperPrecision: z.enum(['auto', 'fp16', 'fp32']),
     deleteSourceAfterCompletion: z.boolean(),
     deleteTempAfterCompletion: z.boolean(),
     maxConcurrentJobs: z.number().int().min(1).max(2),
@@ -59,6 +63,15 @@ export const settingsPatchSchema = z
 
 // exportDir sólo puede cambiarse vía diálogo nativo (no desde el renderer).
 export const rendererSettingsPatchSchema = settingsPatchSchema.omit({ exportDir: true });
+
+export const probeUrlSchema = z.string().max(2048).transform((u, ctx) => {
+  try {
+    return validateVideoUrl(u);
+  } catch (e) {
+    ctx.addIssue({ code: 'custom', message: (e as Error).message });
+    return z.NEVER;
+  }
+});
 
 export const renameClipSchema = z.tuple([idSchema, idSchema, z.string().trim().min(1).max(100)]);
 export const modelNameSchema = z.string().regex(/^[A-Za-z0-9._:/-]{1,100}$/);

@@ -36,3 +36,6 @@ button.danger{color:var(--err)}button.ghost{background:none}button.link{backgrou
 .diag li.ok .dot{color:var(--ok)}.diag li.bad .dot{color:var(--err)}.help{margin-top:4px;font-size:12px;color:var(--warn)}
 .grid2{display:grid;grid-template-columns:1fr 1fr;gap:0 16px}code{background:var(--panel2);padding:8px 10px;border-radius:6px;font-size:12px;overflow:hidden;text-overflow:ellipsis}
 .policy li{margin:8px 0}
+.engine-pill{display:inline-block;margin:8px 0;padding:6px 12px;border-radius:8px;background:var(--panel2);font-size:13px}.engine-pill.cuda b{color:var(--ok)}.engine-pill.cpu b{color:var(--warn)}
+.badge.dev-cuda{color:#fff;background:#2e8b57}.badge.dev-cpu{color:#111;background:var(--warn)}.badge.partial{color:var(--warn)}
+.kv td:first-child{color:var(--muted);width:40%}pre.cmd{background:#0b0d10;padding:10px;border-radius:6px;font-size:12px;white-space:pre-wrap;word-break:break-all}

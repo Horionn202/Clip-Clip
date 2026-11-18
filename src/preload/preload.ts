@@ -12,6 +12,7 @@ const subscribe = <T>(channel: 'job:update' | 'ollama:pullProgress', cb: (v: T) 
 
 const api: ClipsApi = {
   checkDeps: () => ipcRenderer.invoke('deps:check'),
+  probeUrl: (url) => ipcRenderer.invoke('source:probe', String(url)),
   getSettings: () => ipcRenderer.invoke('settings:get'),
   updateSettings: (patch) => ipcRenderer.invoke('settings:update', patch),
   chooseExportDir: () => ipcRenderer.invoke('settings:chooseExportDir'),

@@ -28,3 +28,18 @@
 - Sin auto-actualización: el usuario debe actualizar manualmente yt-dlp/FFmpeg.
 - yt-dlp y Whisper son ejecutables de terceros que se ejecutan con los permisos del usuario; se recomienda instalarlos desde winget/pip oficiales.
 - Si se empaqueta FFmpeg GPL, hay obligaciones de licencia (ver `THIRD_PARTY_NOTICES.md`).
+
+## Revisión v0.2 (GPU, métricas y meta de clips) — 2026-11-18
+
+| Área | Riesgo | Control | Prueba |
+|---|---|---|---|
+| Scripts Python (`probe.py`, `fw_transcribe.py`) | Inyección / ejecución arbitraria | Rutas fijas dentro de `resources/python` (empaquetadas como recursos, no editables desde el renderer); `spawn` sin shell y argumentos estructurados con `argparse`; `probe.py` no recibe datos del usuario | `tests/transcribe.test.ts` |
+| Ruta de `python.exe` | Ejecutable arbitrario | Validada como ruta absoluta `.exe` por zod; autodetección junto a `whisper.exe` o en `PATH`, excluyendo el alias de Microsoft Store | `tests/ipc.test.ts` |
+| Comandos de instalación de Torch CUDA | Instalación silenciosa/insegura | Nunca se ejecutan: sólo se muestran y se copian al portapapeles; índice oficial `download.pytorch.org` | revisión |
+| Descarga de modelos | Descargas pesadas sin consentimiento | Requiere `allowModelDownload` explícito por trabajo; faster-whisper se ejecuta con `local_files_only` sin permiso | revisión + `tests/ipc.test.ts` |
+| IPC `source:probe` | SSRF / abuso | Misma validación de URL pública que `jobs:create`, origen del emisor verificado | `tests/ipc.test.ts` |
+| Logs estructurados (`events.jsonl`) | Fuga de datos | Sólo dominio de la URL (nunca ruta ni query), redacción de tokens/cookies, rotación a 5 MB | revisión |
+| Ollama | Salida desbocada / DoS local | Salida estructurada con esquema JSON y `maxItems`, `num_predict` acotado, timeout por llamada, rondas limitadas (1 + 3) | `tests/analysis.test.ts` |
+| VRAM compartida | Fallo por memoria | Descarga del modelo de Ollama antes de transcribir en GPU; reintento con modelo menor y CPU | `tests/transcribe.test.ts` |
+
+`npm audit --omit=dev`: ver resultado de la entrega; no se añadieron dependencias npm nuevas.

@@ -2,10 +2,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { BrowserWindow, dialog, ipcMain, shell, type IpcMainInvokeEvent } from 'electron';
-import type { Job, Settings } from '../shared/types';
+import type { GpuInfo, Job, Settings } from '../shared/types';
 import { MAX_CLIPS } from '../shared/types';
 import { UserFacingError } from '../shared/validation';
-import { createJobSchema, idSchema, modelNameSchema, renameClipSchema, rendererSettingsPatchSchema } from './ipcSchemas';
+import { createJobSchema, idSchema, modelNameSchema, probeUrlSchema, renameClipSchema, rendererSettingsPatchSchema } from './ipcSchemas';
+import { readSourceInfo } from './source';
 import { isInside } from './paths';
 import { log } from './logger';
 import { runDiagnostics, type ResolvedTools } from './deps';
@@ -21,6 +22,7 @@ export interface IpcContext {
   jobs: JobStore;
   queue: JobQueue;
   tools: () => ResolvedTools;
+  gpuInfo: (refresh?: boolean) => Promise<GpuInfo>;
   onSettingsChanged: () => void;
 }
 
@@ -88,7 +90,19 @@ function exportOne(ctx: IpcContext, job: Job, clipId: string): string {
 export function registerIpc(ctx: IpcContext): void {
   const h = <A extends unknown[], R>(ch: string, fn: (...a: A) => Promise<R> | R) => ipcMain.handle(ch, wrap(ctx, ch, fn));
 
-  h('deps:check', () => runDiagnostics(ctx.tools(), ctx.settings.get()));
+  h('deps:check', async () => {
+    const [d, gpu] = await Promise.all([runDiagnostics(ctx.tools(), ctx.settings.get()), ctx.gpuInfo(true)]);
+    return { ...d, gpu };
+  });
+  h('source:probe', async (url: unknown) => {
+    const u = probeUrlSchema.parse(url);
+    const yt = ctx.tools().ytDlp;
+    if (!yt) throw new UserFacingError('Falta yt-dlp. Revisa Configuración → Diagnóstico.');
+    const s = ctx.settings.get();
+    const info = await readSourceInfo(yt, u, s);
+    // preset no se conoce aquí: el renderer calcula el máximo factible con la duración.
+    return { title: info.title, duration: info.duration, feasibleMax: 0 };
+  });
   h('settings:get', () => ctx.settings.get());
   h('settings:update', (patch: unknown) => {
     const valid = rendererSettingsPatchSchema.parse(patch) as Partial<Settings>;
@@ -127,6 +141,7 @@ export function registerIpc(ctx: IpcContext): void {
       url: r.url,
       preset: r.preset,
       maxClips: Math.min(r.maxClips, MAX_CLIPS),
+      allowModelDownload: r.allowModelDownload === true,
       status: 'queued',
       progress: 0,
       message: 'En cola',

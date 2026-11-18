@@ -75,7 +75,9 @@ export class JobQueue {
         if (!ctrl.signal.aborted) this.patch(job.id, p);
       });
       if (ctrl.signal.aborted) throw new CancelledError();
-      this.patch(job.id, { status: 'completed', progress: 1, message: 'Listo' });
+      // Nunca «Listo» a secas: se muestra el resumen honesto (p. ej. «3/5 clips generados: …»).
+      const summary = this.deps.get(job.id)?.resultSummary;
+      this.patch(job.id, { status: 'completed', progress: 1, message: summary ?? 'Completado' });
     } catch (err) {
       if (ctrl.signal.aborted || err instanceof CancelledError) {
         this.patch(job.id, { status: 'cancelled', message: 'Cancelado por el usuario' });

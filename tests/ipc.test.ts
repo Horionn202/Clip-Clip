@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import path from 'node:path';
-import { createJobSchema, settingsPatchSchema, rendererSettingsPatchSchema, renameClipSchema, idSchema, modelNameSchema } from '../src/main/ipcSchemas';
+import { createJobSchema, settingsPatchSchema, rendererSettingsPatchSchema, renameClipSchema, idSchema, modelNameSchema, probeUrlSchema } from '../src/main/ipcSchemas';
 import { isInside, resolveInside, assertId, validateExecutablePath } from '../src/main/paths';
 
 const ok = { url: 'https://example.com/v/1', preset: 30, maxClips: 5, rightsConfirmed: true };
@@ -46,6 +46,24 @@ describe('IPC settings', () => {
     expect(modelNameSchema.safeParse('a b').success).toBe(false);
     expect(renameClipSchema.safeParse(['12345678-aaaa', '12345678-bbbb', '']).success).toBe(false);
     expect(idSchema.safeParse('../../etc').success).toBe(false);
+  });
+});
+
+describe('IPC v0.2: GPU, sondeo de URL y descarga de modelos', () => {
+  it('allowModelDownload sólo booleano', () => {
+    expect(createJobSchema.safeParse({ ...ok, allowModelDownload: true }).success).toBe(true);
+    expect(createJobSchema.safeParse({ ...ok, allowModelDownload: 'yes' }).success).toBe(false);
+  });
+  it('source:probe aplica la misma validación de URL', () => {
+    expect(probeUrlSchema.safeParse('https://example.com/v/1').success).toBe(true);
+    for (const bad of ['http://127.0.0.1/x', 'file:///C:/a.mp4', '--exec=calc', 42]) expect(probeUrlSchema.safeParse(bad).success).toBe(false);
+  });
+  it('pythonPath debe ser .exe absoluto; motor y precisión sólo valores conocidos', () => {
+    expect(settingsPatchSchema.safeParse({ pythonPath: 'python' }).success).toBe(false);
+    expect(settingsPatchSchema.safeParse({ pythonPath: 'C:\\Py\\python.exe' }).success).toBe(true);
+    expect(settingsPatchSchema.safeParse({ transcriptionEngine: 'faster-whisper-cuda' }).success).toBe(true);
+    expect(settingsPatchSchema.safeParse({ transcriptionEngine: 'rm -rf' }).success).toBe(false);
+    expect(settingsPatchSchema.safeParse({ whisperPrecision: 'fp8' }).success).toBe(false);
   });
 });
 

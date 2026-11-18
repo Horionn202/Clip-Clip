@@ -61,6 +61,13 @@
         ]
       },
       {
+        "from": "resources/python",
+        "to": "python",
+        "filter": [
+          "*.py"
+        ]
+      },
+      {
         "from": "THIRD_PARTY_NOTICES.md",
         "to": "THIRD_PARTY_NOTICES.md"
       },

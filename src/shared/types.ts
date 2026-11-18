@@ -46,10 +46,72 @@ export interface Clip {
   exportedPath?: string;
 }
 
+/** Motores de transcripción soportados. */
+export const ENGINE_IDS = ['faster-whisper-cuda', 'openai-whisper-cuda', 'openai-whisper-cpu'] as const;
+export type EngineId = (typeof ENGINE_IDS)[number];
+export type EngineChoice = 'auto' | EngineId;
+export const ENGINE_LABELS: Record<EngineId, string> = {
+  'faster-whisper-cuda': 'faster-whisper · GPU (CUDA)',
+  'openai-whisper-cuda': 'openai-whisper · GPU (CUDA)',
+  'openai-whisper-cpu': 'openai-whisper · CPU',
+};
+export type Precision = 'auto' | 'fp16' | 'fp32';
+
+export interface EnginePlan {
+  engine: EngineId;
+  device: 'cpu' | 'cuda';
+  model: string;
+  /** openai-whisper: fp16 true/false. faster-whisper: compute_type. */
+  fp16: boolean;
+  computeType?: string;
+  warnings: string[];
+}
+
+export type MetricStage = 'validating' | 'downloading' | 'extractingAudio' | 'transcribing' | 'analyzing' | 'rendering';
+
+export interface JobMetrics {
+  stagesMs: Partial<Record<MetricStage, number>>;
+  renderMsPerClip: number[];
+  totalMs?: number;
+  engine?: EngineId;
+  device?: 'cpu' | 'cuda';
+  whisperModel?: string;
+  ollamaModel?: string;
+  sourceDuration?: number;
+  clipsFinal?: number;
+  /** Segundos de audio procesados por segundo real (2 = 2× tiempo real). */
+  transcribeSpeed?: number;
+  modelDownloadMs?: number;
+}
+
+export interface AnalysisRound {
+  round: number;
+  requested: number;
+  received: number;
+  accepted: number;
+  rejected: Record<string, number>;
+  failed?: boolean;
+}
+
+export interface AnalysisReport {
+  /** Meta pedida por el usuario (1–20). */
+  target: number;
+  /** Máximo matemático sin solapes = floor(duración / preset), con tope 20. */
+  feasibleMax: number;
+  /** min(meta, 20, máximo factible). */
+  effectiveTarget: number;
+  rounds: AnalysisRound[];
+  candidates: number;
+  rejected: number;
+  obtained: number;
+  partialReason?: string;
+}
+
 export interface Job {
   id: string;
   url: string;
   preset: DurationPreset;
+  /** Meta de clips elegida por el usuario (1–20). Es un máximo, no una garantía. */
   maxClips: number;
   status: JobStatus;
   progress: number; // 0..1 dentro de la etapa actual
@@ -60,6 +122,24 @@ export interface Job {
   clips: Clip[];
   createdAt: string;
   updatedAt: string;
+  allowModelDownload?: boolean;
+  metrics?: JobMetrics;
+  analysis?: AnalysisReport;
+  engine?: EnginePlan;
+  /** Resumen final legible, p. ej. «5/5 clips generados». */
+  resultSummary?: string;
+  /** Subestado de la fase actual (p. ej. 'downloadingModel', 'loadingModel'). */
+  detail?: TranscribeProgress;
+}
+
+export interface TranscribeProgress {
+  phase: 'loadingModel' | 'downloadingModel' | 'transcribing';
+  audioDoneSec: number;
+  audioTotalSec: number;
+  elapsedSec: number;
+  speed?: number;
+  etaSec?: number;
+  device: 'cpu' | 'cuda';
 }
 
 export interface CreateJobRequest {
@@ -67,6 +147,35 @@ export interface CreateJobRequest {
   preset: DurationPreset;
   maxClips: number;
   rightsConfirmed: boolean;
+  /** Permite descargar el modelo de Whisper si no está en caché (confirmación explícita). */
+  allowModelDownload?: boolean;
+}
+
+export interface UrlProbe {
+  title: string;
+  duration: number;
+  feasibleMax: number;
+}
+
+export interface GpuInfo {
+  nvidiaGpu: string | null;
+  vramMB: number | null;
+  driver: string | null;
+  python: string | null;
+  pythonPath: string | null;
+  torch: string | null;
+  torchCuda: string | null;
+  /** Torch puede usar CUDA de verdad (no basta con que exista una GPU NVIDIA). */
+  cudaAvailable: boolean;
+  torchCpuOnly: boolean;
+  whisperInstalled: boolean;
+  fasterWhisper: string | null;
+  ctranslate2Cuda: boolean;
+  cachedModels: { openai: string[]; faster: string[] };
+  plan: EnginePlan | null;
+  recommendation: string;
+  installCommands: string[];
+  probeError?: string;
 }
 
 export interface Settings {
@@ -79,6 +188,9 @@ export interface Settings {
   ffprobePath: string;
   ytDlpPath: string;
   whisperPath: string;
+  pythonPath: string; // '' = autodetectar (junto a whisper.exe o en PATH)
+  transcriptionEngine: EngineChoice;
+  whisperPrecision: Precision;
   deleteSourceAfterCompletion: boolean;
   deleteTempAfterCompletion: boolean;
   maxConcurrentJobs: number;
@@ -105,6 +217,7 @@ export interface Diagnostics {
   ok: boolean;
   checkedAt: string;
   items: DepStatus[];
+  gpu?: GpuInfo;
 }
 
 export interface ModelOption {
@@ -122,11 +235,18 @@ export const OLLAMA_MODEL_OPTIONS: ModelOption[] = [
 
 export const WHISPER_MODEL_OPTIONS: ModelOption[] = [
   { name: 'tiny', sizeLabel: '≈ 75 MB', note: 'Muy rápido, menor precisión' },
-  { name: 'base', sizeLabel: '≈ 145 MB', note: 'Rápido' },
-  { name: 'small', sizeLabel: '≈ 465 MB', note: 'Recomendado' },
-  { name: 'medium', sizeLabel: '≈ 1,5 GB', note: 'Preciso, lento sin GPU' },
-  { name: 'turbo', sizeLabel: '≈ 1,6 GB', note: 'Preciso y rápido con GPU' },
+  { name: 'base', sizeLabel: '≈ 145 MB', note: 'CPU: recomendado (equilibrio)' },
+  { name: 'small', sizeLabel: '≈ 465 MB', note: 'CPU: más preciso, más lento' },
+  { name: 'medium', sizeLabel: '≈ 1,5 GB', note: 'Preciso; lento sin GPU' },
+  { name: 'large', sizeLabel: '≈ 2,9 GB', note: 'Máxima precisión; requiere GPU con mucha VRAM' },
+  { name: 'turbo', sizeLabel: '≈ 1,6 GB', note: 'GPU CUDA: recomendado (velocidad)' },
 ];
+
+export const CLIP_TARGET_PRESETS = [
+  { label: 'Rápido', value: 5 },
+  { label: 'Estándar', value: 10 },
+  { label: 'Máximo', value: 20 },
+] as const;
 
 export interface PullProgress {
   model: string;
@@ -140,6 +260,7 @@ export interface PullProgress {
 /** API expuesta por el preload en window.clipsApi. */
 export interface ClipsApi {
   checkDeps(): Promise<Diagnostics>;
+  probeUrl(url: string): Promise<UrlProbe>;
   getSettings(): Promise<Settings>;
   updateSettings(patch: Partial<Settings>): Promise<Settings>;
   chooseExportDir(): Promise<string | null>;
