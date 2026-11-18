@@ -10,6 +10,7 @@ import { chatJson } from './ollama';
 import { CancelledError, runProcess } from './proc';
 import { log } from './logger';
 import type { JobRunner } from './queue';
+import { FALLBACK_CLIENT_ARGS, friendlyYtDlpError, isBotCheck } from './ytdlp';
 
 export interface PipelineContext {
   jobsDir: string;
@@ -53,13 +54,20 @@ export function createPipeline(ctx: PipelineContext): JobRunner {
       throw new UserFacingError(`No hay espacio suficiente en disco (se requieren al menos ${s.minFreeDiskMB} MB libres).`);
     }
     update({ message: 'Consultando información del vídeo…', progress: 0.5 });
-    const meta = await runProcess(tools.ytDlp!, ['--dump-single-json', '--no-playlist', '--no-warnings', '--', job.url], {
-      signal,
-      timeoutMs: 90_000,
-    });
-    if (meta.code !== 0) {
-      throw new UserFacingError('No se pudo leer la información del vídeo. Comprueba que la URL es pública y accesible.', meta.stderr);
+    const readMeta = (extra: string[]) =>
+      runProcess(tools.ytDlp!, ['--dump-single-json', '--no-playlist', '--no-warnings', ...extra, '--', job.url], {
+        signal,
+        timeoutMs: 90_000,
+      });
+    let clientArgs: string[] = [];
+    let meta = await readMeta(clientArgs);
+    if (meta.code !== 0 && isBotCheck(meta.stderr)) {
+      log.warn(`[${job.id}] YouTube pidió verificación anti-bot; reintentando con cliente alternativo`);
+      update({ message: 'YouTube pidió verificación; reintentando con un método alternativo…' });
+      clientArgs = FALLBACK_CLIENT_ARGS;
+      meta = await readMeta(clientArgs);
     }
+    if (meta.code !== 0) throw new UserFacingError(friendlyYtDlpError(meta.stderr), meta.stderr);
     let info: { title?: string; duration?: number; is_live?: boolean; availability?: string; filesize_approx?: number; filesize?: number };
     try {
       info = JSON.parse(meta.stdout);
@@ -99,6 +107,7 @@ export function createPipeline(ctx: PipelineContext): JobRunner {
         `${s.maxDownloadMB}M`,
         '--ffmpeg-location',
         path.dirname(tools.ffmpeg!),
+        ...clientArgs,
         '-o',
         path.join(dir, 'source.%(ext)s'),
         '--',
@@ -113,7 +122,8 @@ export function createPipeline(ctx: PipelineContext): JobRunner {
         },
       },
     );
-    if (dl.code !== 0) throw new UserFacingError('La descarga falló. Revisa la URL o tu conexión.', dl.stderr);
+    if (dl.code !== 0) throw new UserFacingError(`La descarga falló. ${friendlyYtDlpError(dl.stderr)}`, dl.stderr);
+    if (clientArgs.length) log.warn(`[${job.id}] descargado con cliente alternativo (la calidad puede ser menor, p. ej. 360p)`);
     const source = fs.readdirSync(dir).find((f) => /^source\.(mp4|mkv|webm|mov)$/i.test(f));
     if (!source) throw new UserFacingError('No se encontró el vídeo descargado (puede haber superado el tamaño máximo).');
     const sourcePath = path.join(dir, source);
