@@ -14,12 +14,14 @@ export function HomePage(props: { jobs: Job[]; diag: Diagnostics | null; onCreat
   const [allowDownload, setAllowDownload] = useState(false);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
-  const [probe, setProbe] = useState<UrlProbe | null>(null);
+  // Cada resultado queda ligado a la URL consultada: una respuesta tardía de otra URL se ignora.
+  const [probeResult, setProbeResult] = useState<(UrlProbe & { url: string }) | null>(null);
+  const probe = probeResult && probeResult.url === url.trim() ? probeResult : null;
   const [probing, setProbing] = useState(false);
   const [longOk, setLongOk] = useState(false);
 
   useEffect(() => {
-    setProbe(null);
+    setProbeResult(null);
     setLongOk(false);
   }, [url]);
 
@@ -55,7 +57,9 @@ export function HomePage(props: { jobs: Job[]; diag: Diagnostics | null; onCreat
     setError('');
     setProbing(true);
     try {
-      setProbe(await api().probeUrl(url.trim()));
+      const asked = url.trim();
+      const r = await api().probeUrl(asked);
+      setProbeResult({ ...r, url: asked });
     } catch (e) {
       setError(errMsg(e));
     } finally {

@@ -184,9 +184,13 @@ export function isGpuFailure(output: string): boolean {
   );
 }
 
-/** El CLI de openai-whisper captura la excepción, imprime «Skipping <audio> due to …» y sale con código 0. */
+/**
+ * El CLI de openai-whisper captura la excepción, imprime «Skipping <audio> due to <Error>: …» en su propia
+ * línea y sale con código 0. Se exige ese formato (inicio de línea + nombre de excepción) para no confundirlo
+ * con texto transcrito como «Skipping breakfast due to…», que va tras «[mm:ss --> mm:ss]».
+ */
 export function whisperSkipped(output: string): string | null {
-  const m = output.match(/Skipping .+? due to ([^\r\n]{0,300})/);
+  const m = output.match(/^Skipping \S.*? due to ([A-Za-z_][\w.]*(?:Error|Exception)\b[^\r\n]{0,300})$/m);
   return m ? m[1] : null;
 }
 

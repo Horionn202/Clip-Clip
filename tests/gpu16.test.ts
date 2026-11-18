@@ -76,3 +76,11 @@ describe('duración y estimaciones', () => {
     expect(estimateSpeed(plan, [failed]).measured).toBe(false);
   });
 });
+
+describe('revisión Codex: «Skipping» sólo como línea de diagnóstico', () => {
+  it('no confunde texto transcrito con el diagnóstico del CLI', () => {
+    expect(whisperSkipped('[00:01.000 --> 00:04.000]  Skipping breakfast due to a busy schedule')).toBeNull();
+    expect(whisperSkipped('Skipping breakfast due to a busy schedule')).toBeNull();
+    expect(whisperSkipped('Skipping C:\a b\audio.wav due to RuntimeError: CUDA out of memory')).toMatch(/^RuntimeError/);
+  });
+});
