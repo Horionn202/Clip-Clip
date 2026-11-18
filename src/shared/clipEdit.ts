@@ -1,5 +1,5 @@
 // Edición individual de un clip con validación (rango, duración del preset, solapes, facecam). Puro.
-import type { Clip, ClipPatch, DurationPreset } from './types';
+import type { Clip, ClipPatch, DurationPreset, RenderedState } from './types';
 import { NEEDS_CAM } from './layouts';
 import { UserFacingError, overlaps, presetRange } from './validation';
 
@@ -47,8 +47,21 @@ export function applyClipPatch(clipId: string, patch: ClipPatch, ctx: EditContex
     throw new UserFacingError('Este layout necesita la posición de la facecam: ajústala antes de aplicarlo.');
   }
   // El hook no está en el vídeo (los subtítulos salen de la transcripción): sólo cambian datos.
-  next.dirty = cur.dirty || needsRender;
+  // Con el estado renderizado conocido, «pendiente» = difiere del MP4 actual (deshacer los cambios lo limpia).
+  next.dirty = cur.rendered && cur.file ? differsFromRendered(next, cur.rendered) : cur.dirty || needsRender;
   return next;
+}
+
+/** Instantánea de lo que se renderiza (se guarda al terminar cada render). */
+export function renderedState(c: Clip): RenderedState {
+  return { start: c.start, end: c.end, layout: c.layout ?? 'gameplay_full', camRect: c.camRect };
+}
+
+export function differsFromRendered(c: Clip, r: RenderedState): boolean {
+  const layout = c.layout ?? 'gameplay_full';
+  if (c.start !== r.start || c.end !== r.end || layout !== r.layout) return true;
+  // La facecam sólo importa si el layout la usa.
+  return NEEDS_CAM.includes(layout) && JSON.stringify(c.camRect ?? null) !== JSON.stringify(r.camRect ?? null);
 }
 
 /** Recuento real de clips renderizados y vigentes (sin cambios pendientes). */

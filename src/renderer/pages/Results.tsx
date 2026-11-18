@@ -19,7 +19,19 @@ function CamEditor({ job, clip, value, onChange }: { job: Job; clip: Clip; value
   const pct = (n: number) => Math.round(n * 100);
   return (
     <div className="cam-editor">
-      <div className="cam-frame">
+      {/* El marco usa el aspecto real del origen y la imagen entera (sin recortes), así las coordenadas coinciden con el render. */}
+      <div
+        className="cam-frame"
+        style={
+          job.sourceVideo
+            ? {
+                aspectRatio: `${job.sourceVideo.width} / ${job.sourceVideo.height}`,
+                // Vídeos verticales: se limita el ancho para no pasar de 420 px de alto sin deformar.
+                width: `min(100%, calc(420px * ${job.sourceVideo.width} / ${job.sourceVideo.height}))`,
+              }
+            : { aspectRatio: '16 / 9' }
+        }
+      >
         {clip.thumb ? <img src={`clip://frame/${job.id}/${clip.thumb}`} alt="Fotograma del clip" /> : <div className="video-ph">Sin fotograma</div>}
         <div
           className="cam-box"

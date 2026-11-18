@@ -12,7 +12,7 @@ import { log } from './logger';
 import { runDiagnostics, type ResolvedTools } from './deps';
 import { benchmarkModel, listModels, pullModel, unloadModel } from './ollama';
 import { renderClip, renderPreview, type RenderEnv } from './clipRender';
-import { applyClipPatch } from '../shared/clipEdit';
+import { applyClipPatch, renderedState } from '../shared/clipEdit';
 import { NEEDS_CAM } from '../shared/layouts';
 import { parseWhisperJson, type Word } from './media';
 import { event } from './logger';
@@ -281,6 +281,10 @@ export function registerIpc(ctx: IpcContext): void {
     // Mientras se re-renderiza un clip del trabajo no se aceptan cambios (evita perder el resultado del render).
     if (rerendering.has(job.id)) throw new UserFacingError('Se está volviendo a renderizar un clip de este trabajo; espera a que termine.');
     const next = applyClipPatch(id, p, { clips: job.clips, preset: job.preset, sourceDuration: job.sourceDuration ?? 0 });
+    // Un cambio que exige re-render sólo se guarda si se puede renderizar (vídeo original, transcripción…);
+    // así nunca queda un clip marcado como pendiente sin forma de resolverlo. Los cambios de título/hook siempre se permiten.
+    const prev = job.clips.find((c) => c.id === id);
+    if (next.dirty && !prev?.dirty) renderEnvFor(ctx, job);
     job.clips = job.clips.map((c) => (c.id === id ? next : c));
     ctx.jobs.put(job);
     emitJob(job);
@@ -303,6 +307,7 @@ export function registerIpc(ctx: IpcContext): void {
       if (!target) throw new UserFacingError('El clip ya no existe.');
       target.file = file;
       target.dirty = false;
+      target.rendered = renderedState({ ...clip });
       target.exportedPath = undefined; // la exportación anterior ya no corresponde al clip actual
       ctx.jobs.put(current);
       emitJob(current);

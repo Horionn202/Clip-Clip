@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { applyClipPatch, readyCount } from '../src/shared/clipEdit';
+import { applyClipPatch, differsFromRendered, readyCount, renderedState } from '../src/shared/clipEdit';
 import { clipPatchSchema, normRectSchema, previewRangeSchema } from '../src/main/ipcSchemas';
 import type { Clip } from '../src/shared/types';
 
@@ -73,5 +73,20 @@ describe('revisión Codex: vista previa con el rango en edición', () => {
   it('el rango en edición pasa por la misma validación que al guardar', () => {
     expect(applyClipPatch('aaaaaaaa-1', { start: 300, end: 330 }, ctx)).toMatchObject({ start: 300, end: 330 });
     expect(() => applyClipPatch('aaaaaaaa-1', { start: 95, end: 125 }, ctx)).toThrow(/solapa/);
+  });
+});
+
+describe('revisión Codex: pendiente = distinto del MP4 renderizado', () => {
+  const rendered = mk('aaaaaaaa-1', 1, 10, { layout: 'gameplay_full', rendered: { start: 10, end: 40, layout: 'gameplay_full' } });
+  const c2 = { clips: [rendered, mk('bbbbbbbb-2', 2, 100)], preset: 30 as const, sourceDuration: 600 };
+  it('deshacer un cambio de rango vuelve a dejar el clip listo', () => {
+    const moved = applyClipPatch('aaaaaaaa-1', { start: 12, end: 42 }, c2);
+    expect(moved.dirty).toBe(true);
+    const back = applyClipPatch('aaaaaaaa-1', { start: 10, end: 40 }, { ...c2, clips: [moved, c2.clips[1]] });
+    expect(back.dirty).toBe(false);
+  });
+  it('mover la facecam sólo cuenta si el layout la usa', () => {
+    expect(differsFromRendered({ ...rendered, camRect: { x: 0.1, y: 0.1, w: 0.2, h: 0.2 } }, rendered.rendered!)).toBe(false);
+    expect(renderedState({ ...rendered, layout: undefined })).toMatchObject({ layout: 'gameplay_full' });
   });
 });

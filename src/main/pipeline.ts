@@ -17,6 +17,7 @@ import { analyzeClips } from './analysis';
 import { renderClip, renderThumb, type RenderEnv } from './clipRender';
 import { frameEdgeAnalyzer, sampleFrames } from './visual';
 import { decideLayout } from '../shared/layouts';
+import { renderedState } from '../shared/clipEdit';
 import { listFiles, locateTranscript, sanitizeArgs, tailLines } from './transcriptOutput';
 import {
   availability,
@@ -328,6 +329,7 @@ export function createPipeline(ctx: PipelineContext): JobRunner {
         update({ message: `Renderizando clip ${i + 1} de ${clips.length}…` });
         clip.file = await renderClip(clip, env, (fr) => update({ progress: 0.1 + ((i + fr) / clips.length) * 0.9 }));
         clip.dirty = false;
+        clip.rendered = renderedState(clip);
         metrics.renderMsPerClip.push(Date.now() - tc);
         update({ clips: [...clips], metrics: { ...metrics } });
       }

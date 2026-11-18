@@ -59,6 +59,15 @@ export interface Clip {
   thumb?: string;
   /** Hay cambios sin renderizar (título, rango, hook o layout). */
   dirty?: boolean;
+  /** Parámetros con los que se renderizó el MP4 actual (para saber si hay cambios pendientes de verdad). */
+  rendered?: RenderedState;
+}
+
+export interface RenderedState {
+  start: number;
+  end: number;
+  layout: LayoutId;
+  camRect?: NormRect;
 }
 
 export interface ClipPatch {
