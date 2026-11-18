@@ -42,6 +42,27 @@ export function fitAspect(r: PxRect, aspect: number, srcW: number, srcH: number)
   return { x: evenPos(x), y: evenPos(y), w: even(w), h: even(h) };
 }
 
+/** true si el recorte ampliado contiene entera la selección de la facecam. */
+export function containsSelection(c: PxRect, sel: PxRect): boolean {
+  return c.x <= sel.x + 1 && c.y <= sel.y + 1 && c.x + c.w >= sel.x + sel.w - 1 && c.y + c.h >= sel.y + sel.h - 1;
+}
+
+/**
+ * Cadena de filtros de la facecam a tw×th. Normalmente amplía la selección al aspecto de destino; si esa
+ * ampliación no cabe en el fotograma (p. ej. una selección muy alta), conserva la selección entera y la
+ * rellena con bandas en vez de recortar parte de la cámara.
+ */
+export function camChain(sel: PxRect, tw: number, th: number, srcW: number, srcH: number): string {
+  const c = fitAspect(sel, tw / th, srcW, srcH);
+  if (containsSelection(c, sel)) return `crop=${c.w}:${c.h}:${c.x}:${c.y},scale=${tw}:${th}:flags=lanczos,setsar=1`;
+  const s = { x: evenPos(sel.x), y: evenPos(sel.y), w: even(Math.min(sel.w, srcW - evenPos(sel.x))), h: even(Math.min(sel.h, srcH - evenPos(sel.y))) };
+  return (
+    `crop=${s.w}:${s.h}:${s.x}:${s.y},` +
+    `scale=${tw}:${th}:force_original_aspect_ratio=decrease:force_divisible_by=2:flags=lanczos,` +
+    `pad=${tw}:${th}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1`
+  );
+}
+
 export function toPx(r: NormRect, srcW: number, srcH: number): PxRect {
   return { x: r.x * srcW, y: r.y * srcH, w: r.w * srcW, h: r.h * srcH };
 }
@@ -102,22 +123,20 @@ export function layoutFilter(i: LayoutInput): string {
     case 'game_top_cam_bottom':
     case 'cam_top_game_bottom': {
       const g = gameplayCrop(OUT_W / GAME_H, srcW, srcH, i.offsetX, camPx);
-      const c = fitAspect(camPx!, OUT_W / CAM_H, srcW, srcH);
       const top = i.layout === 'game_top_cam_bottom' ? '[g][c]' : '[c][g]';
       return (
         `[0:v]split=2[gsrc][csrc];` +
         `[gsrc]${crop(g)},scale=${OUT_W}:${GAME_H}:flags=lanczos,setsar=1[g];` +
-        `[csrc]${crop(c)},scale=${OUT_W}:${CAM_H}:flags=lanczos,setsar=1[c];` +
+        `[csrc]${camChain(camPx!, OUT_W, CAM_H, srcW, srcH)}[c];` +
         `${top}vstack=inputs=2[v]`
       );
     }
     case 'game_cam_float': {
       const g = gameplayCrop(OUT_W / OUT_H, srcW, srcH, i.offsetX, camPx);
-      const c = fitAspect(camPx!, 4 / 3, srcW, srcH);
       return (
         `[0:v]split=2[gsrc][csrc];` +
         `[gsrc]${crop(g)},scale=${OUT_W}:${OUT_H}:flags=lanczos,setsar=1[base];` +
-        `[csrc]${crop(c)},scale=432:324:flags=lanczos,setsar=1[cam];` +
+        `[csrc]${camChain(camPx!, 432, 324, srcW, srcH)}[cam];` +
         `[base][cam]overlay=W-w-40:140[v]`
       );
     }

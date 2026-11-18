@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { decideLayout, validRect, AUTO_CONFIDENCE, type VisualResult } from '../src/shared/layouts';
 import { classify, frameEdgeAnalyzer, ANALYSIS_W, ANALYSIS_H, type GrayFrame } from '../src/main/visual';
-import { CAM_H, GAME_H, OUT_H, fitAspect, gameplayCrop, layoutFilter, layoutRenderArgs } from '../src/main/layoutRender';
+import { CAM_H, GAME_H, OUT_H, camChain, containsSelection, fitAspect, gameplayCrop, layoutFilter, layoutRenderArgs } from '../src/main/layoutRender';
 
 // Generador determinista (sin Math.random) para fixtures reproducibles.
 function rng(seed: number) {
@@ -121,5 +121,20 @@ describe('LayoutStrategy: recortes y filtergraph', () => {
     expect(a).toContain('[0:v]null[v];[v]ass=01.ass[vout]');
     expect(a).toContain('0:a?');
     expect(() => layoutRenderArgs({ source: 's', start: 0, end: 1, filter: '', assFile: "x';.ass", output: 'o' })).toThrow();
+  });
+});
+
+describe('revisión Codex: facecam alta que no cabe al ampliar', () => {
+  it('conserva la selección entera y la rellena en vez de recortarla', () => {
+    // Ejemplo de la revisión: origen 1080×1920, selección 500×800 en (100, 500), destino 1080×704.
+    const chain = camChain({ x: 100, y: 500, w: 500, h: 800 }, 1080, CAM_H, 1080, 1920);
+    expect(chain).toContain('crop=500:800:100:500');
+    expect(chain).toContain('pad=1080:704');
+    expect(containsSelection(fitAspect({ x: 100, y: 500, w: 500, h: 800 }, 1080 / CAM_H, 1080, 1920), { x: 100, y: 500, w: 500, h: 800 })).toBe(false);
+  });
+  it('caso normal: amplía al aspecto sin bandas', () => {
+    const chain = camChain({ x: 1380, y: 670, w: 500, h: 360 }, 1080, CAM_H, 1920, 1080);
+    expect(chain).not.toContain('pad=');
+    expect(chain).toMatch(/^crop=\d+:\d+:\d+:\d+,scale=1080:704/);
   });
 });
