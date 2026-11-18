@@ -41,6 +41,11 @@ export function AiModelPanel(props: {
   const refresh = () => void api().listOllamaModels().then(setInstalled);
   useEffect(() => {
     refresh();
+    // Los benchmarks los guarda el proceso principal: se leen al montar para no depender de ajustes antiguos.
+    void api()
+      .getSettings()
+      .then((st) => setBench(st.benchmarks ?? {}))
+      .catch(() => undefined);
     return api().onPullProgress((p) => {
       setPull(p);
       if (p.done) {
