@@ -95,7 +95,8 @@ export function layoutFilter(i: LayoutInput): string {
       return (
         `[0:v]split=2[bgsrc][fgsrc];` +
         `[bgsrc]scale=${OUT_W}:${OUT_H}:force_original_aspect_ratio=increase,crop=${OUT_W}:${OUT_H},boxblur=20:2,setsar=1[bg];` +
-        `[fgsrc]scale=${OUT_W}:-2:flags=lanczos,setsar=1[fg];` +
+        // Cabe entero en 1080×1920 en ambos ejes (vídeos anchos o más estrechos que 9:16), con dimensiones pares.
+        `[fgsrc]scale=${OUT_W}:${OUT_H}:force_original_aspect_ratio=decrease:force_divisible_by=2:flags=lanczos,setsar=1[fg];` +
         `[bg][fg]overlay=(W-w)/2:(H-h)/2[v]`
       );
     case 'game_top_cam_bottom':

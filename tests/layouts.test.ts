@@ -111,7 +111,7 @@ describe('LayoutStrategy: recortes y filtergraph', () => {
   it('sin facecam: el vídeo entero sobre fondo difuminado (no se oculta contenido)', () => {
     const f = layoutFilter({ layout: 'no_facecam', srcW: W, srcH: H, offsetX: 0 });
     expect(f).toContain('boxblur');
-    expect(f).toContain('scale=1080:-2');
+    expect(f).toContain('scale=1080:1920:force_original_aspect_ratio=decrease');
   });
   it('un layout con facecam sin rectángulo falla en vez de inventar una posición', () => {
     expect(() => layoutFilter({ layout: 'game_cam_float', srcW: W, srcH: H, offsetX: 0 })).toThrow();
