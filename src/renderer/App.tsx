@@ -74,7 +74,7 @@ export function App() {
         {page === 'jobs' && <JobsPage jobs={jobs} onOpen={openResults} onDeleted={(id) => setJobs((p) => p.filter((j) => j.id !== id))} />}
         {page === 'results' && <ResultsPage jobs={jobs} selected={selected} onSelect={setSelected} />}
         {page === 'settings' && settings && (
-          <SettingsPage settings={settings} onChange={setSettings} diag={diag} refreshDiag={refreshDiag} />
+          <SettingsPage settings={settings} onChange={setSettings} diag={diag} refreshDiag={refreshDiag} jobs={jobs} />
         )}
         {page === 'policy' && <PolicyPage />}
       </main>

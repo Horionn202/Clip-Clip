@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react';
-import { OLLAMA_MODEL_OPTIONS, WHISPER_MODEL_OPTIONS, type Diagnostics, type PullProgress, type Settings } from '../../shared/types';
+import { OLLAMA_MODEL_OPTIONS, WHISPER_MODEL_OPTIONS, type Diagnostics, type Job, type PullProgress, type Settings } from '../../shared/types';
+import { GpuPanel, LastRunPanel } from './Performance';
 import { api, errMsg } from '../api';
 
-export function SettingsPage(props: { settings: Settings; onChange: (s: Settings) => void; diag: Diagnostics | null; refreshDiag: () => Promise<void> }) {
+export function SettingsPage(props: { settings: Settings; onChange: (s: Settings) => void; diag: Diagnostics | null; refreshDiag: () => Promise<void>; jobs: Job[] }) {
   const s = props.settings;
   const [err, setErr] = useState('');
   const [checking, setChecking] = useState(false);
@@ -68,6 +69,12 @@ export function SettingsPage(props: { settings: Settings; onChange: (s: Settings
         )}
       </div>
 
+      <h2>GPU y motor de transcripción</h2>
+      <GpuPanel gpu={props.diag?.gpu} settings={s} patch={(p) => patch(p).then(props.refreshDiag)} />
+
+      <h2>Última ejecución</h2>
+      <LastRunPanel jobs={props.jobs} />
+
       <h2>Modelo de IA (Ollama)</h2>
       <p className="muted small">Los modelos se descargan una vez y quedan en tu equipo. No se incluyen en el instalador.</p>
       <table className="table">
@@ -116,8 +123,9 @@ export function SettingsPage(props: { settings: Settings; onChange: (s: Settings
 
       <h2>Transcripción (Whisper local)</h2>
       <label className="field">
-        <span>Modelo de Whisper (se descarga automáticamente la primera vez)</span>
-        <select value={s.whisperModel} onChange={(e) => patch({ whisperModel: e.target.value })}>
+        <span>Modelo de Whisper (sólo se descarga si lo confirmas al iniciar un trabajo)</span>
+        <small className="muted">Recomendado: CPU → «base» (equilibrio) o «small» (más preciso) · GPU CUDA → «turbo» (velocidad).</small>
+        <select value={s.whisperModel} onChange={(e) => patch({ whisperModel: e.target.value }).then(props.refreshDiag)}>
           {WHISPER_MODEL_OPTIONS.map((m) => (
             <option key={m.name} value={m.name}>{m.name} — {m.sizeLabel} — {m.note}</option>
           ))}
@@ -161,6 +169,7 @@ export function SettingsPage(props: { settings: Settings; onChange: (s: Settings
       <PathField label="ffprobe.exe" value={s.ffprobePath} onSave={(v) => patch({ ffprobePath: v }).then(props.refreshDiag)} />
       <PathField label="yt-dlp.exe" value={s.ytDlpPath} onSave={(v) => patch({ ytDlpPath: v }).then(props.refreshDiag)} />
       <PathField label="whisper.exe" value={s.whisperPath} onSave={(v) => patch({ whisperPath: v }).then(props.refreshDiag)} />
+      <PathField label="python.exe (del entorno de Whisper)" value={s.pythonPath} onSave={(v) => patch({ pythonPath: v }).then(props.refreshDiag)} />
     </section>
   );
 }

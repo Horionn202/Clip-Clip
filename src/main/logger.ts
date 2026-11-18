@@ -37,6 +37,27 @@ function write(level: string, msg: string, extra?: unknown): void {
   }
 }
 
+/** Sólo el dominio de una URL (nunca ruta, query ni tokens) para logs. */
+export function urlHost(u: string): string {
+  try {
+    return new URL(u).hostname;
+  } catch {
+    return 'url-invalida';
+  }
+}
+
+/** Evento estructurado JSONL en logs/events.jsonl (sin URL completa, cookies ni rutas de usuario). */
+export function event(type: string, data: Record<string, unknown>): void {
+  if (!logFile) return;
+  const file = path.join(path.dirname(logFile), 'events.jsonl');
+  try {
+    if (fs.existsSync(file) && fs.statSync(file).size > MAX_LOG_BYTES) fs.renameSync(file, file.replace(/\.jsonl$/, '.old.jsonl'));
+    fs.appendFileSync(file, redact(JSON.stringify({ ts: new Date().toISOString(), type, ...data })) + '\n');
+  } catch {
+    /* ignorar */
+  }
+}
+
 export const log = {
   info: (m: string, e?: unknown) => write('INFO', m, e),
   warn: (m: string, e?: unknown) => write('WARN', m, e),

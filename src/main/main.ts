@@ -7,7 +7,8 @@ import { initLogger, log } from './logger';
 import { JobStore, SettingsStore, defaultSettings } from './store';
 import { JobQueue } from './queue';
 import { createPipeline, jobDir } from './pipeline';
-import { resolveTools, type ResolvedTools } from './deps';
+import { probeGpu, resolveTools, type ResolvedTools } from './deps';
+import type { GpuInfo } from '../shared/types';
 import { emitJob, registerIpc } from './ipc';
 
 const DEV_URL = process.env.VITE_DEV_SERVER_URL; // sólo en `npm run dev`
@@ -27,15 +28,31 @@ const settings = new SettingsStore(paths.dataDir, defaultSettings(path.join(app.
 const jobs = new JobStore(paths.dataDir);
 jobs.recoverInterrupted();
 
-const bundledBin = app.isPackaged ? path.join(process.resourcesPath, 'bin') : path.join(app.getAppPath(), 'resources', 'bin');
+const resourcesDir = app.isPackaged ? process.resourcesPath : path.join(app.getAppPath(), 'resources');
+const bundledBin = path.join(resourcesDir, 'bin');
+const probeScript = path.join(resourcesDir, 'python', 'probe.py');
+const fasterScript = path.join(resourcesDir, 'python', 'fw_transcribe.py');
 let tools: ResolvedTools = resolveTools(settings.get(), bundledBin);
+
+// El diagnóstico de Python/Torch tarda unos segundos: se cachea y se refresca bajo demanda o al cambiar ajustes.
+let gpuCache: Promise<GpuInfo> | null = null;
+function gpuInfo(refresh = false): Promise<GpuInfo> {
+  if (!gpuCache || refresh) {
+    gpuCache = probeGpu(tools, settings.get(), probeScript, undefined, path.join(paths.dataDir, 'model-hashes.json')).catch((e) => {
+      gpuCache = null;
+      throw e;
+    });
+  }
+  return gpuCache;
+}
 
 const queue = new JobQueue({
   get: (id) => jobs.get(id),
   put: (j) => jobs.put(j),
   emit: emitJob,
   concurrency: () => settings.get().maxConcurrentJobs,
-  runner: createPipeline({ jobsDir: paths.jobsDir, settings: () => settings.get(), tools: () => tools }),
+  // Cada trabajo re-evalúa la GPU (por si se instaló Torch CUDA mientras la app estaba abierta).
+  runner: createPipeline({ jobsDir: paths.jobsDir, settings: () => settings.get(), tools: () => tools, gpuInfo: () => gpuInfo(true), fasterScript }),
   logError: (m, e) => log.error(m, e),
 });
 
@@ -107,8 +124,10 @@ app.whenReady().then(() => {
     jobs,
     queue,
     tools: () => tools,
+    gpuInfo,
     onSettingsChanged: () => {
       tools = resolveTools(settings.get(), bundledBin);
+      gpuCache = null;
     },
   });
   createWindow();

@@ -82,6 +82,9 @@ export function ResultsPage(props: { jobs: Job[]; selected: string | null; onSel
         </button>
         <button className="ghost" onClick={() => api().openExportFolder()}>Abrir carpeta de exportación</button>
       </div>
+      {job.resultSummary && (
+        <div className={`banner ${job.analysis && job.analysis.obtained < job.analysis.effectiveTarget ? 'warn' : 'info'}`}>{job.resultSummary}</div>
+      )}
       {msg && <div className={`banner ${msg.kind === 'error' ? 'error' : 'info'}`}>{msg.text}</div>}
       <div className="gallery">
         {job.clips.map((c) => (

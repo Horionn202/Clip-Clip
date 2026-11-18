@@ -16,15 +16,63 @@ En el primer inicio la app abre **Configuración → Diagnóstico**, comprueba c
 
 ### Modelos
 - **Ollama**: se elige y descarga desde Configuración (tamaño aproximado indicado: `llama3.2:3b` ≈ 2 GB, `gemma3:4b` ≈ 3,3 GB, `qwen2.5:7b` ≈ 4,7 GB, `llama3.1:8b` ≈ 4,9 GB) o cualquier modelo ya instalado. No está codificado: es un ajuste.
-- **Whisper**: `tiny` (75 MB) … `turbo` (1,6 GB). Se descarga automáticamente en la primera transcripción a `%USERPROFILE%\.cache\whisper`.
+- **Whisper**: `tiny` (75 MB), `base` (145 MB), `small` (465 MB), `medium` (1,5 GB), `large` (2,9 GB), `turbo` (1,6 GB). Recomendado: en CPU `base` (equilibrio) o `small` (más preciso); con GPU CUDA `turbo`. **Nunca se descarga sin tu confirmación**: si el modelo no está en caché, Inicio muestra la casilla «Permitir descargar el modelo» con su tamaño. Caché: `%USERPROFILE%\.cache\whisper` (openai-whisper) y `%USERPROFILE%\.cache\huggingface\hub` (faster-whisper).
 - Ningún modelo se incluye en el instalador.
 
 ## Uso
-1. **Inicio**: pega la URL, elige duración (15/30/45/60 s) y máximo de clips (1–20), confirma que tienes derechos y pulsa **Iniciar**.
-2. **Trabajos**: progreso por etapas (`queued → validating → downloading → extractingAudio → transcribing → analyzing → rendering → completed`), botón **Cancelar** e historial (`completed`, `cancelled`, `failed`).
-3. **Resultados**: previsualización, título editable, hook, timestamps, duración, **Exportar**, **Exportar todos**, **Abrir carpeta**.
+1. **Inicio**: pega la URL y pulsa **Comprobar vídeo** (muestra título y duración). Elige la duración de cada clip (15/30/45/60 s) y una **meta de clips** explícita: Rápido (5), Estándar (10), Máximo (hasta 20) o un valor 1–20. La app calcula el máximo sin solapes (`floor(duración / preset)`, tope 20) y la **meta efectiva** = mín(meta, 20, máximo). Confirma que tienes derechos y pulsa **Iniciar**.
+2. **Trabajos**: progreso por etapas (`queued → validating → downloading → extractingAudio → transcribing → analyzing → rendering → completed`) con indicador **CPU/GPU**, botón **Cancelar** e historial con meta, máximo factible, candidatos, descartes y resultado.
+3. **Resultados**: previsualización, título editable, hook, timestamps, duración, **Exportar**, **Exportar todos**, **Abrir carpeta**, y el resultado honesto `obtenidos/meta`.
+
+### «Hasta 20 clips», nunca «20 garantizados»
+- 20 clips de 30 s requieren al menos 600 s de vídeo; uno de 421,86 s admite como máximo 14 de 30 s.
+- La IA recibe la meta exacta («genera exactamente N»). Si devuelve menos válidos, se hacen hasta 3 rondas de relleno que sólo piden los que faltan, enviando los intervalos ya elegidos y sólo los tramos libres de la transcripción.
+- Cada candidato se valida: timestamps posibles, duración del preset, sin solapes, título/razón útiles (se descartan textos de plantilla como «¿Por qué funciona?»), voz suficiente. Un hook vacío o copiado del título se sustituye por la frase real con la que empieza el clip. La puntuación final combina una **puntuación local determinista** (densidad de habla, frases completas, énfasis, coincidencia del hook con lo dicho) con el score del modelo (si es válido).
+- Si no se alcanza la meta, el trabajo termina con, p. ej., `3/5 clips generados: no se encontraron más momentos distintos que cumplan los criterios`; nunca con un «Listo» genérico.
 
 La app no publica en redes sociales.
+
+## Aceleración por GPU (NVIDIA CUDA)
+
+**«GPU NVIDIA detectada» no es lo mismo que «CUDA habilitado»**. La app comprueba ambas cosas por separado en Configuración → *GPU y motor de transcripción*:
+
+| Dato | Cómo se obtiene |
+|---|---|
+| GPU NVIDIA, VRAM, driver | `nvidia-smi` |
+| Python / Torch / versión CUDA de Torch | `resources/python/probe.py` (ejecutado sin argumentos de usuario) |
+| CUDA realmente usable por Whisper | `torch.cuda.is_available()`; un Torch `+cpu` nunca cuenta como GPU |
+| CUDA en faster-whisper | `ctranslate2.get_cuda_device_count()` y tipos de cómputo `float16` |
+
+**Motores** (selección automática del mejor disponible, o fijo en Configuración):
+1. `faster-whisper · GPU` (CTranslate2): el más rápido y con menos VRAM; `float16`, o `int8_float16` si la VRAM va justa.
+2. `openai-whisper · GPU`: `--device cuda` con FP16 (sin `--fp16 False`); opción FP32 para GPUs con problemas de FP16.
+3. `openai-whisper · CPU`: siempre `--fp16 False`.
+
+Si el modelo elegido no cabe en la VRAM (aprox.: openai-whisper turbo ≈ 6 GB, large ≈ 10 GB) se usa uno menor con aviso. Si la GPU falla durante la transcripción (falta de memoria, cuDNN…) se reintenta con un modelo menor en GPU y después en CPU, siempre con modelos ya descargados o con tu permiso. Antes de transcribir en GPU se pide a Ollama que libere su modelo de la VRAM (`keep_alive: 0`).
+
+### Habilitar CUDA en Windows (pasos manuales)
+La app **no instala nada automáticamente**; muestra estos comandos con un botón «Copiar comandos». Con el Python del entorno de Whisper (PowerShell):
+
+```bash
+& "$env:LOCALAPPDATA\Programs\Python\Python314\python.exe" -m pip uninstall -y torch
+```
+
+```bash
+& "$env:LOCALAPPDATA\Programs\Python\Python314\python.exe" -m pip install torch --index-url https://download.pytorch.org/whl/cu126
+```
+
+- Verificado en el índice oficial de PyTorch (2026-11-18): hay ruedas `torch 2.14.1+cu126` para **Python 3.14** en Windows x64. CUDA 12.6 es compatible con GPUs Turing como la GTX 1660 SUPER y con drivers recientes. Descarga ≈ 2,5 GB.
+- Opcional, faster-whisper: `pip install -U faster-whisper` (ruedas de CTranslate2 4.9 para cp314). Según su documentación oficial, en GPU necesita **cuBLAS para CUDA 12 y cuDNN 9**; en Windows su instalación por pip sólo está documentada para Linux. La app intenta reutilizar las DLL que trae Torch CUDA; si CTranslate2 no detecta CUDA, se queda con openai-whisper en GPU.
+- Después pulsa **Volver a comprobar**: «CUDA habilitado para Whisper» debe decir **sí** y «Motor activo» debe mostrar **GPU**.
+
+### Cómo comprobar que se usa la GPU
+- Inicio muestra `Transcripción: GPU · …` (en verde) o `CPU` (en ámbar).
+- Durante la transcripción, el mensaje empieza por `[GPU]` o `[CPU]` y muestra % · audio procesado · tiempo transcurrido · velocidad (`2.5× tiempo real`) · tiempo restante (sólo cuando hay muestra suficiente). Se distingue «Descargando modelo» de «Iniciando modelo» y de la transcripción.
+- Configuración → **Última ejecución**: tiempo por fase, render por clip, total, motor, modelo y velocidad.
+- `nvidia-smi` en otra terminal debe mostrar un proceso `python.exe` usando memoria de la GPU.
+
+### Tiempos orientativos (no son garantías)
+Medido en este equipo (CPU de escritorio, sin CUDA): un audio de 630 s con `tiny` en CPU tardó 382 s (≈ 1,6× tiempo real); `small` en CPU es varias veces más lento (≈ 11 min para 7 min de vídeo). En GPU CUDA, openai-whisper y faster-whisper suelen ir muchas veces más rápido que en CPU, según el modelo y la tarjeta. El análisis con Ollama `llama3.2` (3B) tardó ≈ 12 s para 5 clips.
 
 ## Desarrollo
 
@@ -88,6 +136,7 @@ Todo vive en `app.getPath('userData')` = `%APPDATA%\ClipsVirales`:
 | `jobs\<id>\transcript.json` | Transcripción con marcas por palabra |
 | `jobs\<id>\clips\*.mp4` | Clips renderizados |
 | `logs\app.log` | Logs técnicos (rotan a 5 MB; tokens/cookies redactados) |
+| `logs\events.jsonl` | Eventos estructurados por trabajo (sólo dominio de la URL, métricas, rondas de análisis) |
 
 Los clips exportados se copian (sin sobrescribir) a la carpeta de exportación, por defecto `Vídeos\ClipsVirales`. Borrar un trabajo pide confirmación y nunca toca los clips exportados. Desinstalar no borra los datos.
 
@@ -106,7 +155,12 @@ Los clips exportados se copian (sin sobrescribir) a la carpeta de exportación, 
 | «Servicio Ollama» en rojo | Abre Ollama desde el menú Inicio o ejecuta `ollama serve`. |
 | Modelo no descargado | Descárgalo desde Configuración o elige uno de «Modelos ya instalados». |
 | Whisper no encontrado aunque esté instalado | Indica la ruta, p. ej. `%LOCALAPPDATA%\Programs\Python\Python3xx\Scripts\whisper.exe`. |
-| La transcripción es muy lenta | Usa `base` o `small`; con GPU NVIDIA, instala PyTorch con CUDA. |
+| La transcripción es muy lenta | Mira el indicador CPU/GPU. Si dice CPU y tienes NVIDIA, sigue «Habilitar CUDA en Windows». En CPU usa `base`. |
+| «GPU NVIDIA detectada» pero «CUDA habilitado: no» | Torch es la versión `+cpu`: reinstálalo desde el índice `cu126` (ver arriba). |
+| Falta de memoria en GPU | La app reintenta con un modelo menor y luego en CPU. Prueba `turbo` con faster-whisper o `small` con openai-whisper; cierra otras apps que usen la GPU. |
+| Resultados raros con FP16 (texto vacío o repetido) | Configuración → Precisión en GPU → FP32. |
+| «El modelo … no está descargado» | Marca «Permitir descargar el modelo» en Inicio o elige un modelo ya descargado. |
+| Menos clips que la meta | El resultado indica `obtenidos/meta` y el motivo; Configuración → Última ejecución muestra rondas y descartes. Prueba un modelo de Ollama mayor. |
 | La descarga falla | El vídeo puede ser privado, con restricción de edad o geobloqueado; actualiza yt-dlp (`winget upgrade yt-dlp.yt-dlp`). |
 | «La IA no propuso ningún clip válido» | Prueba otro preset u otro modelo (más grande). |
 | Detalle técnico | `%APPDATA%\ClipsVirales\logs\app.log` |

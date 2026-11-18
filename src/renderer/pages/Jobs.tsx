@@ -17,6 +17,25 @@ function StageBar({ job }: { job: Job }) {
   );
 }
 
+export function DeviceBadge({ job }: { job: Job }) {
+  const dev = job.metrics?.device ?? job.engine?.device;
+  if (!dev) return null;
+  return <span className={`badge dev-${dev}`}>{dev === 'cuda' ? 'GPU' : 'CPU'}</span>;
+}
+
+/** «obtenidos/meta»; parcial si quedó por debajo de la meta efectiva. */
+export function ResultBadge({ job }: { job: Job }) {
+  const a = job.analysis;
+  if (!a || job.status !== 'completed') return null;
+  const got = job.clips.filter((c) => c.file).length;
+  const partial = got < a.effectiveTarget;
+  return (
+    <span className={`badge ${partial ? 'partial' : 'completed'}`}>
+      {got}/{a.effectiveTarget} clips{partial ? ' · parcial' : ''}
+    </span>
+  );
+}
+
 export function JobsPage(props: { jobs: Job[]; onOpen: (id: string) => void; onDeleted: (id: string) => void }) {
   const [err, setErr] = useState('');
   const active = props.jobs.filter((j) => !TERMINAL_STATUSES.includes(j.status));
@@ -41,9 +60,15 @@ export function JobsPage(props: { jobs: Job[]; onOpen: (id: string) => void; onD
         <div className="card" key={j.id}>
           <div className="row">
             <div className="grow">
-              <div className="title">{j.sourceTitle || j.url}</div>
+              <div className="title">
+                <DeviceBadge job={j} /> {j.sourceTitle || j.url}
+              </div>
               <div className="muted small">
                 {STATUS_LABELS[j.status]} · {j.message}
+              </div>
+              <div className="muted small">
+                Meta: {j.maxClips} clips de {j.preset} s
+                {j.analysis && ` · máximo factible ${j.analysis.feasibleMax} · meta efectiva ${j.analysis.effectiveTarget}`}
               </div>
             </div>
             <button className="danger" onClick={() => act(() => api().cancelJob(j.id))}>
@@ -67,10 +92,15 @@ export function JobsPage(props: { jobs: Job[]; onOpen: (id: string) => void; onD
                 <span className={`badge ${j.status}`}>{STATUS_LABELS[j.status]}</span>
               </td>
               <td className="grow">
-                <div className="title">{j.sourceTitle || j.url}</div>
-                <div className="muted small">
-                  {new Date(j.createdAt).toLocaleString('es-ES')} · {j.preset} s · máx. {j.maxClips} · {j.clips.filter((c) => c.file).length} clips
+                <div className="title">
+                  <DeviceBadge job={j} /> <ResultBadge job={j} /> {j.sourceTitle || j.url}
                 </div>
+                <div className="muted small">
+                  {new Date(j.createdAt).toLocaleString('es-ES')} · {j.preset} s · meta {j.maxClips}
+                  {j.analysis && ` · factible ${j.analysis.feasibleMax} · ${j.analysis.candidates} candidatos, ${j.analysis.rejected} descartados`}
+                  {j.metrics?.totalMs !== undefined && ` · ${Math.round(j.metrics.totalMs / 1000)} s en total`}
+                </div>
+                {j.status === 'completed' && j.resultSummary && <div className="small">{j.resultSummary}</div>}
                 {j.status === 'failed' && j.error && <div className="error small">{j.error}</div>}
               </td>
               <td className="actions">

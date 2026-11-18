@@ -1,21 +1,44 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import type { Clip, Job, Settings } from '../shared/types';
-import { MAX_CLIPS } from '../shared/types';
-import { UserFacingError, assertClipInvariants, normalizeCandidates, parseModelResponse, safeFileName } from '../shared/validation';
+import type { Clip, EnginePlan, GpuInfo, Job, JobMetrics, MetricStage, Settings, TranscribeProgress } from '../shared/types';
+import { MAX_CLIPS, WHISPER_MODEL_OPTIONS } from '../shared/types';
+import { UserFacingError, assertClipInvariants, safeFileName } from '../shared/validation';
+import { resultSummary } from '../shared/selection';
 import { missingDepMessage, runDiagnostics, type ResolvedTools } from './deps';
 import { buildAss, centerCrop, parseWhisperJson, renderArgs, type Word } from './media';
-import { chatJson } from './ollama';
+import { chatJson, unloadModel } from './ollama';
 import { CancelledError, runProcess } from './proc';
-import { log } from './logger';
+import { event, log, urlHost } from './logger';
 import type { JobRunner } from './queue';
-import { FALLBACK_CLIENT_ARGS, friendlyYtDlpError, isBotCheck } from './ytdlp';
+import { friendlyYtDlpError } from './ytdlp';
+import { readSourceInfo } from './source';
+import { analyzeClips } from './analysis';
+import {
+  availability,
+  DownloadClock,
+  computeProgress,
+  fallbackPlans,
+  fasterArgs,
+  formatProgress,
+  isGpuFailure,
+  isModelCached,
+  isModelDownloadLine,
+  openaiArgs,
+  openaiCommand,
+  parseOpenaiSegmentEnd,
+  selectEngine,
+  type ProgressState,
+  type SelectOptions,
+} from './transcribe';
 
 export interface PipelineContext {
   jobsDir: string;
   settings: () => Settings;
   tools: () => ResolvedTools;
+  /** Diagnóstico GPU/CUDA (ejecuta probe.py). */
+  gpuInfo: () => Promise<GpuInfo>;
+  fasterScript: string;
 }
 
 export function jobDir(jobsDir: string, id: string): string {
@@ -35,222 +58,357 @@ function freeDiskMB(dir: string): number {
   }
 }
 
-const BLOCKED_AVAILABILITY = new Set(['premium_only', 'subscriber_only', 'needs_auth']);
+function modelSize(model: string): string {
+  return WHISPER_MODEL_OPTIONS.find((m) => m.name === model)?.sizeLabel ?? '';
+}
 
 export function createPipeline(ctx: PipelineContext): JobRunner {
   return async (job, signal, update) => {
     const s = ctx.settings();
     const dir = jobDir(ctx.jobsDir, job.id);
     fs.mkdirSync(path.join(dir, 'clips'), { recursive: true });
+    const t0 = Date.now();
+    const metrics: JobMetrics = { stagesMs: {}, renderMsPerClip: [], ollamaModel: s.ollamaModel };
+    let stageStart = Date.now();
+    let curStage: MetricStage | null = null;
+    const enter = (stage: MetricStage, message: string) => {
+      if (curStage) metrics.stagesMs[curStage] = Date.now() - stageStart;
+      curStage = stage;
+      stageStart = Date.now();
+      update({ status: stage, progress: 0, message, metrics: { ...metrics }, detail: undefined });
+    };
+    const flushMetrics = () => {
+      if (curStage) metrics.stagesMs[curStage] = Date.now() - stageStart;
+      metrics.totalMs = Date.now() - t0;
+      update({ metrics: { ...metrics } });
+    };
+    event('job_start', { job: job.id, host: urlHost(job.url), preset: job.preset, target: job.maxClips });
 
-    // 1. Validación
-    update({ status: 'validating', progress: 0, message: 'Comprobando dependencias…' });
-    const tools = ctx.tools();
-    const diag = await runDiagnostics(tools, s);
-    const missing = missingDepMessage(diag);
-    if (missing) throw new UserFacingError(missing);
-    check(signal);
-    if (freeDiskMB(dir) < s.minFreeDiskMB) {
-      throw new UserFacingError(`No hay espacio suficiente en disco (se requieren al menos ${s.minFreeDiskMB} MB libres).`);
-    }
-    update({ message: 'Consultando información del vídeo…', progress: 0.5 });
-    const readMeta = (extra: string[]) =>
-      runProcess(tools.ytDlp!, ['--dump-single-json', '--no-playlist', '--no-warnings', ...extra, '--', job.url], {
-        signal,
-        timeoutMs: 90_000,
-      });
-    let clientArgs: string[] = [];
-    let meta = await readMeta(clientArgs);
-    if (meta.code !== 0 && isBotCheck(meta.stderr)) {
-      log.warn(`[${job.id}] YouTube pidió verificación anti-bot; reintentando con cliente alternativo`);
-      update({ message: 'YouTube pidió verificación; reintentando con un método alternativo…' });
-      clientArgs = FALLBACK_CLIENT_ARGS;
-      meta = await readMeta(clientArgs);
-    }
-    if (meta.code !== 0) throw new UserFacingError(friendlyYtDlpError(meta.stderr), meta.stderr);
-    let info: { title?: string; duration?: number; is_live?: boolean; availability?: string; filesize_approx?: number; filesize?: number };
     try {
-      info = JSON.parse(meta.stdout);
-    } catch {
-      throw new UserFacingError('yt-dlp devolvió información no válida.');
-    }
-    if (info.is_live) throw new UserFacingError('No se admiten emisiones en directo.');
-    if (info.availability && BLOCKED_AVAILABILITY.has(info.availability)) {
-      throw new UserFacingError('El vídeo requiere inicio de sesión o suscripción; la app sólo procesa contenido público y autorizado.');
-    }
-    if (!info.duration || info.duration <= 0) throw new UserFacingError('No se pudo determinar la duración del vídeo.');
-    if (info.duration > s.maxSourceMinutes * 60) {
-      throw new UserFacingError(`El vídeo dura más de ${s.maxSourceMinutes} minutos (límite configurable en Configuración).`);
-    }
-    const approx = info.filesize ?? info.filesize_approx;
-    if (approx && approx / (1024 * 1024) > s.maxDownloadMB) {
-      throw new UserFacingError(`El vídeo supera el tamaño máximo de descarga (${s.maxDownloadMB} MB).`);
-    }
-    update({ sourceTitle: (info.title ?? '').slice(0, 200), sourceDuration: info.duration });
-    check(signal);
-
-    // 2. Descarga
-    update({ status: 'downloading', progress: 0, message: 'Descargando vídeo…' });
-    const dl = await runProcess(
-      tools.ytDlp!,
-      [
-        '--no-playlist',
-        '--newline',
-        '--no-warnings',
-        '--no-part',
-        '--restrict-filenames',
-        '-f',
-        'bv*[height<=1080][ext=mp4]+ba[ext=m4a]/bv*[height<=1080]+ba/b[height<=1080]/b',
-        '--merge-output-format',
-        'mp4',
-        '--max-filesize',
-        `${s.maxDownloadMB}M`,
-        '--ffmpeg-location',
-        path.dirname(tools.ffmpeg!),
-        ...clientArgs,
-        '-o',
-        path.join(dir, 'source.%(ext)s'),
-        '--',
-        job.url,
-      ],
-      {
-        signal,
-        timeoutMs: 3 * 60 * 60 * 1000,
-        onStdout: (l) => {
-          const m = l.match(/\[download\]\s+([\d.]+)%/);
-          if (m) update({ progress: Math.min(1, parseFloat(m[1]) / 100) });
-        },
-      },
-    );
-    if (dl.code !== 0) throw new UserFacingError(`La descarga falló. ${friendlyYtDlpError(dl.stderr)}`, dl.stderr);
-    if (clientArgs.length) log.warn(`[${job.id}] descargado con cliente alternativo (la calidad puede ser menor, p. ej. 360p)`);
-    const source = fs.readdirSync(dir).find((f) => /^source\.(mp4|mkv|webm|mov)$/i.test(f));
-    if (!source) throw new UserFacingError('No se encontró el vídeo descargado (puede haber superado el tamaño máximo).');
-    const sourcePath = path.join(dir, source);
-    check(signal);
-
-    // Metadatos reales del archivo
-    const probe = await runProcess(
-      tools.ffprobe!,
-      ['-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=width,height:format=duration', '-of', 'json', sourcePath],
-      { signal, timeoutMs: 60_000 },
-    );
-    const pj = JSON.parse(probe.stdout || '{}') as { streams?: { width: number; height: number }[]; format?: { duration?: string } };
-    const width = pj.streams?.[0]?.width ?? 0;
-    const height = pj.streams?.[0]?.height ?? 0;
-    const duration = parseFloat(pj.format?.duration ?? '') || info.duration;
-    if (!width || !height) throw new UserFacingError('El archivo descargado no contiene vídeo.');
-    update({ sourceDuration: duration });
-
-    // 3. Audio
-    update({ status: 'extractingAudio', progress: 0, message: 'Extrayendo audio…' });
-    const audioPath = path.join(dir, 'audio.wav');
-    const ea = await runProcess(tools.ffmpeg!, ['-hide_banner', '-y', '-i', sourcePath, '-vn', '-ac', '1', '-ar', '16000', audioPath], {
-      signal,
-      timeoutMs: 60 * 60 * 1000,
-    });
-    if (ea.code !== 0) throw new UserFacingError('No se pudo extraer el audio.', ea.stderr);
-    check(signal);
-
-    // 4. Transcripción
-    update({ status: 'transcribing', progress: 0, message: `Transcribiendo con Whisper (${s.whisperModel})… la primera vez descarga el modelo.` });
-    const wArgs = [audioPath, '--model', s.whisperModel, '--word_timestamps', 'True', '--output_format', 'json', '--output_dir', dir, '--fp16', 'False'];
-    if (s.whisperLanguage) wArgs.push('--language', s.whisperLanguage);
-    // Python retiene stdout cuando no es una consola: PYTHONUNBUFFERED hace que el progreso llegue en vivo.
-    const tStart = Date.now();
-    let tProgress = 0;
-    const heartbeat = setInterval(() => {
-      const mins = (Date.now() - tStart) / 60000;
-      let eta = '';
-      if (tProgress > 0.02) {
-        const rest = (mins / tProgress) * (1 - tProgress);
-        eta = ` · quedan ≈ ${Math.max(1, Math.round(rest))} min`;
-      }
-      update({
-        message: `Transcribiendo con Whisper (${s.whisperModel}) · ${Math.round(tProgress * 100)} % · ${Math.floor(mins)} min transcurridos${eta}`,
-      });
-    }, 5000);
-    let tr;
-    try {
-      tr = await runProcess(tools.whisper!, wArgs, {
-        signal,
-        timeoutMs: 6 * 60 * 60 * 1000,
-        env: { PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1', PYTHONUNBUFFERED: '1' },
-        onStdout: (l) => {
-          const m = l.match(/-->\s*(?:(\d+):)?(\d+):(\d+(?:\.\d+)?)\]/);
-          if (m) {
-            const t = (m[1] ? parseInt(m[1]) * 3600 : 0) + parseInt(m[2]) * 60 + parseFloat(m[3]);
-            tProgress = Math.min(1, t / duration);
-            update({ progress: tProgress });
-          }
-        },
-      });
-    } finally {
-      clearInterval(heartbeat);
-    }
-    if (tr.code !== 0) throw new UserFacingError('La transcripción local falló. Revisa la instalación de Whisper.', tr.stderr);
-    const tFile = path.join(dir, 'audio.json');
-    if (!fs.existsSync(tFile)) throw new UserFacingError('Whisper no generó la transcripción.');
-    const { words, segments } = parseWhisperJson(fs.readFileSync(tFile, 'utf8'));
-    fs.renameSync(tFile, path.join(dir, 'transcript.json'));
-    if (segments.length === 0) throw new UserFacingError('No se detectó voz en el vídeo; no es posible proponer clips.');
-    check(signal);
-
-    // 5–6. Análisis + normalización
-    update({ status: 'analyzing', progress: 0, message: `Analizando con ${s.ollamaModel}…` });
-    const candidates = await analyze(s, segments, job, duration, signal, (p) => update({ progress: p }));
-    const { clips: norm, warnings } = normalizeCandidates(candidates, {
-      preset: job.preset,
-      maxClips: Math.min(job.maxClips, MAX_CLIPS),
-      sourceDuration: duration,
-      wordBoundaries: words,
-    });
-    for (const w of warnings) log.warn(`[${job.id}] ${w}`);
-    if (norm.length === 0) {
-      throw new UserFacingError('La IA no propuso ningún clip válido para esta duración. Prueba otro preset u otro modelo.');
-    }
-    const clips: Clip[] = norm.map((c, i) => ({ id: randomUUID(), index: i + 1, ...c }));
-    update({ clips, message: `${clips.length} clips seleccionados` });
-    check(signal);
-
-    // 7. Render
-    assertClipInvariants(clips, { preset: job.preset, maxClips: job.maxClips, sourceDuration: duration });
-    update({ status: 'rendering', progress: 0, message: 'Renderizando clips…' });
-    const crop = centerCrop(s.cropOffsetX).compute(width, height);
-    const clipsDir = path.join(dir, 'clips');
-    for (const [i, clip] of clips.entries()) {
+      // 1. Validación
+      enter('validating', 'Comprobando dependencias…');
+      const tools = ctx.tools();
+      // El diagnóstico de Python/Torch decide qué motor hay (p. ej. faster-whisper sin whisper.exe).
+      const gpu = await ctx.gpuInfo();
+      const diag = await runDiagnostics(tools, s, undefined, gpu);
+      const missing = missingDepMessage(diag);
+      if (missing) throw new UserFacingError(missing);
       check(signal);
-      const base = `${String(clip.index).padStart(2, '0')}_${safeFileName(clip.title)}`;
-      const assName = `${String(clip.index).padStart(2, '0')}.ass`;
-      fs.writeFileSync(path.join(clipsDir, assName), buildAss(words as Word[], clip.start, clip.end, s.subtitleFontSize), 'utf8');
-      const out = `${base}.mp4`;
-      update({ message: `Renderizando clip ${i + 1} de ${clips.length}…` });
-      const total = clip.end - clip.start;
-      const r = await runProcess(
-        tools.ffmpeg!,
-        renderArgs({ source: sourcePath, start: clip.start, end: clip.end, crop, assFile: assName, output: out }),
+      if (freeDiskMB(dir) < s.minFreeDiskMB) {
+        throw new UserFacingError(`No hay espacio suficiente en disco (se requieren al menos ${s.minFreeDiskMB} MB libres).`);
+      }
+      update({ message: 'Consultando información del vídeo…', progress: 0.3 });
+      const info = await readSourceInfo(tools.ytDlp!, job.url, s, signal, () => {
+        log.warn(`[${job.id}] YouTube pidió verificación anti-bot; reintentando con cliente alternativo`);
+        update({ message: 'YouTube pidió verificación; reintentando con un método alternativo…' });
+      });
+      update({ sourceTitle: info.title, sourceDuration: info.duration, progress: 0.6, message: 'Comprobando motor de transcripción…' });
+
+      // Plan de transcripción (antes de descargar nada pesado).
+      const selOpts: SelectOptions = {
+        choice: s.transcriptionEngine,
+        model: s.whisperModel,
+        precision: s.whisperPrecision,
+        vramMB: gpu.vramMB,
+        avail: availability(gpu, !!tools.whisper),
+      };
+      const plan = selectEngine(selOpts);
+      if (!plan) throw new UserFacingError('No hay ningún motor de transcripción disponible. Revisa Configuración → Diagnóstico.');
+      if (!isModelCached(plan.engine, plan.model, gpu) && !job.allowModelDownload) {
+        throw new UserFacingError(
+          `El modelo de Whisper «${plan.model}» (${modelSize(plan.model)}) no está descargado. Marca «Permitir descargar el modelo» en Inicio o elige un modelo ya descargado en Configuración.`,
+        );
+      }
+      update({ engine: plan });
+      for (const w of plan.warnings) log.warn(`[${job.id}] ${w}`);
+      check(signal);
+
+      // 2. Descarga
+      enter('downloading', 'Descargando vídeo…');
+      const dl = await runProcess(
+        tools.ytDlp!,
+        [
+          '--no-playlist',
+          '--newline',
+          '--no-warnings',
+          '--no-part',
+          '--restrict-filenames',
+          '-f',
+          'bv*[height<=1080][ext=mp4]+ba[ext=m4a]/bv*[height<=1080]+ba/b[height<=1080]/b',
+          '--merge-output-format',
+          'mp4',
+          '--max-filesize',
+          `${s.maxDownloadMB}M`,
+          '--ffmpeg-location',
+          path.dirname(tools.ffmpeg!),
+          ...info.clientArgs,
+          '-o',
+          path.join(dir, 'source.%(ext)s'),
+          '--',
+          job.url,
+        ],
         {
-          cwd: clipsDir,
           signal,
-          timeoutMs: 60 * 60 * 1000,
+          timeoutMs: 3 * 60 * 60 * 1000,
           onStdout: (l) => {
-            const m = l.match(/^out_time_us=(\d+)/);
-            if (m) update({ progress: (i + Math.min(1, parseInt(m[1]) / 1e6 / total)) / clips.length });
+            const m = l.match(/\[download\]\s+([\d.]+)%/);
+            if (m) update({ progress: Math.min(1, parseFloat(m[1]) / 100) });
           },
         },
       );
-      if (r.code !== 0) throw new UserFacingError(`No se pudo renderizar el clip ${clip.index}.`, r.stderr);
-      clip.file = out;
-      update({ clips: [...clips] });
-    }
+      if (dl.code !== 0) throw new UserFacingError(`La descarga falló. ${friendlyYtDlpError(dl.stderr)}`, dl.stderr);
+      if (info.clientArgs.length) log.warn(`[${job.id}] descargado con cliente alternativo (la calidad puede ser menor, p. ej. 360p)`);
+      const source = fs.readdirSync(dir).find((f) => /^source\.(mp4|mkv|webm|mov)$/i.test(f));
+      if (!source) throw new UserFacingError('No se encontró el vídeo descargado (puede haber superado el tamaño máximo).');
+      const sourcePath = path.join(dir, source);
+      check(signal);
 
-    // 8. Limpieza configurada (sólo archivos creados por la app dentro de la carpeta del trabajo)
-    if (s.deleteTempAfterCompletion) {
-      safeUnlink(audioPath);
-      for (const f of fs.readdirSync(clipsDir)) if (f.endsWith('.ass')) safeUnlink(path.join(clipsDir, f));
+      const probe = await runProcess(
+        tools.ffprobe!,
+        ['-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=width,height:format=duration', '-of', 'json', sourcePath],
+        { signal, timeoutMs: 60_000 },
+      );
+      const pj = JSON.parse(probe.stdout || '{}') as { streams?: { width: number; height: number }[]; format?: { duration?: string } };
+      const width = pj.streams?.[0]?.width ?? 0;
+      const height = pj.streams?.[0]?.height ?? 0;
+      const duration = parseFloat(pj.format?.duration ?? '') || info.duration;
+      if (!width || !height) throw new UserFacingError('El archivo descargado no contiene vídeo.');
+      metrics.sourceDuration = duration;
+      update({ sourceDuration: duration });
+
+      // 3. Audio
+      enter('extractingAudio', 'Extrayendo audio…');
+      const audioPath = path.join(dir, 'audio.wav');
+      const ea = await runProcess(tools.ffmpeg!, ['-hide_banner', '-y', '-i', sourcePath, '-vn', '-ac', '1', '-ar', '16000', audioPath], {
+        signal,
+        timeoutMs: 60 * 60 * 1000,
+      });
+      if (ea.code !== 0) throw new UserFacingError('No se pudo extraer el audio.', ea.stderr);
+      check(signal);
+
+      // 4. Transcripción (con alternativa segura si la GPU falla)
+      if (plan.device === 'cuda' && (await unloadModel(s.ollamaHost, s.ollamaModel))) {
+        log.info(`[${job.id}] modelo de Ollama liberado de la VRAM antes de transcribir en GPU`);
+      }
+      enter('transcribing', `Transcribiendo con ${plan.device === 'cuda' ? 'GPU' : 'CPU'} (${plan.model})…`);
+      const attempts: EnginePlan[] = [plan, ...fallbackPlans(plan, selOpts)];
+      let usedPlan: EnginePlan | null = null;
+      let tFile = '';
+      let lastErr = '';
+      for (const p of attempts) {
+        if (p !== plan && !isModelCached(p.engine, p.model, gpu) && !job.allowModelDownload) continue;
+        if (p !== plan) {
+          log.warn(`[${job.id}] fallo en GPU; reintentando con ${p.engine} ${p.model}`);
+          event('transcribe_fallback', { job: job.id, from: plan.engine, to: p.engine, model: p.model });
+        }
+        update({ engine: p });
+        const r = await transcribe(ctx, tools, p, audioPath, dir, s.whisperLanguage, duration, !!job.allowModelDownload, !isModelCached(p.engine, p.model, gpu), signal, (d) =>
+          update({ detail: d, progress: d.audioTotalSec ? Math.min(1, d.audioDoneSec / d.audioTotalSec) : 0, message: formatProgress(d) }),
+          gpu.whisperInstalled,
+        );
+        if (r.ok) {
+          usedPlan = p;
+          tFile = r.outFile;
+          metrics.transcribeSpeed = r.speed;
+          if (r.downloadMs) metrics.modelDownloadMs = r.downloadMs;
+          break;
+        }
+        lastErr = r.stderr;
+        if (p.device !== 'cuda' || !isGpuFailure(r.stderr)) break;
+      }
+      if (!usedPlan) throw new UserFacingError('La transcripción local falló. Revisa Configuración → Diagnóstico.', lastErr);
+      metrics.engine = usedPlan.engine;
+      metrics.device = usedPlan.device;
+      metrics.whisperModel = usedPlan.model;
+      if (!fs.existsSync(tFile)) throw new UserFacingError('Whisper no generó la transcripción.');
+      const { words, segments } = parseWhisperJson(fs.readFileSync(tFile, 'utf8'));
+      fs.renameSync(tFile, path.join(dir, 'transcript.json'));
+      if (segments.length === 0) throw new UserFacingError('No se detectó voz en el vídeo; no es posible proponer clips.');
+      event('transcribed', { job: job.id, engine: usedPlan.engine, device: usedPlan.device, model: usedPlan.model, speed: metrics.transcribeSpeed, audioSec: Math.round(duration) });
+      check(signal);
+
+      // 5–6. Análisis por rondas + validación
+      enter('analyzing', `Analizando con ${s.ollamaModel}…`);
+      const { clips: chosen, report } = await analyzeClips({
+        segments,
+        words,
+        duration,
+        preset: job.preset,
+        userTarget: Math.min(job.maxClips, MAX_CLIPS),
+        chat: (system, user, maxItems) =>
+          chatJson(s.ollamaHost, s.ollamaModel, system, user, signal, { maxItems, numPredict: Math.min(4096, 300 + maxItems * 220) }),
+        checkCancelled: () => check(signal),
+        onProgress: (p, message) => update({ progress: p, message }),
+        log: (m, extra) => log.info(`[${job.id}] análisis: ${m}`, extra),
+      });
+      update({ analysis: report });
+      event('analysis', { job: job.id, ...report });
+      if (chosen.length === 0) {
+        throw new UserFacingError(
+          `0/${report.effectiveTarget} clips: la IA no propuso ningún momento que cumpla los criterios. Prueba otro preset u otro modelo de Ollama.`,
+        );
+      }
+      const clips: Clip[] = chosen.map((c, i) => ({
+        id: randomUUID(),
+        index: i + 1,
+        start: c.start,
+        end: c.end,
+        title: c.title,
+        hook: c.hook,
+        reason: c.reason,
+        score: c.score,
+      }));
+      update({ clips, message: `${clips.length}/${report.effectiveTarget} clips seleccionados` });
+      check(signal);
+
+      // 7. Render
+      assertClipInvariants(clips, { preset: job.preset, maxClips: job.maxClips, sourceDuration: duration });
+      enter('rendering', 'Renderizando clips…');
+      const crop = centerCrop(s.cropOffsetX).compute(width, height);
+      const clipsDir = path.join(dir, 'clips');
+      for (const [i, clip] of clips.entries()) {
+        check(signal);
+        const tc = Date.now();
+        const base = `${String(clip.index).padStart(2, '0')}_${safeFileName(clip.title)}`;
+        const assName = `${String(clip.index).padStart(2, '0')}.ass`;
+        fs.writeFileSync(path.join(clipsDir, assName), buildAss(words as Word[], clip.start, clip.end, s.subtitleFontSize), 'utf8');
+        const out = `${base}.mp4`;
+        update({ message: `Renderizando clip ${i + 1} de ${clips.length}…` });
+        const total = clip.end - clip.start;
+        const r = await runProcess(
+          tools.ffmpeg!,
+          renderArgs({ source: sourcePath, start: clip.start, end: clip.end, crop, assFile: assName, output: out }),
+          {
+            cwd: clipsDir,
+            signal,
+            timeoutMs: 60 * 60 * 1000,
+            onStdout: (l) => {
+              const m = l.match(/^out_time_us=(\d+)/);
+              if (m) update({ progress: (i + Math.min(1, parseInt(m[1]) / 1e6 / total)) / clips.length });
+            },
+          },
+        );
+        if (r.code !== 0) throw new UserFacingError(`No se pudo renderizar el clip ${clip.index}.`, r.stderr);
+        clip.file = out;
+        metrics.renderMsPerClip.push(Date.now() - tc);
+        update({ clips: [...clips], metrics: { ...metrics } });
+      }
+
+      // 8. Limpieza configurada (sólo archivos creados por la app dentro de la carpeta del trabajo)
+      if (s.deleteTempAfterCompletion) {
+        safeUnlink(audioPath);
+        for (const f of fs.readdirSync(clipsDir)) if (f.endsWith('.ass')) safeUnlink(path.join(clipsDir, f));
+      }
+      if (s.deleteSourceAfterCompletion) safeUnlink(sourcePath);
+
+      metrics.clipsFinal = clips.length;
+      flushMetrics();
+      const summary = resultSummary(clips.length, report.effectiveTarget, report.partialReason);
+      update({ resultSummary: summary, message: summary });
+      event('job_done', { job: job.id, summary, metrics });
+    } catch (e) {
+      flushMetrics();
+      event('job_end', { job: job.id, error: e instanceof Error ? e.name : 'error', message: e instanceof UserFacingError ? e.message : undefined, metrics });
+      throw e;
     }
-    if (s.deleteSourceAfterCompletion) safeUnlink(sourcePath);
   };
+}
+
+interface TranscribeResult {
+  ok: boolean;
+  stderr: string;
+  outFile: string;
+  speed?: number;
+  downloadMs?: number;
+}
+
+/** Ejecuta un plan de transcripción emitiendo progreso real por fases. */
+async function transcribe(
+  ctx: PipelineContext,
+  tools: ResolvedTools,
+  plan: EnginePlan,
+  audioPath: string,
+  dir: string,
+  language: string,
+  duration: number,
+  allowDownload: boolean,
+  needsDownload: boolean,
+  signal: AbortSignal,
+  onProgress: (p: TranscribeProgress) => void,
+  pythonHasWhisper: boolean,
+): Promise<TranscribeResult> {
+  const startedAt = Date.now();
+  const st: ProgressState = { phase: needsDownload ? 'downloadingModel' : 'loadingModel', audioDone: 0, firstSegmentAt: null };
+  // El fin de la descarga se marca con las propias barras de progreso, nunca con el primer segmento.
+  const dlClock = new DownloadClock(startedAt);
+  const onDownloadLine = (l: string) => {
+    if (!isModelDownloadLine(l) || st.phase === 'transcribing') return false;
+    dlClock.onDownloadLine(Date.now());
+    st.phase = 'downloadingModel';
+    return true;
+  };
+  const emit = () => onProgress(computeProgress(st, duration, startedAt, Date.now(), plan.device));
+  const onSegment = (end: number) => {
+    if (st.phase !== 'transcribing') {
+      st.phase = 'transcribing';
+      st.firstSegmentAt = Date.now();
+    }
+    st.audioDone = Math.min(duration, Math.max(st.audioDone, end));
+  };
+  const timer = setInterval(emit, 1000);
+  emit();
+  const env = { PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1', PYTHONUNBUFFERED: '1' };
+  try {
+    if (plan.engine === 'faster-whisper-cuda') {
+      if (!tools.python) return { ok: false, stderr: 'python no encontrado', outFile: '' };
+      const outFile = path.join(dir, 'audio.json');
+      const r = await runProcess(tools.python, fasterArgs(ctx.fasterScript, plan, audioPath, outFile, language, allowDownload), {
+        signal,
+        timeoutMs: 6 * 60 * 60 * 1000,
+        env,
+        onStdout: (l) => {
+          try {
+            const ev = JSON.parse(l) as { event?: string; end?: number };
+            if (ev.event === 'loaded') {
+              st.phase = 'loadingModel';
+            } else if (ev.event === 'segment' && typeof ev.end === 'number') onSegment(ev.end);
+          } catch {
+            /* línea no JSON */
+          }
+        },
+        onStderr: (l) => {
+          onDownloadLine(l);
+        },
+      });
+      return finish(r.code === 0, r.stderr, outFile);
+    }
+    const outFile = path.join(dir, 'audio.json');
+    // Se ejecuta en el mismo intérprete que se diagnosticó (python -m whisper); whisper.exe sólo como respaldo.
+    const cmd = openaiCommand(tools, pythonHasWhisper);
+    if (!cmd) return { ok: false, stderr: 'openai-whisper no encontrado', outFile: '' };
+    const r = await runProcess(cmd.exe, [...cmd.prefix, ...openaiArgs(plan, audioPath, dir, language)], {
+      signal,
+      timeoutMs: 6 * 60 * 60 * 1000,
+      env,
+      onStdout: (l) => {
+        const end = parseOpenaiSegmentEnd(l);
+        if (end !== null) onSegment(end);
+      },
+      onStderr: (l) => {
+        if (onDownloadLine(l)) return;
+        if (st.phase === 'downloadingModel' && /Detecting language|Detected language/i.test(l)) st.phase = 'loadingModel';
+      },
+    });
+    return finish(r.code === 0, r.stderr, outFile);
+  } finally {
+    clearInterval(timer);
+    emit();
+  }
+
+  function finish(ok: boolean, stderr: string, outFile: string): TranscribeResult {
+    const t = dlClock.timing(Date.now(), duration);
+    return { ok, stderr, outFile, speed: ok ? t.speed : undefined, downloadMs: t.downloadMs };
+  }
 }
 
 function safeUnlink(p: string): void {
@@ -259,59 +417,4 @@ function safeUnlink(p: string): void {
   } catch {
     /* ignorar */
   }
-}
-
-const SYSTEM_PROMPT = `Eres un editor experto en vídeos cortos virales (TikTok, Reels, Shorts).
-Recibirás una transcripción con marcas de tiempo en segundos. Elige los fragmentos más atractivos y autocontenidos.
-Responde SÓLO con JSON con esta forma exacta:
-{"clips":[{"start":12.3,"end":42.1,"title":"título corto y llamativo","hook":"frase gancho de apertura","reason":"por qué funciona","score":0-100}]}
-Reglas: start y end en segundos dentro de la transcripción; los clips no se solapan; empieza y termina en frases completas; títulos en el idioma del vídeo.`;
-
-async function analyze(
-  s: Settings,
-  segments: Word[],
-  job: Job,
-  duration: number,
-  signal: AbortSignal,
-  progress: (p: number) => void,
-): Promise<unknown[]> {
-  const lines = segments.map((g) => `[${g.start.toFixed(1)}-${g.end.toFixed(1)}] ${g.text.replace(/\s+/g, ' ')}`);
-  const chunks: string[] = [];
-  let cur = '';
-  for (const l of lines) {
-    if (cur.length + l.length > 12000 && cur) {
-      chunks.push(cur);
-      cur = '';
-    }
-    cur += l + '\n';
-  }
-  if (cur) chunks.push(cur);
-
-  const per = Math.min(MAX_CLIPS, Math.max(1, Math.ceil((job.maxClips * 1.5) / chunks.length)));
-  const all: unknown[] = [];
-  let failures = 0;
-  for (const [i, chunk] of chunks.entries()) {
-    check(signal);
-    const user = `Duración total del vídeo: ${duration.toFixed(1)} s. Cada clip debe durar unos ${job.preset} segundos (nunca más).
-Propón como máximo ${per} clips de este fragmento.
-
-TRANSCRIPCIÓN:
-${chunk}`;
-    let ok = false;
-    for (let attempt = 0; attempt < 2 && !ok; attempt++) {
-      const raw = await chatJson(s.ollamaHost, s.ollamaModel, SYSTEM_PROMPT, user, signal);
-      try {
-        all.push(...parseModelResponse(raw).slice(0, MAX_CLIPS));
-        ok = true;
-      } catch (e) {
-        log.warn(`[${job.id}] respuesta inválida de Ollama (intento ${attempt + 1})`, e instanceof UserFacingError ? e.technical : e);
-      }
-    }
-    if (!ok) failures++;
-    progress((i + 1) / chunks.length);
-  }
-  if (failures === chunks.length) {
-    throw new UserFacingError('El modelo de IA devolvió respuestas no válidas. Prueba con otro modelo en Configuración.');
-  }
-  return all;
 }

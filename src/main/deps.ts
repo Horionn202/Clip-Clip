@@ -1,10 +1,11 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import type { DepId, DepStatus, Diagnostics, Settings } from '../shared/types';
+import type { DepId, DepStatus, Diagnostics, GpuInfo, Settings } from '../shared/types';
 import { runProcess } from './proc';
 import { listModels } from './ollama';
+import { availability, isTorchCpuOnly, parseNvidiaSmi, pythonNextToWhisper, recommendation, selectEngine, type ProbeJson } from './transcribe';
 
-export type ToolName = 'ffmpeg' | 'ffprobe' | 'yt-dlp' | 'whisper' | 'ollama';
+export type ToolName = 'ffmpeg' | 'ffprobe' | 'yt-dlp' | 'whisper' | 'ollama' | 'python' | 'nvidia-smi';
 
 export interface ResolvedTools {
   ffmpeg: string | null;
@@ -12,6 +13,8 @@ export interface ResolvedTools {
   ytDlp: string | null;
   whisper: string | null;
   ollama: string | null;
+  python?: string | null;
+  nvidiaSmi?: string | null;
 }
 
 /** Busca un ejecutable: ruta configurada → resources/bin empaquetado → PATH → ubicaciones conocidas. */
@@ -33,17 +36,106 @@ export function findExecutable(name: ToolName, override: string, bundledDir: str
   if (process.platform === 'win32' && name === 'ollama' && env.LOCALAPPDATA) {
     candidates.push(path.join(env.LOCALAPPDATA, 'Programs', 'Ollama', 'ollama.exe'));
   }
-  return candidates.find(isFile) ?? null;
+  if (process.platform === 'win32' && name === 'nvidia-smi') {
+    candidates.push(path.join(env.SystemRoot ?? 'C:\\Windows', 'System32', 'nvidia-smi.exe'));
+  }
+  // El alias "python.exe" de Microsoft Store (WindowsApps) no es un Python real.
+  return candidates.find((c) => isFile(c) && !(name === 'python' && /WindowsApps/i.test(c))) ?? null;
 }
 
 export function resolveTools(s: Settings, bundledDir: string | null): ResolvedTools {
+  const whisper = findExecutable('whisper', s.whisperPath, bundledDir);
+  // Python del mismo entorno que whisper.exe (pip), o el configurado, o el del PATH.
+  let python = s.pythonPath ? findExecutable('python', s.pythonPath, null) : null;
+  if (!python && whisper) {
+    python = pythonNextToWhisper(whisper).find((p) => fs.existsSync(p)) ?? null;
+  }
+  if (!python && !s.pythonPath) python = findExecutable('python', '', null);
   return {
     ffmpeg: findExecutable('ffmpeg', s.ffmpegPath, bundledDir),
     ffprobe: findExecutable('ffprobe', s.ffprobePath, bundledDir),
     ytDlp: findExecutable('yt-dlp', s.ytDlpPath, bundledDir),
-    whisper: findExecutable('whisper', s.whisperPath, bundledDir),
+    whisper,
     ollama: findExecutable('ollama', '', null),
+    python,
+    nvidiaSmi: findExecutable('nvidia-smi', '', null),
   };
+}
+
+// ---- GPU / CUDA ----
+
+export interface GpuProbes {
+  nvidiaSmi: (exe: string) => Promise<string | null>;
+  pythonProbe: (python: string, script: string, memoFile?: string) => Promise<string | null>;
+}
+
+export const realGpuProbes: GpuProbes = {
+  async nvidiaSmi(exe) {
+    try {
+      const r = await runProcess(exe, ['--query-gpu=name,memory.total,driver_version', '--format=csv,noheader,nounits'], { timeoutMs: 15000 });
+      return r.code === 0 ? r.stdout : null;
+    } catch {
+      return null;
+    }
+  },
+  async pythonProbe(python, script, memoFile) {
+    try {
+      const r = await runProcess(python, memoFile ? [script, memoFile] : [script], { timeoutMs: 90000, env: { PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' } });
+      return r.code === 0 ? r.stdout.trim().split(/\r?\n/).pop() ?? null : null;
+    } catch {
+      return null;
+    }
+  },
+};
+
+/** Distingue «GPU NVIDIA detectada» de «Whisper puede usar CUDA de verdad». */
+export async function probeGpu(
+  tools: ResolvedTools,
+  s: Settings,
+  probeScript: string,
+  probes: GpuProbes = realGpuProbes,
+  /** Archivo de la app donde se memorizan los hashes verificados de los modelos. */
+  memoFile?: string,
+): Promise<GpuInfo> {
+  const smi = tools.nvidiaSmi ? parseNvidiaSmi((await probes.nvidiaSmi(tools.nvidiaSmi)) ?? '') : null;
+  let pj: ProbeJson = {};
+  let probeError: string | undefined;
+  if (tools.python) {
+    const raw = await probes.pythonProbe(tools.python, probeScript, memoFile);
+    try {
+      pj = raw ? (JSON.parse(raw) as ProbeJson) : {};
+      if (!raw) probeError = 'No se pudo ejecutar el diagnóstico de Python.';
+    } catch {
+      probeError = 'El diagnóstico de Python devolvió datos no válidos.';
+    }
+  } else {
+    probeError = 'No se encontró Python (necesario para Whisper).';
+  }
+  const base = {
+    nvidiaGpu: smi?.name ?? pj.cuda_device ?? null,
+    vramMB: pj.cuda_vram_mb ?? smi?.vramMB ?? null,
+    driver: smi?.driver ?? null,
+    python: pj.python ?? null,
+    pythonPath: tools.python ?? null,
+    torch: pj.torch ?? null,
+    torchCuda: pj.torch_cuda ?? null,
+    cudaAvailable: pj.cuda_available === true, // sólo si Torch lo confirma, nunca por la mera presencia de la GPU
+    torchCpuOnly: isTorchCpuOnly(pj),
+    whisperInstalled: pj.whisper === true,
+    fasterWhisper: pj.faster_whisper ?? null,
+    ctranslate2Cuda: (pj.ct2_cuda_devices ?? 0) > 0 && (pj.ct2_cuda_compute_types ?? []).includes('float16'),
+    cachedModels: { openai: pj.cache_openai ?? [], faster: pj.cache_faster ?? [] },
+    probeError,
+  };
+  const rec = recommendation(base);
+  const plan = selectEngine({
+    choice: s.transcriptionEngine,
+    model: s.whisperModel,
+    precision: s.whisperPrecision,
+    vramMB: base.vramMB,
+    avail: availability(base, !!tools.whisper),
+  });
+  return { ...base, plan, recommendation: rec.text, installCommands: rec.commands };
 }
 
 export const HELP: Record<DepId, string> = {
@@ -84,7 +176,13 @@ export const realProbes: DiagnosticProbes = {
   },
 };
 
-export async function runDiagnostics(tools: ResolvedTools, s: Settings, probes: DiagnosticProbes = realProbes): Promise<Diagnostics> {
+export async function runDiagnostics(
+  tools: ResolvedTools,
+  s: Settings,
+  probes: DiagnosticProbes = realProbes,
+  /** Si se pasa, la transcripción está lista cuando hay algún motor disponible (no sólo whisper.exe). */
+  gpu?: Pick<GpuInfo, 'plan'>,
+): Promise<Diagnostics> {
   const items: DepStatus[] = [];
   const check = async (id: DepId, label: string, exe: string | null, args: string[]) => {
     if (!exe) return items.push({ id, label, ok: false, detail: 'No encontrado', help: HELP[id] });
@@ -96,12 +194,20 @@ export async function runDiagnostics(tools: ResolvedTools, s: Settings, probes: 
     check('ffprobe', 'FFprobe', tools.ffprobe, ['-hide_banner', '-version']),
     check('ytDlp', 'yt-dlp', tools.ytDlp, ['--version']),
   ]);
-  // whisper --help es lento; basta con comprobar que existe el ejecutable
-  items.push(
-    tools.whisper
-      ? { id: 'whisper', label: 'Motor de transcripción (Whisper)', ok: true, detail: `${tools.whisper} (modelo ${s.whisperModel})` }
-      : { id: 'whisper', label: 'Motor de transcripción (Whisper)', ok: false, detail: 'No encontrado', help: HELP.whisper },
-  );
+  // Listo si hay un motor seleccionable (p. ej. faster-whisper vía Python sin el CLI de openai-whisper).
+  const label = 'Motor de transcripción (Whisper)';
+  if (gpu?.plan) {
+    items.push({ id: 'whisper', label, ok: true, detail: `${gpu.plan.engine} · ${gpu.plan.device.toUpperCase()} (modelo ${gpu.plan.model})` });
+  } else if (gpu) {
+    items.push({ id: 'whisper', label, ok: false, detail: 'Ningún motor disponible', help: HELP.whisper });
+  } else {
+    // sin diagnóstico de Python: basta con comprobar que existe el ejecutable (whisper --help es lento)
+    items.push(
+      tools.whisper
+        ? { id: 'whisper', label, ok: true, detail: `${tools.whisper} (modelo ${s.whisperModel})` }
+        : { id: 'whisper', label, ok: false, detail: 'No encontrado', help: HELP.whisper },
+    );
+  }
   items.push(
     tools.ollama
       ? { id: 'ollamaInstalled', label: 'Ollama instalado', ok: true, detail: tools.ollama }
