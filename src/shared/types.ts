@@ -193,6 +193,8 @@ export interface Job {
   resultSummary?: string;
   /** Subestado de la fase actual (p. ej. 'downloadingModel', 'loadingModel'). */
   detail?: TranscribeProgress;
+  /** Momento en que empezó la etapa actual (para tiempo transcurrido y ETA en la UI). */
+  stageStartedAt?: string;
 }
 
 export interface TranscribeProgress {
@@ -351,6 +353,7 @@ export interface ClipsApi {
   createJob(req: CreateJobRequest): Promise<Job>;
   listJobs(): Promise<Job[]>;
   cancelJob(id: string): Promise<void>;
+  retryJob(id: string): Promise<Job>;
   deleteJob(id: string): Promise<boolean>;
   renameClip(jobId: string, clipId: string, title: string): Promise<Job>;
   updateClip(jobId: string, clipId: string, patch: ClipPatch): Promise<Job>;

@@ -322,9 +322,15 @@ export function registerIpc(ctx: IpcContext): void {
     ctx.onSettingsChanged();
   });
 
-  h('jobs:create', async (req: unknown) => {
-    const r = createJobSchema.parse(req);
-    // Mientras se instala o verifica la GPU no se encolan trabajos: competirían por la VRAM y el entorno puede estar cambiando.
+  h('jobs:create', async (req: unknown) => enqueueJob(createJobSchema.parse(req)));
+  // Reintentar = trabajo nuevo con la misma URL, duración y meta (el original se conserva en el historial).
+  h('jobs:retry', async (id: unknown) => {
+    const prev = requireJob(ctx, id);
+    if (!TERMINAL.includes(prev.status)) throw new UserFacingError('El trabajo sigue en curso.');
+    return enqueueJob({ url: prev.url, preset: prev.preset, maxClips: prev.maxClips, allowModelDownload: prev.allowModelDownload });
+  });
+  async function enqueueJob(r: { url: string; preset: Job['preset']; maxClips: number; allowModelDownload?: boolean }): Promise<Job> {
+    // Mientras se instala o verifica la GPU no se encolan trabajos (tampoco reintentos): competirían por la VRAM y el entorno puede estar cambiando.
     if (setupCtrl) throw new UserFacingError('Se está instalando o verificando la aceleración GPU. Espera a que termine o cancélala en Configuración → Aceleración.');
     // Un trabajo tiene prioridad: se cancela el benchmark y se espera a que suelte la GPU antes de encolar.
     if (benchCtrl) {
@@ -353,7 +359,7 @@ export function registerIpc(ctx: IpcContext): void {
     ctx.queue.enqueue(job.id);
     emitJob(job);
     return job;
-  });
+  }
   h('jobs:list', () => ctx.jobs.list());
   h('jobs:cancel', (id: unknown) => {
     const job = requireJob(ctx, id);

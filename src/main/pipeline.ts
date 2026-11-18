@@ -84,7 +84,7 @@ export function createPipeline(ctx: PipelineContext): JobRunner {
       if (curStage) metrics.stagesMs[curStage] = Date.now() - stageStart;
       curStage = stage;
       stageStart = Date.now();
-      update({ status: stage, progress: 0, message, metrics: { ...metrics }, detail: undefined });
+      update({ status: stage, progress: 0, message, metrics: { ...metrics }, detail: undefined, stageStartedAt: new Date(stageStart).toISOString() });
     };
     const flushMetrics = () => {
       if (curStage) metrics.stagesMs[curStage] = Date.now() - stageStart;
