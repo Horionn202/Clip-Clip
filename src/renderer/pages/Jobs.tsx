@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { STATUS_LABELS, type Job } from '../../shared/types';
-import { JOB_FILTERS, countByFilter, filterJobs, fmtMs, renderCounter, simpleCause, stageEta, stageTimeline, type JobFilter } from '../../shared/jobView';
+import { JOB_FILTERS, countByFilter, currentEta, filterJobs, fmtMs, renderCounter, simpleCause, stageTimeline, type JobFilter } from '../../shared/jobView';
 import { humanDuration } from '../../shared/estimates';
 import { api, errMsg } from '../api';
 import { JobReport } from './Performance';
@@ -43,7 +43,7 @@ function useNow(active: boolean): number {
 function ActiveCard({ job, now, onError }: { job: Job; now: number; onError: (m: string) => void }) {
   const stages = stageTimeline(job, now);
   const elapsed = job.stageStartedAt ? now - Date.parse(job.stageStartedAt) : undefined;
-  const eta = elapsed !== undefined ? stageEta(job.progress, elapsed) : null;
+  const eta = currentEta(job, elapsed);
   const pct = Math.round(job.progress * 100);
   const counter = renderCounter(job);
   return (

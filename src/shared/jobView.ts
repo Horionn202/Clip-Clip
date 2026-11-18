@@ -93,6 +93,15 @@ export function stageEta(progress: number, elapsedMs: number): number | null {
   return Math.round((elapsedMs / progress) * (1 - progress));
 }
 
+/**
+ * ETA que se muestra para la etapa actual. En la transcripción se usa la del transcriptor, que sólo existe con
+ * muestra real (≥ 20 s de audio y ≥ 10 s desde el primer segmento) y no cuenta la descarga/carga del modelo.
+ */
+export function currentEta(job: Job, elapsedMs: number | undefined): number | null {
+  if (job.status === 'transcribing') return job.detail?.etaSec !== undefined ? Math.round(job.detail.etaSec * 1000) : null;
+  return elapsedMs !== undefined ? stageEta(job.progress, elapsedMs) : null;
+}
+
 export function fmtMs(ms: number | undefined): string {
   if (ms === undefined || !Number.isFinite(ms)) return '—';
   const s = Math.max(0, Math.round(ms / 1000));

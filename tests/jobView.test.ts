@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { countByFilter, filterJobs, fmtMs, renderCounter, simpleCause, stageEta, stageTimeline } from '../src/shared/jobView';
+import { countByFilter, currentEta, filterJobs, fmtMs, renderCounter, simpleCause, stageEta, stageTimeline } from '../src/shared/jobView';
 import type { Job, JobStatus } from '../src/shared/types';
 
 const job = (id: string, status: JobStatus, extra: Partial<Job> = {}): Job => ({
@@ -83,4 +83,14 @@ describe('errores con causa simple', () => {
     ['El trabajo se interrumpió porque la aplicación se cerró', /se cerró/],
     ['algo raro', /no pudo terminar/],
   ])('%s', (e, re) => expect(simpleCause(e)).toMatch(re));
+});
+
+describe('revisión Codex: ETA de la transcripción', () => {
+  it('usa la ETA protegida del transcriptor y no la de toda la etapa', () => {
+    const early = job('a', 'transcribing', { progress: 0.06, detail: { phase: 'transcribing', audioDoneSec: 25, audioTotalSec: 400, elapsedSec: 200, device: 'cuda' } });
+    expect(currentEta(early, 200_000)).toBeNull(); // sin muestra suficiente → sin ETA aunque la etapa lleve 200 s
+    const ready = job('a', 'transcribing', { progress: 0.3, detail: { phase: 'transcribing', audioDoneSec: 120, audioTotalSec: 400, elapsedSec: 80, device: 'cuda', etaSec: 90 } });
+    expect(currentEta(ready, 300_000)).toBe(90_000);
+    expect(currentEta(job('b', 'rendering', { progress: 0.25 }), 60_000)).toBe(180_000);
+  });
 });
