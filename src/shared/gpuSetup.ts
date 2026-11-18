@@ -121,8 +121,9 @@ export function accelStatus(i: {
 }): AccelStatus {
   if (i.running) return 'instalando';
   if (!i.nvidiaGpu) return 'no-disponible';
-  if (i.cudaAvailable && i.verifiedPython && i.verifiedPython === i.currentPython) return 'listo';
+  // La última prueba fallida manda sobre un éxito anterior (p. ej. modelo corrupto o VRAM insuficiente).
   if (i.lastError) return 'error';
+  if (i.cudaAvailable && i.verifiedPython && i.verifiedPython === i.currentPython) return 'listo';
   if (i.cudaAvailable) return 'sin-verificar';
   return 'disponible';
 }

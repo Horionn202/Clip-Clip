@@ -245,7 +245,8 @@ export function registerIpc(ctx: IpcContext): void {
       verifiedPython: s.gpuVerifiedPython ?? null,
       currentPython: gpu.pythonPath,
       running: !!setupCtrl,
-      lastError: setupState && !setupState.ok && !setupState.running ? setupState.error : undefined,
+      // Una cancelación no es un fallo: no invalida una verificación anterior.
+      lastError: setupState && !setupState.ok && !setupState.running && !setupState.cancelled ? setupState.error : undefined,
     });
     return { plan, state: setupState, status, verifiedPython: s.gpuVerifiedPython ?? null, currentPython: gpu.pythonPath, usingAppEnv, engine: s.transcriptionEngine };
   };
@@ -254,12 +255,21 @@ export function registerIpc(ctx: IpcContext): void {
     const m = mode === 'verify' ? 'verify' : 'install';
     if (setupCtrl) throw new UserFacingError('Ya hay una instalación o verificación en curso.');
     if (ctx.queue.activeCount > 0) throw new UserFacingError('Hay un trabajo en curso; espera a que termine para usar la GPU.');
-    const info = await setupInfo();
-    if (m === 'install' && !info.plan.compatible) throw new UserFacingError(info.plan.reason ?? 'Este equipo no es compatible.');
-    if (!info.currentPython) throw new UserFacingError('No se encontró Python.');
-    const gpu = await ctx.gpuInfo();
-    setupCtrl = new AbortController();
-    const ctrl = setupCtrl;
+    // El bloqueo se reserva antes de cualquier await: dos peticiones simultáneas no pueden arrancar a la vez.
+    const ctrl = new AbortController();
+    setupCtrl = ctrl;
+    let info: GpuSetupInfo;
+    let gpu: GpuInfo;
+    try {
+      info = await setupInfo();
+      if (m === 'install' && !info.plan.compatible) throw new UserFacingError(info.plan.reason ?? 'Este equipo no es compatible.');
+      if (!info.currentPython) throw new UserFacingError('No se encontró Python.');
+      gpu = await ctx.gpuInfo();
+      if (ctrl.signal.aborted) throw new UserFacingError('Cancelado.');
+    } catch (e) {
+      if (setupCtrl === ctrl) setupCtrl = null;
+      throw e;
+    }
     const workDir = path.join(ctx.userDataDir, 'gpu-setup');
     // En segundo plano: el progreso llega por «gpu:setupProgress».
     void runSetup(
@@ -286,12 +296,16 @@ export function registerIpc(ctx: IpcContext): void {
           const py = m === 'install' ? venvPython(venvDir()) : info.currentPython!;
           ctx.settings.update({ pythonPath: py, gpuVerifiedPython: py, transcriptionEngine: 'auto' });
           ctx.onSettingsChanged();
+        } else if (!st.cancelled) {
+          // La última prueba real manda: si falla, la verificación anterior deja de valer.
+          ctx.settings.update({ gpuVerifiedPython: undefined });
+          ctx.onSettingsChanged();
         }
         event('gpu_setup', { mode: m, ok: st.ok, cancelled: st.cancelled, error: st.error });
       })
       .catch((e) => log.error('gpu setup', e))
       .finally(() => {
-        setupCtrl = null;
+        if (setupCtrl === ctrl) setupCtrl = null;
         if (setupState) broadcast('gpu:setupProgress', setupState);
       });
   });
@@ -316,6 +330,8 @@ export function registerIpc(ctx: IpcContext): void {
     return enqueueJob({ url: prev.url, preset: prev.preset, maxClips: prev.maxClips, allowModelDownload: prev.allowModelDownload });
   });
   async function enqueueJob(r: { url: string; preset: Job['preset']; maxClips: number; allowModelDownload?: boolean }): Promise<Job> {
+    // Mientras se instala o verifica la GPU no se encolan trabajos (tampoco reintentos): competirían por la VRAM y el entorno puede estar cambiando.
+    if (setupCtrl) throw new UserFacingError('Se está instalando o verificando la aceleración GPU. Espera a que termine o cancélala en Configuración → Aceleración.');
     // Un trabajo tiene prioridad: se cancela el benchmark y se espera a que suelte la GPU antes de encolar.
     if (benchCtrl) {
       const benched = benchModel;
