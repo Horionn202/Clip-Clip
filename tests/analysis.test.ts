@@ -128,3 +128,21 @@ describe('análisis por rondas', () => {
     ).rejects.toThrow('cancelado');
   });
 });
+
+describe('revisión Codex: ronda 1 con varios fragmentos', () => {
+  it('ordena candidatos de todos los fragmentos juntos (sin sesgo al inicio)', async () => {
+    const long = syntheticTranscript(1500); // > 12 000 caracteres → varios fragmentos
+    let call = 0;
+    const chat: ChatFn = async () => {
+      call++;
+      // 1.er fragmento: candidato con poca puntuación; 2.º: uno mejor y sin solape.
+      if (call === 1) return JSON.stringify({ clips: [{ ...goodClip(10, 30, 0), score: 1, hook: 'Sin relación alguna con lo que se dice aquí' }] });
+      return JSON.stringify({ clips: [{ ...goodClip(1300, 30, 1), score: 100 }] });
+    };
+    const r = await analyzeClips({ segments: long.segments, words: long.words, duration: 1500, preset: 30, userTarget: 1, chat, maxFillRounds: 0 });
+    expect(call).toBeGreaterThan(1);
+    expect(r.clips).toHaveLength(1);
+    expect(r.clips[0].start).toBeGreaterThanOrEqual(1290);
+    expect(r.report.rounds[0]).toMatchObject({ received: call, accepted: 1 });
+  });
+});

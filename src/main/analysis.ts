@@ -92,9 +92,9 @@ export async function analyzeClips(input: AnalyzeInput): Promise<AnalyzeResult> 
   let anyParsed = false;
   let lastError = '';
 
-  const ask = async (user: string, requested: number, roundNo: number): Promise<AnalysisRound> => {
+  /** Pide candidatos al LLM (con un reintento). null si la IA falló o devolvió JSON inválido. */
+  const fetchRaws = async (user: string, requested: number, roundNo: number): Promise<unknown[] | null> => {
     input.checkCancelled?.();
-    const round: AnalysisRound = { round: roundNo, requested, received: 0, accepted: 0, rejected: {} };
     let raws: unknown[] | null = null;
     for (let attempt = 0; attempt < 2 && raws === null; attempt++) {
       let text: string;
@@ -113,23 +113,32 @@ export async function analyzeClips(input: AnalyzeInput): Promise<AnalyzeResult> 
         input.log?.(`ronda ${roundNo}: JSON inválido (intento ${attempt + 1})`, e instanceof UserFacingError ? e.technical : String(e));
       }
     }
-    if (raws === null) {
-      round.failed = true;
-      return round;
-    }
-    anyParsed = true;
-    round.received = raws.length;
-    const need = eff - chosen.length;
-    const sel = selectRound(raws, need, { preset, sourceDuration: duration, words, taken: chosen });
+    if (raws !== null) anyParsed = true;
+    return raws;
+  };
+
+  /** Selecciona por puntuación entre todos los candidatos de una ronda y registra el resultado. */
+  const selectInto = (round: AnalysisRound, raws: unknown[]): void => {
+    round.received += raws.length;
+    const sel = selectRound(raws, eff - chosen.length, { preset, sourceDuration: duration, words, taken: chosen });
     chosen.push(...sel.accepted);
-    round.accepted = sel.accepted.length;
-    round.rejected = sel.rejected as Record<string, number>;
+    round.accepted += sel.accepted.length;
+    mergeRejected(round.rejected, sel.rejected);
+  };
+
+  const ask = async (user: string, requested: number, roundNo: number): Promise<AnalysisRound> => {
+    const round: AnalysisRound = { round: roundNo, requested, received: 0, accepted: 0, rejected: {} };
+    const raws = await fetchRaws(user, requested, roundNo);
+    if (raws === null) round.failed = true;
+    else selectInto(round, raws);
     return round;
   };
 
   // Ronda 1: meta exacta sobre todo el vídeo (por fragmentos si es largo).
   const chunks = chunkSegments(segments);
   const r1: AnalysisRound = { round: 1, requested: eff, received: 0, accepted: 0, rejected: {} };
+  // Se recogen los candidatos de TODOS los fragmentos y se ordenan juntos (sin sesgo hacia el inicio del vídeo).
+  const pooled: unknown[] = [];
   let failedChunks = 0;
   for (const [i, chunk] of chunks.entries()) {
     const span = chunk[chunk.length - 1].end - chunk[0].start;
@@ -140,13 +149,12 @@ Genera exactamente ${share} candidatos no solapados${chunks.length > 1 ? ' de es
 TRANSCRIPCIÓN:
 ${lines(chunk)}`;
     input.onProgress?.(i / (chunks.length * totalRounds), `Ronda 1: pidiendo ${eff} clips a la IA…`);
-    const r = await ask(user, share, 1);
-    if (r.failed) failedChunks++;
-    r1.received += r.received;
-    r1.accepted += r.accepted;
-    mergeRejected(r1.rejected, r.rejected);
+    const raws = await fetchRaws(user, share, 1);
+    if (raws === null) failedChunks++;
+    else pooled.push(...raws);
   }
   if (failedChunks === chunks.length) r1.failed = true;
+  else selectInto(r1, pooled);
   report.rounds.push(r1);
   input.log?.('ronda 1', r1);
 
