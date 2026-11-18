@@ -146,18 +146,38 @@ export function createPipeline(ctx: PipelineContext): JobRunner {
     update({ status: 'transcribing', progress: 0, message: `Transcribiendo con Whisper (${s.whisperModel})… la primera vez descarga el modelo.` });
     const wArgs = [audioPath, '--model', s.whisperModel, '--word_timestamps', 'True', '--output_format', 'json', '--output_dir', dir, '--fp16', 'False'];
     if (s.whisperLanguage) wArgs.push('--language', s.whisperLanguage);
-    const tr = await runProcess(tools.whisper!, wArgs, {
-      signal,
-      timeoutMs: 6 * 60 * 60 * 1000,
-      env: { PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' },
-      onStdout: (l) => {
-        const m = l.match(/-->\s*(?:(\d+):)?(\d+):(\d+(?:\.\d+)?)\]/);
-        if (m) {
-          const t = (m[1] ? parseInt(m[1]) * 3600 : 0) + parseInt(m[2]) * 60 + parseFloat(m[3]);
-          update({ progress: Math.min(1, t / duration) });
-        }
-      },
-    });
+    // Python retiene stdout cuando no es una consola: PYTHONUNBUFFERED hace que el progreso llegue en vivo.
+    const tStart = Date.now();
+    let tProgress = 0;
+    const heartbeat = setInterval(() => {
+      const mins = (Date.now() - tStart) / 60000;
+      let eta = '';
+      if (tProgress > 0.02) {
+        const rest = (mins / tProgress) * (1 - tProgress);
+        eta = ` · quedan ≈ ${Math.max(1, Math.round(rest))} min`;
+      }
+      update({
+        message: `Transcribiendo con Whisper (${s.whisperModel}) · ${Math.round(tProgress * 100)} % · ${Math.floor(mins)} min transcurridos${eta}`,
+      });
+    }, 5000);
+    let tr;
+    try {
+      tr = await runProcess(tools.whisper!, wArgs, {
+        signal,
+        timeoutMs: 6 * 60 * 60 * 1000,
+        env: { PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1', PYTHONUNBUFFERED: '1' },
+        onStdout: (l) => {
+          const m = l.match(/-->\s*(?:(\d+):)?(\d+):(\d+(?:\.\d+)?)\]/);
+          if (m) {
+            const t = (m[1] ? parseInt(m[1]) * 3600 : 0) + parseInt(m[2]) * 60 + parseFloat(m[3]);
+            tProgress = Math.min(1, t / duration);
+            update({ progress: tProgress });
+          }
+        },
+      });
+    } finally {
+      clearInterval(heartbeat);
+    }
     if (tr.code !== 0) throw new UserFacingError('La transcripción local falló. Revisa la instalación de Whisper.', tr.stderr);
     const tFile = path.join(dir, 'audio.json');
     if (!fs.existsSync(tFile)) throw new UserFacingError('Whisper no generó la transcripción.');
