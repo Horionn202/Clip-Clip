@@ -1,4 +1,15 @@
 import type { BenchmarkResult, Placement } from './aiProfiles';
+import type { AccelStatus, SetupPlan, SetupState } from './gpuSetup';
+
+export interface GpuSetupInfo {
+  plan: SetupPlan;
+  state: SetupState | null;
+  status: AccelStatus;
+  verifiedPython: string | null;
+  currentPython: string | null;
+  usingAppEnv: boolean;
+  engine: EngineChoice;
+}
 import type { LayoutChoice, LayoutId, NormRect, VisualResult } from './layouts';
 // Tipos compartidos entre main, preload y renderer. Sin dependencias de Node.
 
@@ -261,6 +272,8 @@ export interface Settings {
   onboardingDone: boolean;
   /** Resultados del benchmark local por modelo (sólo los escribe el proceso principal). */
   benchmarks?: Record<string, BenchmarkResult>;
+  /** Python con el que se verificó CUDA mediante una transcripción real (sólo lo escribe el proceso principal). */
+  gpuVerifiedPython?: string;
 }
 
 export type DepId = 'ffmpeg' | 'ffprobe' | 'ytDlp' | 'whisper' | 'ollamaInstalled' | 'ollamaService' | 'ollamaModel';
@@ -329,6 +342,12 @@ export interface ClipsApi {
   pullOllamaModel(name: string): Promise<void>;
   cancelOllamaPull(): Promise<void>;
   benchmarkModel(name: string): Promise<BenchmarkResult>;
+  gpuSetupInfo(): Promise<GpuSetupInfo>;
+  startGpuSetup(mode: 'install' | 'verify'): Promise<void>;
+  cancelGpuSetup(): Promise<void>;
+  useCpuEngine(): Promise<void>;
+  useSystemPython(): Promise<void>;
+  onGpuSetup(cb: (s: SetupState) => void): () => void;
   createJob(req: CreateJobRequest): Promise<Job>;
   listJobs(): Promise<Job[]>;
   cancelJob(id: string): Promise<void>;

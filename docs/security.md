@@ -43,3 +43,14 @@
 | VRAM compartida | Fallo por memoria | Descarga del modelo de Ollama antes de transcribir en GPU; reintento con modelo menor y CPU | `tests/transcribe.test.ts` |
 
 `npm audit --omit=dev`: ver resultado de la entrega; no se añadieron dependencias npm nuevas.
+
+## Revisión v0.5 (activación guiada de GPU) — 2026-11-18
+
+| Área | Riesgo | Control |
+|---|---|---|
+| Instalación de paquetes | Modificar el Python global / origen no fiable | Entorno virtual propio en userData; `pip install --index-url` fijo al índice oficial de PyTorch (cu126) y a PyPI; nunca se ejecuta sin confirmación explícita en un diálogo que muestra qué, de dónde, tamaño y espacio |
+| Procesos | Inyección | `spawn` sin shell y argumentos estructurados; el script de voz es fijo y recibe la ruta de salida como parámetro (`-File script.ps1 -Out <ruta>`) |
+| Estado «GPU lista» | Afirmar aceleración inexistente | Sólo tras una transcripción real en CUDA con JSON válido y para el mismo Python verificado |
+| Concurrencia | Competir con trabajos por la GPU | No se instala ni verifica con trabajos activos; una sola instalación a la vez; cancelable |
+| Logs | Fuga de datos | `gpu-setup.log` sustituye `C:\Users\<nombre>` por `<usuario>`; argumentos con rutas reducidos al nombre de archivo |
+

@@ -76,6 +76,17 @@ Si el modelo elegido no cabe en la VRAM con un margen del 5 % (aprox.: openai-wh
 
 **Validación de la salida:** un código de salida 0 no basta. Tras cada intento se busca el JSON generado (nombre esperado u otro `.json` nuevo en la carpeta del trabajo) y se valida que sea parseable, con segmentos, timestamps y texto. Si no, el trabajo falla con «Whisper terminó sin generar un JSON válido; abre Configuración → Diagnóstico» y cada intento queda en *Última ejecución* y en `logs/events.jsonl` (`transcribe_attempt`: motor, modelo, dispositivo, precisión, argumentos sin rutas, código de salida, últimas líneas de stdout/stderr, archivo esperado y archivos presentes). Si la GPU falla durante la transcripción (falta de memoria, cuDNN…) se reintenta con un modelo menor en GPU y después en CPU, siempre con modelos ya descargados o con tu permiso. Antes de transcribir en GPU se pide a Ollama que libere su modelo de la VRAM (`keep_alive: 0`).
 
+### Activar aceleración GPU desde la app (recomendado)
+Configuración → **Aceleración** muestra un estado claro: *GPU lista (verificada)*, *CUDA detectado, sin verificar*, *Disponible para instalar*, *Instalando…*, *Error* o *No disponible*.
+
+- **Activar aceleración GPU** abre una confirmación con qué se instala (PyTorch CUDA 12.6 + openai-whisper), el origen oficial (`download.pytorch.org/whl/cu126` y PyPI), el tamaño (≈ 2,8 GB), el espacio libre necesario (6 GB) y dónde: un **entorno virtual aislado dentro de la carpeta de datos de la app** (`%APPDATA%\ClipsVirales\python-env`). Tu Python del sistema no se modifica.
+- Pasos con progreso real (`pip --progress-bar raw`) y registro técnico desplegable (`logs/gpu-setup.log`, sin rutas de usuario): crear entorno → instalar PyTorch CUDA → instalar Whisper → comprobar CUDA → **transcripción de prueba en GPU** (audio generado con las voces de Windows y modelo `tiny`).
+- **La GPU sólo se marca como lista si esa transcripción real produce un JSON válido**, no basta con que Torch diga `cuda=True`.
+- Se puede **cancelar** y **reintentar** (pip reaprovecha lo descargado). Errores con acción concreta (conexión, espacio, versión de Python sin ruedas, permisos).
+- **Verificar GPU ahora** hace sólo la comprobación y la prueba real con el Python actual, sin instalar nada.
+- **Usar CPU** / **Usar GPU** cambian el motor sin romper la app; **Usar el Python del sistema** deja de usar el entorno de la app.
+- Requisitos: GPU NVIDIA con driver, Python 3.11–3.14 de 64 bits (versiones con ruedas `torch+cu126` comprobadas en el índice oficial). Si no hay Python compatible, se enlaza la descarga oficial de python.org.
+
 ### Habilitar CUDA en Windows (pasos manuales)
 La app **no instala nada automáticamente**; muestra estos comandos con un botón «Copiar comandos». Con el Python del entorno de Whisper (PowerShell):
 
