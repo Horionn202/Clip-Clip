@@ -3,7 +3,8 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { app, BrowserWindow, net, protocol, shell } from 'electron';
 import { buildAppPaths, isInside } from './paths';
-import { initLogger, log } from './logger';
+import { event, initLogger, log } from './logger';
+import { LEGACY_DIR_NAME, migrateLegacyData, migrationNotice, type MigrationReport } from './migration';
 import { JobStore, SettingsStore, defaultSettings } from './store';
 import { JobQueue } from './queue';
 import { createPipeline, jobDir } from './pipeline';
@@ -21,10 +22,25 @@ protocol.registerSchemesAsPrivileged([
 if (!app.requestSingleInstanceLock()) app.quit();
 
 const paths = buildAppPaths(app.getPath('userData'));
+// Migración desde «ClipsVirales» (%APPDATA%\ClipsVirales) antes de abrir ajustes e historial.
+// Nunca borra ni sobrescribe; si falla, se conservan ambas carpetas y se reintenta en el siguiente inicio.
+let migration: MigrationReport | null = null;
+try {
+  migration = migrateLegacyData(path.join(app.getPath('appData'), LEGACY_DIR_NAME), paths.userData);
+} catch (e) {
+  migration = { status: 'failed', from: LEGACY_DIR_NAME, to: paths.userData, linked: 0, copied: 0, skippedExisting: 0, mergedJobs: 0, errors: [String(e)], at: new Date().toISOString() };
+}
 for (const d of [paths.jobsDir, paths.dataDir, paths.logsDir]) fs.mkdirSync(d, { recursive: true });
 initLogger(paths.logsDir);
+if (migration && migration.status !== 'none' && migration.status !== 'already') {
+  const { errors, ...summary } = migration;
+  log.info('Migración de datos desde ClipsVirales', { ...summary, errores: errors.length });
+  for (const e of errors.slice(0, 20)) log.error(`Migración: ${e}`);
+  event('migration', { ...summary, errors: errors.length });
+}
+let startupNotice = migration ? migrationNotice(migration) : null;
 
-const settings = new SettingsStore(paths.dataDir, defaultSettings(path.join(app.getPath('videos'), 'ClipsVirales')));
+const settings = new SettingsStore(paths.dataDir, defaultSettings(path.join(app.getPath('videos'), 'Clip Clip')));
 const jobs = new JobStore(paths.dataDir);
 jobs.recoverInterrupted();
 
@@ -57,6 +73,8 @@ const queue = new JobQueue({
 });
 
 const rendererIndex = path.join(__dirname, '..', '..', 'dist', 'renderer', 'index.html');
+// Icono de la ventana y la barra de tareas (generado desde resources/brand/clip-clip-logo.png).
+const appIcon = app.isPackaged ? path.join(process.resourcesPath, 'icons', 'logo-256.png') : path.join(app.getAppPath(), 'build', 'icons', 'logo-256.png');
 
 function isTrustedSender(url: string): boolean {
   if (isDev && DEV_URL) return url.startsWith(DEV_URL);
@@ -73,7 +91,8 @@ function createWindow(): void {
     height: 860,
     minWidth: 960,
     minHeight: 640,
-    title: 'ClipsVirales',
+    title: 'Clip Clip',
+    icon: appIcon,
     backgroundColor: '#0f1115',
     show: false,
     autoHideMenuBar: true,
@@ -131,13 +150,19 @@ app.whenReady().then(() => {
     userDataDir: paths.userData,
     logsDir: paths.logsDir,
     probeScript,
+    // Aviso de una sola vez (p. ej. datos migrados): el renderer lo pide al arrancar.
+    takeStartupNotice: () => {
+      const n = startupNotice;
+      startupNotice = null;
+      return n;
+    },
     onSettingsChanged: () => {
       tools = resolveTools(settings.get(), bundledBin);
       gpuCache = null;
     },
   });
   createWindow();
-  log.info(`ClipsVirales iniciado. Datos en ${paths.userData}`);
+  log.info(`Clip Clip iniciado. Datos en ${paths.userData}`);
 });
 
 app.on('second-instance', () => {

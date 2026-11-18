@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import logoUrl from './assets/logo-128.png';
 import type { Diagnostics, Job, Settings } from '../shared/types';
 import { api } from './api';
 import { HomePage } from './pages/Home';
@@ -15,6 +16,7 @@ export function App() {
   const [settings, setSettings] = useState<Settings | null>(null);
   const [diag, setDiag] = useState<Diagnostics | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
+  const [notice, setNotice] = useState<{ kind: 'info' | 'error'; text: string } | null>(null);
 
   const refreshDiag = useCallback(async () => setDiag(await api().checkDeps()), []);
 
@@ -27,6 +29,14 @@ export function App() {
         if (!s.onboardingDone) setPage('settings');
       });
     void refreshDiag();
+    // Aviso de una sola vez (p. ej. datos trasladados desde ClipsVirales).
+    void api()
+      .startupNotice()
+      // El aviso se entrega una sola vez: una segunda petición (p. ej. StrictMode en desarrollo) devuelve null y no debe borrarlo.
+      .then((n) => {
+        if (n) setNotice(n);
+      })
+      .catch(() => undefined);
     return api().onJobUpdate((job) =>
       setJobs((prev) => {
         const i = prev.findIndex((j) => j.id === job.id);
@@ -55,7 +65,8 @@ export function App() {
     <div className="app">
       <aside className="sidebar">
         <div className="brand">
-          Clips<span>Virales</span>
+          <img src={logoUrl} alt="" width={32} height={32} />
+          <span>Clip Clip</span>
         </div>
         <nav>
           {nav.map(([p, label]) => (
@@ -70,6 +81,19 @@ export function App() {
         <p className="local-note">Todo se procesa en este equipo.</p>
       </aside>
       <main className="content">
+        {notice && (
+          <div className={`banner ${notice.kind === 'error' ? 'error' : 'info'} notice`} role={notice.kind === 'error' ? 'alert' : 'status'}>
+            <span className="grow">{notice.text}</span>
+            {notice.kind === 'error' && (
+              <button className="link" onClick={() => setPage('settings')}>
+                Ver diagnóstico
+              </button>
+            )}
+            <button className="ghost" aria-label="Cerrar aviso" onClick={() => setNotice(null)}>
+              ×
+            </button>
+          </div>
+        )}
         {page === 'home' && <HomePage ollamaModel={settings?.ollamaModel} jobs={jobs} diag={diag} onCreated={() => setPage('jobs')} goSettings={() => setPage('settings')} goPolicy={() => setPage('policy')} />}
         {page === 'jobs' && <JobsPage jobs={jobs} onOpen={openResults} onDeleted={(id) => setJobs((p) => p.filter((j) => j.id !== id))} goDiagnostics={() => setPage('settings')} />}
         {page === 'results' && <ResultsPage jobs={jobs} selected={selected} onSelect={setSelected} />}

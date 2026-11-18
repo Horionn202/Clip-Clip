@@ -336,6 +336,7 @@ export interface PullProgress {
 /** API expuesta por el preload en window.clipsApi. */
 export interface ClipsApi {
   checkDeps(): Promise<Diagnostics>;
+  startupNotice(): Promise<{ kind: 'info' | 'error'; text: string } | null>;
   probeUrl(url: string): Promise<UrlProbe>;
   getSettings(): Promise<Settings>;
   updateSettings(patch: Partial<Settings>): Promise<Settings>;

@@ -1,0 +1,142 @@
+// Migración de datos de la versión anterior («ClipsVirales») a Clip Clip, en el primer inicio.
+// Reglas: nunca borra el origen, nunca sobrescribe datos del nuevo directorio, registra lo hecho y,
+// si falla, conserva ambos directorios (se reintenta en el siguiente inicio sin repetir lo ya migrado).
+import fs from 'node:fs';
+import path from 'node:path';
+
+export const LEGACY_DIR_NAME = 'ClipsVirales';
+export const MARKER = path.join('data', 'migration-clipsvirales.json');
+
+/** Carpetas que se migran. El entorno Python de la app (python-env, varios GB) no se toca: se sigue usando desde su ruta. */
+export const MIGRATED_DIRS = ['data', 'jobs', 'logs'];
+/** Archivos grandes que se enlazan en vez de copiarse. */
+const LINKABLE = /\.(mp4|mkv|webm|mov|wav)$/i;
+
+export interface MigrationReport {
+  status: 'none' | 'already' | 'migrated' | 'partial' | 'failed';
+  from: string;
+  to: string;
+  linked: number;
+  copied: number;
+  skippedExisting: number;
+  mergedJobs: number;
+  errors: string[];
+  at: string;
+}
+
+interface JobLike {
+  id: string;
+}
+
+function walk(dir: string, rel = ''): string[] {
+  let out: string[] = [];
+  let entries: fs.Dirent[] = [];
+  try {
+    entries = fs.readdirSync(path.join(dir, rel), { withFileTypes: true });
+  } catch {
+    return out;
+  }
+  for (const e of entries) {
+    const r = path.join(rel, e.name);
+    if (e.isDirectory()) out = out.concat(walk(dir, r));
+    else if (e.isFile()) out.push(r);
+  }
+  return out;
+}
+
+/** Une historiales por id; si un trabajo existe en ambos, gana el del directorio nuevo. */
+export function mergeJobs(newer: JobLike[], legacy: JobLike[]): { jobs: JobLike[]; added: number } {
+  const ids = new Set(newer.map((j) => j.id));
+  const extra = legacy.filter((j) => j && typeof j.id === 'string' && !ids.has(j.id));
+  return { jobs: [...newer, ...extra], added: extra.length };
+}
+
+export interface MigrationFs {
+  link: (src: string, dst: string) => void;
+  copy: (src: string, dst: string) => void;
+}
+
+const realFs: MigrationFs = {
+  link: (s, d) => fs.linkSync(s, d),
+  copy: (s, d) => fs.copyFileSync(s, d, fs.constants.COPYFILE_EXCL),
+};
+
+export function migrateLegacyData(oldDir: string, newDir: string, io: MigrationFs = realFs): MigrationReport {
+  const report: MigrationReport = { status: 'none', from: oldDir, to: newDir, linked: 0, copied: 0, skippedExisting: 0, mergedJobs: 0, errors: [], at: new Date().toISOString() };
+  if (path.resolve(oldDir) === path.resolve(newDir) || !fs.existsSync(oldDir)) return report;
+  if (fs.existsSync(path.join(newDir, MARKER))) return { ...report, status: 'already' };
+
+  for (const top of MIGRATED_DIRS) {
+    for (const rel of walk(path.join(oldDir, top))) {
+      const relPath = path.join(top, rel);
+      const src = path.join(oldDir, relPath);
+      const dst = path.join(newDir, relPath);
+      try {
+        fs.mkdirSync(path.dirname(dst), { recursive: true });
+        if (relPath === path.join('data', 'jobs.json') && fs.existsSync(dst)) {
+          // Historial en ambos sitios: se fusiona (sin perder trabajos de ninguno).
+          const a = JSON.parse(fs.readFileSync(dst, 'utf8')) as JobLike[];
+          const b = JSON.parse(fs.readFileSync(src, 'utf8')) as JobLike[];
+          const { jobs, added } = mergeJobs(Array.isArray(a) ? a : [], Array.isArray(b) ? b : []);
+          if (added > 0) {
+            const tmp = `${dst}.migr.tmp`;
+            fs.writeFileSync(tmp, JSON.stringify(jobs, null, 2), 'utf8');
+            fs.renameSync(tmp, dst);
+          }
+          report.mergedJobs += added;
+          continue;
+        }
+        if (fs.existsSync(dst)) {
+          report.skippedExisting++;
+          continue;
+        }
+        // Vídeos y audio de los trabajos: enlace duro (mismo contenido sin ocupar más disco). La app nunca los
+        // modifica en sitio (los sustituye con un rename), así el original no cambia. Lo demás se copia.
+        let linked = false;
+        if (top === 'jobs' && LINKABLE.test(rel)) {
+          try {
+            io.link(src, dst);
+            linked = true;
+          } catch {
+            linked = false;
+          }
+        }
+        if (linked) report.linked++;
+        else {
+          io.copy(src, dst);
+          report.copied++;
+        }
+      } catch (e) {
+        report.errors.push(`${relPath}: ${(e as Error).message}`.slice(0, 300));
+      }
+    }
+  }
+
+  const moved = report.linked + report.copied + report.mergedJobs;
+  report.status = report.errors.length === 0 ? (moved > 0 || report.skippedExisting > 0 ? 'migrated' : 'none') : moved > 0 ? 'partial' : 'failed';
+  // Sólo se marca como hecha si no hubo errores: así un fallo se reintenta en el siguiente inicio.
+  if (report.errors.length === 0) {
+    try {
+      fs.mkdirSync(path.join(newDir, 'data'), { recursive: true });
+      fs.writeFileSync(path.join(newDir, MARKER), JSON.stringify(report, null, 2), 'utf8');
+    } catch (e) {
+      report.errors.push(`marcador: ${(e as Error).message}`);
+      report.status = 'partial';
+    }
+  }
+  return report;
+}
+
+/** Mensaje breve para el usuario (o null si no hay nada que contar). */
+export function migrationNotice(r: MigrationReport): { kind: 'info' | 'error'; text: string } | null {
+  if (r.status === 'migrated' && r.linked + r.copied + r.mergedJobs > 0) {
+    return { kind: 'info', text: 'Se trasladaron tus ajustes, historial y clips de ClipsVirales a Clip Clip. La carpeta anterior se conserva.' };
+  }
+  if (r.status === 'partial' || r.status === 'failed') {
+    return {
+      kind: 'error',
+      text: `No se pudieron trasladar todos los datos de ClipsVirales (${r.errors.length} archivos). Se conservan ambas carpetas y se reintentará al abrir la app. Detalle en Configuración → Diagnóstico y en logs/app.log.`,
+    };
+  }
+  return null;
+}

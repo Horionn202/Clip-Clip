@@ -1,4 +1,8 @@
-# ClipsVirales (escritorio, Windows)
+<p align="center"><img src="resources/brand/clip-clip-logo.png" alt="Clip Clip" width="160" /></p>
+
+# Clip Clip (escritorio, Windows)
+
+> Antes se llamaba **ClipsVirales**. Al actualizar, tus datos se trasladan solos (ver «Migración desde ClipsVirales»).
 
 Aplicación de escritorio que, a partir de la URL de un vídeo **que tengas derecho a usar**, genera de 1 a 20 clips verticales 9:16 con subtítulos para TikTok, Reels y YouTube Shorts. **Todo se ejecuta en tu equipo**: descarga, transcripción, IA, render, historial y logs. Sin nube, sin APIs de pago y sin bases de datos remotas.
 
@@ -79,7 +83,7 @@ Si el modelo elegido no cabe en la VRAM con un margen del 5 % (aprox.: openai-wh
 ### Activar aceleración GPU desde la app (recomendado)
 Configuración → **Aceleración** muestra un estado claro: *GPU lista (verificada)*, *CUDA detectado, sin verificar*, *Disponible para instalar*, *Instalando…*, *Error* o *No disponible*.
 
-- **Activar aceleración GPU** abre una confirmación con qué se instala (PyTorch CUDA 12.6 + openai-whisper), el origen oficial (`download.pytorch.org/whl/cu126` y PyPI), el tamaño (≈ 2,8 GB), el espacio libre necesario (6 GB) y dónde: un **entorno virtual aislado dentro de la carpeta de datos de la app** (`%APPDATA%\ClipsVirales\python-env`). Tu Python del sistema no se modifica.
+- **Activar aceleración GPU** abre una confirmación con qué se instala (PyTorch CUDA 12.6 + openai-whisper), el origen oficial (`download.pytorch.org/whl/cu126` y PyPI), el tamaño (≈ 2,8 GB), el espacio libre necesario (6 GB) y dónde: un **entorno virtual aislado dentro de la carpeta de datos de la app** (`%APPDATA%\Clip Clip\python-env`). Tu Python del sistema no se modifica.
 - Pasos con progreso real (`pip --progress-bar raw`) y registro técnico desplegable (`logs/gpu-setup.log`, sin rutas de usuario): crear entorno → instalar PyTorch CUDA → instalar Whisper → comprobar CUDA → **transcripción de prueba en GPU** (audio generado con las voces de Windows y modelo `tiny`).
 - **La GPU sólo se marca como lista si esa transcripción real produce un JSON válido**, no basta con que Torch diga `cuda=True`.
 - Se puede **cancelar** y **reintentar** (pip reaprovecha lo descargado). Errores con acción concreta (conexión, espacio, versión de Python sin ruedas, permisos).
@@ -128,7 +132,7 @@ npm run dev
 | `OLLAMA_TEST_MODEL=llama3.2:latest npm test` | Incluye la prueba real con Ollama |
 | `npm run typecheck` | TypeScript estricto en renderer y main |
 | `npm run build` | Typecheck + build de producción en `dist/` y `dist-electron/` |
-| `npm run package` | Genera el instalador `release/ClipsVirales-Setup-<versión>.exe` (NSIS) |
+| `npm run package` | Genera el instalador `release/Clip-Clip-Setup-<versión>.exe` (NSIS) |
 | `npm run package:dir` | App desempaquetada en `release/win-unpacked` (prueba rápida) |
 
 > npm ≥ 11 bloquea scripts de instalación: `package.json` aprueba explícitamente `electron` y `electron-winstaller` (`allowScripts`). Si el binario de Electron no aparece, ejecuta `node node_modules/electron/install.js`.
@@ -162,7 +166,7 @@ Decisiones clave: Electron + React + TypeScript + Vite; renderer con `contextIso
 
 ## Almacenamiento local
 
-Todo vive en `app.getPath('userData')` = `%APPDATA%\ClipsVirales`:
+Todo vive en `app.getPath('userData')` = `%APPDATA%\Clip Clip`:
 
 | Ruta | Contenido |
 |---|---|
@@ -175,7 +179,7 @@ Todo vive en `app.getPath('userData')` = `%APPDATA%\ClipsVirales`:
 | `logs\app.log` | Logs técnicos (rotan a 5 MB; tokens/cookies redactados) |
 | `logs\events.jsonl` | Eventos estructurados por trabajo (sólo dominio de la URL, métricas, rondas de análisis) |
 
-Los clips exportados se copian (sin sobrescribir) a la carpeta de exportación, por defecto `Vídeos\ClipsVirales`. Borrar un trabajo pide confirmación y nunca toca los clips exportados. Desinstalar no borra los datos.
+Los clips exportados se copian (sin sobrescribir) a la carpeta de exportación, por defecto `Vídeos\Clip Clip` (si vienes de ClipsVirales se mantiene tu carpeta anterior). Borrar un trabajo pide confirmación y nunca toca los clips exportados. Desinstalar no borra los datos.
 
 ## Reglas de negocio implementadas
 - Máximo absoluto de 20 clips en UI (slider), IPC (zod), prompt, parseo, normalización y comprobación final antes de render.
@@ -183,6 +187,21 @@ Los clips exportados se copian (sin sobrescribir) a la carpeta de exportación, 
 - Si Ollama devuelve JSON inválido se reintenta una vez; se rescata JSON incrustado en texto; candidatos imposibles se descartan; si no queda ninguno, el trabajo falla con un mensaje claro.
 - Límites configurables: duración máx. del vídeo, tamaño de descarga, espacio libre mínimo, trabajos simultáneos (1–2), cola máx. 10.
 - Sólo contenido público: no se usan cookies ni credenciales y se rechazan directos y vídeos con `needs_auth`/`premium_only`/`subscriber_only`.
+
+## Marca e iconos
+- Logo oficial: `resources/brand/clip-clip-logo.png` (PNG con transparencia; no se modifica).
+- `npm run icons` (también se ejecuta en `npm run build`) recorta un cuadrado centrado en el símbolo y lo escala, sin efectos: genera `build/icon.ico` (16, 24, 32, 48, 64, 128 y 256 px) para la app, el instalador, el desinstalador y los accesos directos, `build/icons/logo-*.png` para la ventana y `src/renderer/assets/logo-128.png` para la barra lateral y la pantalla de carga. Son archivos generados y no se versionan.
+
+## Migración desde ClipsVirales
+Al abrir Clip Clip por primera vez, si existe `%APPDATA%\ClipsVirales`, se trasladan sus datos a `%APPDATA%\Clip Clip`:
+- **Se trasladan** `data` (ajustes e historial), `jobs` (clips, transcripciones, fotogramas) y `logs`.
+- **Nunca se borra el origen ni se sobrescribe** nada que ya exista en la carpeta nueva; si ambas tienen historial, se fusiona por trabajo.
+- Los vídeos y audios de los trabajos se enlazan (enlace duro, sin ocupar más disco); el resto se copia. La app nunca modifica esos vídeos en sitio, así la carpeta antigua no cambia.
+- El entorno Python de la aceleración GPU (`python-env`, varios GB) no se copia: se sigue usando desde su ruta anterior.
+- La carpeta de exportación configurada se mantiene (tus clips exportados no se mueven).
+- Se registra en `logs/app.log` y `logs/events.jsonl`, y queda un marcador `data/migration-clipsvirales.json`. La app muestra un aviso breve.
+- Si algo falla, se conservan ambas carpetas, se avisa con enlace al diagnóstico y se reintenta en el siguiente inicio sin repetir lo ya trasladado.
+- El instalador nuevo usa otro identificador (`com.clipclip.desktop`): la app antigua «ClipsVirales» puede desinstalarse desde Windows cuando quieras; su carpeta de datos no se borra.
 
 ## Solución de problemas
 
@@ -200,7 +219,7 @@ Los clips exportados se copian (sin sobrescribir) a la carpeta de exportación, 
 | Menos clips que la meta | El resultado indica `obtenidos/meta` y el motivo; Configuración → Última ejecución muestra rondas y descartes. Prueba un modelo de Ollama mayor. |
 | La descarga falla | El vídeo puede ser privado, con restricción de edad o geobloqueado; actualiza yt-dlp (`winget upgrade yt-dlp.yt-dlp`). |
 | «La IA no propuso ningún clip válido» | Prueba otro preset u otro modelo (más grande). |
-| Detalle técnico | `%APPDATA%\ClipsVirales\logs\app.log` |
+| Detalle técnico | `%APPDATA%\Clip Clip\logs\app.log` |
 
 ## Uso responsable
 Procesa sólo contenido propio o con permiso, respeta los términos de cada plataforma y atribuye a los autores. La política completa está en la app (sección «Uso responsable»).

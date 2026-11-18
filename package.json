@@ -1,23 +1,24 @@
 {
-  "name": "clipsvirales-desktop",
-  "productName": "ClipsVirales",
+  "name": "clip-clip-desktop",
+  "productName": "Clip Clip",
   "version": "0.1.0",
-  "description": "Genera clips verticales localmente a partir de vídeos autorizados (Electron + React + Ollama).",
+  "description": "Clip Clip: genera clips verticales localmente a partir de vídeos autorizados (Electron + React + Ollama).",
   "main": "dist-electron/main/main.js",
   "private": true,
   "license": "MIT",
-  "author": "ClipsVirales",
+  "author": "Clip Clip",
   "scripts": {
     "dev": "node scripts/dev.mjs",
     "build:main": "tsc -p tsconfig.node.json",
     "build:renderer": "vite build",
-    "build": "npm run typecheck && npm run build:main && npm run build:renderer",
+    "build": "npm run icons && npm run typecheck && npm run build:main && npm run build:renderer",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.node.json --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
     "start": "electron .",
     "package": "npm run build && electron-builder --win nsis",
-    "package:dir": "npm run build && electron-builder --win dir"
+    "package:dir": "npm run build && electron-builder --win dir",
+    "icons": "node scripts/make-icons.mjs"
   },
   "dependencies": {
     "zod": "^4.6.7"
@@ -40,8 +41,8 @@
     "electron@45.3.4": true
   },
   "build": {
-    "appId": "com.clipsvirales.desktop",
-    "productName": "ClipsVirales",
+    "appId": "com.clipclip.desktop",
+    "productName": "Clip Clip",
     "directories": {
       "output": "release",
       "buildResources": "build"
@@ -74,6 +75,21 @@
       {
         "from": "LICENSE",
         "to": "LICENSE.txt"
+      },
+      {
+        "from": "build/icons",
+        "to": "icons",
+        "filter": [
+          "logo-256.png",
+          "logo-512.png"
+        ]
+      },
+      {
+        "from": "resources/brand",
+        "to": "brand",
+        "filter": [
+          "clip-clip-logo.png"
+        ]
       }
     ],
     "asar": true,
@@ -86,7 +102,8 @@
           ]
         }
       ],
-      "artifactName": "ClipsVirales-Setup-${version}.${ext}"
+      "artifactName": "Clip-Clip-Setup-${version}.${ext}",
+      "icon": "build/icon.ico"
     },
     "nsis": {
       "oneClick": false,
@@ -94,7 +111,12 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "deleteAppDataOnUninstall": false,
-      "license": "LICENSE"
+      "license": "LICENSE",
+      "installerIcon": "build/icon.ico",
+      "uninstallerIcon": "build/icon.ico",
+      "installerHeaderIcon": "build/icon.ico",
+      "shortcutName": "Clip Clip",
+      "uninstallDisplayName": "Clip Clip"
     }
   }
 }
