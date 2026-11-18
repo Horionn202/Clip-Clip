@@ -71,7 +71,7 @@ export function App() {
       </aside>
       <main className="content">
         {page === 'home' && <HomePage ollamaModel={settings?.ollamaModel} jobs={jobs} diag={diag} onCreated={() => setPage('jobs')} goSettings={() => setPage('settings')} goPolicy={() => setPage('policy')} />}
-        {page === 'jobs' && <JobsPage jobs={jobs} onOpen={openResults} onDeleted={(id) => setJobs((p) => p.filter((j) => j.id !== id))} />}
+        {page === 'jobs' && <JobsPage jobs={jobs} onOpen={openResults} onDeleted={(id) => setJobs((p) => p.filter((j) => j.id !== id))} goDiagnostics={() => setPage('settings')} />}
         {page === 'results' && <ResultsPage jobs={jobs} selected={selected} onSelect={setSelected} />}
         {page === 'settings' && settings && (
           <SettingsPage settings={settings} onChange={setSettings} diag={diag} refreshDiag={refreshDiag} jobs={jobs} />
