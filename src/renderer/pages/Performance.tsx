@@ -97,6 +97,15 @@ export function LastRunPanel({ jobs }: { jobs: Job[] }) {
           <tr><td>Render por clip</td><td>{m.renderMsPerClip.length ? m.renderMsPerClip.map((x) => fmt(x)).join(' · ') : '—'}</td></tr>
           <tr><td>Total</td><td><b>{fmt(m.totalMs)}</b></td></tr>
           <tr><td>Motor</td><td>{m.engine ? `${ENGINE_LABELS[m.engine]} · ${m.whisperModel}` : '—'}{m.transcribeSpeed ? ` · ${m.transcribeSpeed.toFixed(1)}× tiempo real` : ''}{m.modelDownloadMs ? ` · descarga de modelo ${fmt(m.modelDownloadMs)}` : ''}</td></tr>
+          {m.transcribeAttempts?.map((t, i) => (
+            <tr key={i}>
+              <td>Intento de transcripción {i + 1}</td>
+              <td>
+                <span className={t.ok ? 'ok' : 'error'}>{t.ok ? 'correcto' : 'fallido'}</span> · {t.device === 'cuda' ? 'GPU' : 'CPU'} · {t.model} · {t.precision} · código {t.exitCode ?? '—'} · {fmt(t.ms)}
+                {t.reason && <div className="small muted">{t.reason}</div>}
+              </td>
+            </tr>
+          ))}
           <tr><td>Modelo Ollama</td><td>{m.ollamaModel ?? '—'}</td></tr>
           <tr><td>Duración del vídeo</td><td>{m.sourceDuration ? `${Math.round(m.sourceDuration)} s` : '—'}</td></tr>
           {a && <tr><td>Clips</td><td>meta {a.target} · máx. factible {a.feasibleMax} · efectiva {a.effectiveTarget} · obtenidos {a.obtained}</td></tr>}

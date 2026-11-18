@@ -34,7 +34,7 @@ describe('detección Torch CPU-only vs CUDA real', () => {
     expect(g.recommendation).toMatch(/NO puede usar CUDA.*sólo CPU/);
     expect(g.installCommands.join(' ')).toMatch(/download\.pytorch\.org\/whl\/cu126/);
   });
-  it('Torch CUDA funcional → plan GPU con FP16', async () => {
+  it('Torch CUDA funcional en GTX 1660 → plan GPU en FP32 (FP16 da NaN en esa serie)', async () => {
     const g = await probeGpu(
       tools,
       defaultSettings('x'),
@@ -42,7 +42,7 @@ describe('detección Torch CPU-only vs CUDA real', () => {
       mk({ python: '3.14.10', torch: '2.14.1+cu126', torch_cuda: '12.6', cuda_available: true, cuda_device: 'GTX 1660 SUPER', cuda_vram_mb: 6144, whisper: true }),
     );
     expect(g.cudaAvailable).toBe(true);
-    expect(g.plan).toMatchObject({ engine: 'openai-whisper-cuda', device: 'cuda', fp16: true });
+    expect(g.plan).toMatchObject({ engine: 'openai-whisper-cuda', device: 'cuda', fp16: false });
   });
   it('torch con versión CUDA pero is_available() false (driver) → CPU', async () => {
     const g = await probeGpu(tools, defaultSettings('x'), 'probe.py', mk({ torch: '2.14.1+cu126', torch_cuda: '12.6', cuda_available: false, whisper: true }));
@@ -93,9 +93,9 @@ describe('selección de motor y FP16', () => {
     const p = selectEngine(opts({ avail: { 'faster-whisper-cuda': true, 'openai-whisper-cuda': true, 'openai-whisper-cpu': true } }))!;
     expect(p).toMatchObject({ engine: 'faster-whisper-cuda', model: 'turbo', computeType: 'float16' });
   });
-  it('VRAM insuficiente → modelo menor con aviso', () => {
+  it('VRAM insuficiente (con margen del 5 %) → modelo menor con aviso', () => {
     const p = selectEngine(opts({ model: 'large', vramMB: 6144 }))!;
-    expect(p.model).toBe('turbo');
+    expect(p.model).toBe('medium');
     expect(p.warnings[0]).toMatch(/VRAM/);
     const q = selectEngine(opts({ model: 'medium', vramMB: 4096 }))!;
     expect(q.model).toBe('small');

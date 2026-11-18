@@ -82,6 +82,19 @@ export interface JobMetrics {
   /** Segundos de audio procesados por segundo real (2 = 2× tiempo real). */
   transcribeSpeed?: number;
   modelDownloadMs?: number;
+  /** Cada intento de transcripción (incluidos los reintentos) con su resultado. */
+  transcribeAttempts?: TranscribeAttempt[];
+}
+
+export interface TranscribeAttempt {
+  engine: EngineId;
+  model: string;
+  device: 'cpu' | 'cuda';
+  precision: string;
+  exitCode: number | null;
+  ok: boolean;
+  reason?: string;
+  ms: number;
 }
 
 export interface AnalysisRound {
@@ -155,6 +168,8 @@ export interface UrlProbe {
   title: string;
   duration: number;
   feasibleMax: number;
+  /** Tamaño aproximado de la descarga, si la fuente lo informa. */
+  filesizeBytes?: number;
 }
 
 export interface GpuInfo {
