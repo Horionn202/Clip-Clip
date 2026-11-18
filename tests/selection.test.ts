@@ -62,7 +62,7 @@ describe('validación de calidad de candidatos', () => {
     expect(ev).toEqual({ ok: false, reason });
   });
   it('repara un hook genérico o copiado del título con la frase real de apertura', () => {
-    for (const hook of ['hook', '', 'Cómo resolver el problema número 1']) {
+    for (const hook of ['hook', '', goodClip(40).title]) {
       const ev = evaluateCandidate({ ...goodClip(40), hook }, o);
       expect(ev.ok).toBe(true);
       if (ev.ok) expect(ev.candidate.hook).toMatch(/^Voz\d+/);

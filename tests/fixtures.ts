@@ -21,12 +21,28 @@ export function syntheticTranscript(duration: number): { words: TimedWord[]; seg
   return { words, segments };
 }
 
+const TOPICS = [
+  ['ahorro', 'compra', 'mercado'],
+  ['viaje', 'montaña', 'mochila'],
+  ['cocina', 'receta', 'horno'],
+  ['deporte', 'carrera', 'zapatillas'],
+  ['música', 'guitarra', 'concierto'],
+  ['estudio', 'examen', 'apuntes'],
+  ['jardín', 'plantas', 'riego'],
+  ['coche', 'motor', 'gasolina'],
+  ['juego', 'nivel', 'jefe'],
+  ['perro', 'paseo', 'parque'],
+];
+
 export function goodClip(start: number, preset = 30, i = 0) {
+  // Temas distintos por clip: así no se consideran ideas repetidas.
+  const [a, b, c] = TOPICS[i % TOPICS.length];
+  const n = Math.floor(i / TOPICS.length);
   return {
     start,
     end: start + preset,
-    title: `Cómo resolver el problema número ${i + 1}`,
-    hook: `La voz${i} cambia todo lo que creías sobre el tema`,
+    title: `Cómo mejorar tu ${a} con la ${b} ${n || ''}`.trim(),
+    hook: `La voz${i} revela el secreto del ${c} que nadie cuenta`,
     reason: `Explica de forma concreta el punto ${i + 1} con un ejemplo claro y una conclusión`,
     score: 80,
   };

@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { ENGINE_IDS, ENGINE_LABELS, STATUS_LABELS, TERMINAL_STATUSES, type GpuInfo, type Job, type MetricStage, type Settings } from '../../shared/types';
 import { REJECT_LABELS, type RejectReason } from '../../shared/selection';
+import { placementLabel } from '../../shared/aiProfiles';
 
 const fmt = (ms?: number) => (ms === undefined ? '—' : ms < 60000 ? `${(ms / 1000).toFixed(1)} s` : `${Math.floor(ms / 60000)} min ${Math.round((ms % 60000) / 1000)} s`);
 
@@ -129,5 +130,53 @@ export function LastRunPanel({ jobs }: { jobs: Job[] }) {
       )}
       <p className="small muted">Detalle técnico: %APPDATA%\ClipsVirales\logs\events.jsonl y app.log</p>
     </div>
+  );
+}
+
+/** Informe del análisis de un trabajo (visible desde el historial). */
+export function JobReport({ job }: { job: Job }) {
+  const a = job.analysis;
+  const m = job.metrics;
+  if (!a && !m) return <p className="small muted">Este trabajo no tiene informe (se creó con una versión anterior o falló antes del análisis).</p>;
+  const discarded: Record<string, number> = {};
+  for (const r of a?.rounds ?? []) for (const [k, v] of Object.entries(r.rejected)) discarded[k] = (discarded[k] ?? 0) + v;
+  return (
+    <table className="table kv">
+      <tbody>
+        {a && (
+          <>
+            <tr><td>Clips solicitados</td><td>{a.target}</td></tr>
+            <tr><td>Máximo matemáticamente posible</td><td>{a.feasibleMax}</td></tr>
+            <tr><td>Meta efectiva</td><td>{a.effectiveTarget}</td></tr>
+            <tr><td>Clips generados</td><td><b>{a.obtained}/{a.effectiveTarget}</b>{a.partialReason ? ` · ${a.partialReason}` : ''}</td></tr>
+            <tr><td>Candidatos propuestos / descartados</td><td>{a.candidates} / {a.rejected}</td></tr>
+            {Object.keys(discarded).length > 0 && (
+              <tr>
+                <td>Motivos de descarte</td>
+                <td>{Object.entries(discarded).map(([k, v]) => `${REJECT_LABELS[k as RejectReason] ?? k} ×${v}`).join(', ')}</td>
+              </tr>
+            )}
+            {a.rounds.map((r) => (
+              <tr key={r.round}>
+                <td>Ronda {r.round}</td>
+                <td>{r.failed ? <span className="error">la IA no respondió con JSON válido</span> : `pidió ${r.requested} · recibió ${r.received} · aceptó ${r.accepted}`}</td>
+              </tr>
+            ))}
+          </>
+        )}
+        {m?.ollamaModel && (
+          <tr>
+            <td>Modelo de IA</td>
+            <td>
+              {m.ollamaModel}
+              {m.ollamaPlacement ? ` · ${placementLabel(m.ollamaPlacement)}` : ''}
+              {m.vramFreeBeforeAnalysisMB !== undefined ? ` · ${(m.vramFreeBeforeAnalysisMB / 1024).toFixed(1)} GB de VRAM libres al empezar` : ''}
+            </td>
+          </tr>
+        )}
+        {m?.engine && <tr><td>Transcripción</td><td>{ENGINE_LABELS[m.engine]} · {m.whisperModel}{m.transcribeSpeed ? ` · ${m.transcribeSpeed.toFixed(1)}× tiempo real` : ''}</td></tr>}
+        {m?.totalMs !== undefined && <tr><td>Tiempo total</td><td>{fmt(m.totalMs)}</td></tr>}
+      </tbody>
+    </table>
   );
 }

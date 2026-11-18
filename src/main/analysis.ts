@@ -39,7 +39,8 @@ Reglas obligatorias:
 - Devuelve EXACTAMENTE el número de clips que se te pida.
 - Los clips no se solapan entre sí ni con los intervalos ya elegidos que se indiquen.
 - start y end dentro de la transcripción; duración igual a la indicada; empieza y termina en frases completas.
-- Reparte los clips por distintas partes del vídeo.
+- Reparte los clips por distintas partes del vídeo (inicio, mitad y final), no los concentres.
+- Cada clip debe tratar una idea distinta: no repitas el mismo tema, chiste o momento con otras palabras.
 - title: título concreto sobre el tema real del fragmento (no genérico).
 - hook: la frase de apertura concreta que engancha, basada en lo que se dice.
 - reason: por qué ese fragmento concreto funciona, mencionando su contenido.

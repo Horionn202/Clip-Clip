@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { JOB_STATUSES, STATUS_LABELS, TERMINAL_STATUSES, type Job } from '../../shared/types';
 import { api, errMsg } from '../api';
+import { JobReport } from './Performance';
 
 const STAGES = JOB_STATUSES.filter((s) => !['queued', 'completed', 'cancelled', 'failed'].includes(s));
 
@@ -102,6 +103,10 @@ export function JobsPage(props: { jobs: Job[]; onOpen: (id: string) => void; onD
                 </div>
                 {j.status === 'completed' && j.resultSummary && <div className="small">{j.resultSummary}</div>}
                 {j.status === 'failed' && j.error && <div className="error small">{j.error}</div>}
+                <details>
+                  <summary className="small">Ver informe del trabajo</summary>
+                  <JobReport job={j} />
+                </details>
               </td>
               <td className="actions">
                 {j.status === 'completed' && <button onClick={() => props.onOpen(j.id)}>Ver clips</button>}

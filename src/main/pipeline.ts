@@ -5,9 +5,9 @@ import type { Clip, EnginePlan, GpuInfo, Job, JobMetrics, MetricStage, Settings,
 import { MAX_CLIPS, WHISPER_MODEL_OPTIONS } from '../shared/types';
 import { UserFacingError, assertClipInvariants, safeFileName } from '../shared/validation';
 import { resultSummary } from '../shared/selection';
-import { missingDepMessage, runDiagnostics, type ResolvedTools } from './deps';
+import { missingDepMessage, realGpuProbes, runDiagnostics, type ResolvedTools } from './deps';
 import { buildAss, centerCrop, parseWhisperJson, renderArgs, type Word } from './media';
-import { chatJson, unloadModel } from './ollama';
+import { chatJson, modelPlacement, unloadModel } from './ollama';
 import { CancelledError, runProcess } from './proc';
 import { event, log, urlHost } from './logger';
 import type { JobRunner } from './queue';
@@ -28,6 +28,7 @@ import {
   isModelDownloadLine,
   openaiArgs,
   openaiCommand,
+  parseNvidiaSmi,
   parseOpenaiSegmentEnd,
   selectEngine,
   type ProgressState,
@@ -254,6 +255,11 @@ export function createPipeline(ctx: PipelineContext): JobRunner {
 
       // 5–6. Análisis por rondas + validación
       enter('analyzing', `Analizando con ${s.ollamaModel}…`);
+      // Memoria GPU libre antes de cargar el modelo de Ollama (para explicar si no cabe entero).
+      if (tools.nvidiaSmi) {
+        const smi = parseNvidiaSmi((await realGpuProbes.nvidiaSmi(tools.nvidiaSmi)) ?? '');
+        if (smi?.freeMB !== undefined) metrics.vramFreeBeforeAnalysisMB = smi.freeMB;
+      }
       const { clips: chosen, report } = await analyzeClips({
         segments,
         words,
@@ -266,7 +272,10 @@ export function createPipeline(ctx: PipelineContext): JobRunner {
         onProgress: (p, message) => update({ progress: p, message }),
         log: (m, extra) => log.info(`[${job.id}] análisis: ${m}`, extra),
       });
-      update({ analysis: report });
+      // Dónde se cargó realmente el modelo (nunca se afirma GPU si parte quedó en CPU/RAM).
+      const placement = await modelPlacement(s.ollamaHost, s.ollamaModel);
+      if (placement) metrics.ollamaPlacement = placement;
+      update({ analysis: report, metrics: { ...metrics } });
       event('analysis', { job: job.id, ...report });
       if (chosen.length === 0) {
         throw new UserFacingError(

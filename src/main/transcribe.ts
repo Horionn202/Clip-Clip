@@ -25,16 +25,19 @@ export interface NvidiaSmi {
   name: string;
   vramMB: number;
   driver: string;
+  freeMB?: number;
 }
 
 /** Parsea `nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader,nounits`. */
 export function parseNvidiaSmi(out: string): NvidiaSmi | null {
   const line = out.split(/\r?\n/).find((l) => l.trim());
   if (!line) return null;
-  const [name, mem, driver] = line.split(',').map((s) => s.trim());
+  const [name, mem, driver, free] = line.split(',').map((s) => s.trim());
   const vram = Number(mem);
   if (!name || !Number.isFinite(vram)) return null;
-  return { name, vramMB: vram, driver: driver ?? '' };
+  const freeMB = Number(free);
+  // memory.free es opcional (4.ª columna de la consulta)
+  return { name, vramMB: vram, driver: driver ?? '', ...(free !== undefined && free !== '' && Number.isFinite(freeMB) ? { freeMB } : {}) };
 }
 
 /** Torch CPU-only: el sufijo "+cpu" o la ausencia de torch.version.cuda. */

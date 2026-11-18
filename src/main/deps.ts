@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import type { DepId, DepStatus, Diagnostics, GpuInfo, Settings } from '../shared/types';
 import { runProcess } from './proc';
@@ -72,7 +73,7 @@ export interface GpuProbes {
 export const realGpuProbes: GpuProbes = {
   async nvidiaSmi(exe) {
     try {
-      const r = await runProcess(exe, ['--query-gpu=name,memory.total,driver_version', '--format=csv,noheader,nounits'], { timeoutMs: 15000 });
+      const r = await runProcess(exe, ['--query-gpu=name,memory.total,driver_version,memory.free', '--format=csv,noheader,nounits'], { timeoutMs: 15000 });
       return r.code === 0 ? r.stdout : null;
     } catch {
       return null;
@@ -114,6 +115,8 @@ export async function probeGpu(
   const base = {
     nvidiaGpu: smi?.name ?? pj.cuda_device ?? null,
     vramMB: pj.cuda_vram_mb ?? smi?.vramMB ?? null,
+    vramFreeMB: smi?.freeMB ?? null,
+    ramTotalMB: Math.round(os.totalmem() / 1048576),
     driver: smi?.driver ?? null,
     python: pj.python ?? null,
     pythonPath: tools.python ?? null,

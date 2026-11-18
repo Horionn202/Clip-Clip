@@ -48,7 +48,8 @@ export type RejectReason =
   | 'razon'
   | 'placeholder'
   | 'poca_voz'
-  | 'sobrante';
+  | 'sobrante'
+  | 'repetido';
 
 export const REJECT_LABELS: Record<RejectReason, string> = {
   formato: 'formato inválido',
@@ -61,6 +62,7 @@ export const REJECT_LABELS: Record<RejectReason, string> = {
   placeholder: 'texto de plantilla copiado',
   poca_voz: 'casi sin voz en el tramo',
   sobrante: 'excede la meta',
+  repetido: 'repite una idea ya elegida',
 };
 
 const PLACEHOLDERS = [
@@ -170,11 +172,17 @@ function snap(t: number, words: TimedWord[], kind: 'start' | 'end'): number {
  * Puntuación local determinista (0–100): densidad de habla, frases completas en los bordes,
  * signos de énfasis y coincidencia del hook con lo que realmente se dice.
  */
-export function localScore(start: number, end: number, hook: string, words: TimedWord[]): number {
+export function localScore(start: number, end: number, hook: string, words: TimedWord[], preset?: number): number {
   const inside = words.filter((w) => w.start >= start - 0.05 && w.end <= end + 0.05);
   const dur = Math.max(1, end - start);
   const wps = inside.length / dur; // ~2–3 palabras/s en habla normal
   const density = Math.min(1, wps / 2.5);
+  // Claridad: proporción de palabras «reales» (con letras) frente a ruido/repeticiones de la transcripción.
+  const real = inside.filter((w) => /\p{L}{2,}/u.test(w.text));
+  const distinct = new Set(real.map((w) => normText(w.text))).size;
+  const clarity = inside.length ? Math.min(real.length / inside.length, real.length ? Math.min(1, (distinct / real.length) * 1.6) : 0) : 0;
+  // Ajuste a la duración pedida (1 = exacta).
+  const durationFit = preset ? Math.max(0, 1 - Math.abs(dur - preset) / preset) : 1;
   const text = inside.map((w) => w.text).join(' ');
   const emphasis = Math.min(1, (text.match(/[?!¿¡]/g) ?? []).length / 3);
   const first = inside[0]?.text.trim() ?? '';
@@ -184,7 +192,7 @@ export function localScore(start: number, end: number, hook: string, words: Time
   const tw = new Set(normText(text).split(' ').filter((w) => w.length > 3));
   const hw = normText(hook).split(' ').filter((w) => w.length > 3);
   const grounding = hw.length ? hw.filter((w) => tw.has(w)).length / hw.length : 0;
-  const s = 0.45 * density + 0.15 * emphasis + 0.1 * cleanStart + 0.1 * cleanEnd + 0.2 * grounding;
+  const s = 0.35 * density + 0.1 * clarity + 0.1 * emphasis + 0.1 * cleanStart + 0.1 * cleanEnd + 0.15 * grounding + 0.1 * durationFit;
   return Math.round(Math.max(0, Math.min(1, s)) * 100);
 }
 
@@ -252,7 +260,7 @@ export function evaluateCandidate(raw: unknown, o: EvaluateOptions): Evaluation 
     if (isGenericText(hook, 12)) return { ok: false, reason: 'hook' };
   }
 
-  const ls = localScore(start, end, hook, o.words);
+  const ls = localScore(start, end, hook, o.words, o.preset);
   if (o.words.length > 0 && ls < 15) return { ok: false, reason: 'poca_voz' };
   const llm = num(r.score);
   const llmScore = llm !== null && llm >= 0 && llm <= 100 ? llm : null; // scores fuera de rango no cuentan
@@ -280,10 +288,23 @@ export function selectRound(raws: unknown[], need: number, o: Omit<EvaluateOptio
     if (ev.ok) valid.push(ev.candidate);
     else bump(ev.reason);
   }
-  valid.sort((a, b) => b.score - a.score || a.start - b.start);
   const accepted: Candidate[] = [];
   const taken = [...o.taken];
-  for (const c of valid) {
+  const takenText = (o.taken as { title?: string; hook?: string }[]).filter((t) => t.title).map((t) => `${t.title} ${t.hook ?? ''}`);
+  // Selección voraz con diversidad: en cada paso se elige el mejor «score + bonus de distancia temporal»
+  // a los clips ya elegidos, para no concentrar todo en una parte del vídeo.
+  const pool = [...valid];
+  while (pool.length) {
+    let bi = 0;
+    let best = -Infinity;
+    for (let i = 0; i < pool.length; i++) {
+      const v = pool[i].score + diversityBonus(pool[i], taken, o.sourceDuration);
+      if (v > best || (v === best && pool[i].start < pool[bi].start)) {
+        best = v;
+        bi = i;
+      }
+    }
+    const c = pool.splice(bi, 1)[0];
     if (accepted.length >= need) {
       bump('sobrante');
       continue;
@@ -292,10 +313,35 @@ export function selectRound(raws: unknown[], need: number, o: Omit<EvaluateOptio
       bump('solape');
       continue;
     }
+    const text = `${c.title} ${c.hook}`;
+    if (takenText.some((t) => similarity(t, text) >= 0.6)) {
+      bump('repetido');
+      continue;
+    }
     accepted.push(c);
     taken.push(c);
+    takenText.push(text);
   }
   return { accepted, rejected };
+}
+
+/** Bonus 0–10 según la distancia al clip elegido más cercano (relativa a la duración del vídeo). */
+export function diversityBonus(c: { start: number; end: number }, taken: { start: number; end: number }[], duration: number): number {
+  if (taken.length === 0 || duration <= 0) return 0;
+  const mid = (c.start + c.end) / 2;
+  const nearest = Math.min(...taken.map((t) => Math.abs((t.start + t.end) / 2 - mid)));
+  return Math.round(Math.min(1, nearest / (duration / (taken.length + 1))) * 10);
+}
+
+/** Similitud Jaccard de palabras significativas (para detectar ideas repetidas). */
+export function similarity(a: string, b: string): number {
+  const words = (s: string) => new Set(normText(s).split(' ').filter((w) => w.length > 3));
+  const A = words(a);
+  const B = words(b);
+  if (A.size === 0 || B.size === 0) return 0;
+  let inter = 0;
+  for (const w of A) if (B.has(w)) inter++;
+  return inter / (A.size + B.size - inter);
 }
 
 /** Huecos libres (≥ preset) entre clips ya elegidos: se envían al modelo en las rondas de relleno. */

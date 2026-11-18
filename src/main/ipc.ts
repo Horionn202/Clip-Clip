@@ -10,7 +10,10 @@ import { readSourceInfo } from './source';
 import { isInside } from './paths';
 import { log } from './logger';
 import { runDiagnostics, type ResolvedTools } from './deps';
-import { listModels, pullModel } from './ollama';
+import { benchmarkModel, listModels, pullModel } from './ollama';
+
+let pullCtrl: AbortController | null = null;
+let benchCtrl: AbortController | null = null;
 import type { JobQueue } from './queue';
 import type { JobStore, SettingsStore } from './store';
 import { jobDir } from './pipeline';
@@ -122,14 +125,39 @@ export function registerIpc(ctx: IpcContext): void {
   h('ollama:list', () => listModels(ctx.settings.get().ollamaHost).catch(() => [] as string[]));
   h('ollama:pull', async (name: unknown) => {
     const model = modelNameSchema.parse(name);
+    if (pullCtrl) throw new UserFacingError('Ya hay una descarga de modelo en curso.');
+    pullCtrl = new AbortController();
     try {
-      await pullModel(ctx.settings.get().ollamaHost, model, (p) => broadcast('ollama:pullProgress', p));
+      await pullModel(ctx.settings.get().ollamaHost, model, (p) => broadcast('ollama:pullProgress', p), pullCtrl.signal);
       broadcast('ollama:pullProgress', { model, status: 'success', done: true });
     } catch (e) {
+      if (pullCtrl?.signal.aborted) {
+        broadcast('ollama:pullProgress', { model, status: 'cancelled', done: true, error: 'Descarga cancelada. Ollama conserva lo descargado y la reanuda si vuelves a intentarlo.' });
+        return;
+      }
       const msg = e instanceof UserFacingError ? e.message : 'No se pudo descargar el modelo. ¿Está Ollama abierto?';
       log.error('pull falló', e);
       broadcast('ollama:pullProgress', { model, status: 'error', done: true, error: msg });
       throw new UserFacingError(msg);
+    } finally {
+      pullCtrl = null;
+    }
+  });
+  h('ollama:pullCancel', () => {
+    pullCtrl?.abort();
+  });
+  h('ollama:benchmark', async (name: unknown) => {
+    const model = modelNameSchema.parse(name);
+    // No compite con un trabajo en curso por la GPU: se espera a que termine.
+    if (ctx.queue.activeCount > 0) throw new UserFacingError('Hay un trabajo en curso; ejecuta el benchmark cuando termine.');
+    if (benchCtrl) throw new UserFacingError('Ya hay un benchmark en curso.');
+    benchCtrl = new AbortController();
+    try {
+      const r = await benchmarkModel(ctx.settings.get().ollamaHost, model, benchCtrl.signal);
+      ctx.settings.update({ benchmarks: { ...(ctx.settings.get().benchmarks ?? {}), [model]: r } });
+      return r;
+    } finally {
+      benchCtrl = null;
     }
   });
 
