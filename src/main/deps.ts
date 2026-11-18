@@ -66,7 +66,7 @@ export function resolveTools(s: Settings, bundledDir: string | null): ResolvedTo
 
 export interface GpuProbes {
   nvidiaSmi: (exe: string) => Promise<string | null>;
-  pythonProbe: (python: string, script: string) => Promise<string | null>;
+  pythonProbe: (python: string, script: string, memoFile?: string) => Promise<string | null>;
 }
 
 export const realGpuProbes: GpuProbes = {
@@ -78,9 +78,9 @@ export const realGpuProbes: GpuProbes = {
       return null;
     }
   },
-  async pythonProbe(python, script) {
+  async pythonProbe(python, script, memoFile) {
     try {
-      const r = await runProcess(python, [script], { timeoutMs: 90000, env: { PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' } });
+      const r = await runProcess(python, memoFile ? [script, memoFile] : [script], { timeoutMs: 90000, env: { PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' } });
       return r.code === 0 ? r.stdout.trim().split(/\r?\n/).pop() ?? null : null;
     } catch {
       return null;
@@ -89,12 +89,19 @@ export const realGpuProbes: GpuProbes = {
 };
 
 /** Distingue «GPU NVIDIA detectada» de «Whisper puede usar CUDA de verdad». */
-export async function probeGpu(tools: ResolvedTools, s: Settings, probeScript: string, probes: GpuProbes = realGpuProbes): Promise<GpuInfo> {
+export async function probeGpu(
+  tools: ResolvedTools,
+  s: Settings,
+  probeScript: string,
+  probes: GpuProbes = realGpuProbes,
+  /** Archivo de la app donde se memorizan los hashes verificados de los modelos. */
+  memoFile?: string,
+): Promise<GpuInfo> {
   const smi = tools.nvidiaSmi ? parseNvidiaSmi((await probes.nvidiaSmi(tools.nvidiaSmi)) ?? '') : null;
   let pj: ProbeJson = {};
   let probeError: string | undefined;
   if (tools.python) {
-    const raw = await probes.pythonProbe(tools.python, probeScript);
+    const raw = await probes.pythonProbe(tools.python, probeScript, memoFile);
     try {
       pj = raw ? (JSON.parse(raw) as ProbeJson) : {};
       if (!raw) probeError = 'No se pudo ejecutar el diagnóstico de Python.';

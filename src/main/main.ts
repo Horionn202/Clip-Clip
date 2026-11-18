@@ -38,7 +38,7 @@ let tools: ResolvedTools = resolveTools(settings.get(), bundledBin);
 let gpuCache: Promise<GpuInfo> | null = null;
 function gpuInfo(refresh = false): Promise<GpuInfo> {
   if (!gpuCache || refresh) {
-    gpuCache = probeGpu(tools, settings.get(), probeScript).catch((e) => {
+    gpuCache = probeGpu(tools, settings.get(), probeScript, undefined, path.join(paths.dataDir, 'model-hashes.json')).catch((e) => {
       gpuCache = null;
       throw e;
     });
