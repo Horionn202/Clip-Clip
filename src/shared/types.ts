@@ -1,4 +1,5 @@
 import type { BenchmarkResult, Placement } from './aiProfiles';
+import type { LayoutChoice, LayoutId, NormRect, VisualResult } from './layouts';
 // Tipos compartidos entre main, preload y renderer. Sin dependencias de Node.
 
 export const MAX_CLIPS = 20;
@@ -45,6 +46,37 @@ export interface Clip {
   /** Nombre de archivo relativo a la carpeta de clips del trabajo. */
   file?: string;
   exportedPath?: string;
+  /** Layout vertical aplicado (por defecto, gameplay completo). */
+  layout?: LayoutId;
+  /** Posición de la facecam (normalizada 0–1), detectada o ajustada a mano. */
+  camRect?: NormRect;
+  /** Resultado del análisis visual del clip (experimental). */
+  visual?: VisualResult;
+  /** Layout sugerido cuando no hubo confianza para aplicarlo automáticamente. */
+  layoutSuggestion?: LayoutId;
+  layoutReason?: string;
+  /** Fotograma de referencia (frames/…) para el editor de facecam. */
+  thumb?: string;
+  /** Hay cambios sin renderizar (título, rango, hook o layout). */
+  dirty?: boolean;
+  /** Parámetros con los que se renderizó el MP4 actual (para saber si hay cambios pendientes de verdad). */
+  rendered?: RenderedState;
+}
+
+export interface RenderedState {
+  start: number;
+  end: number;
+  layout: LayoutId;
+  camRect?: NormRect;
+}
+
+export interface ClipPatch {
+  title?: string;
+  hook?: string;
+  start?: number;
+  end?: number;
+  layout?: LayoutId;
+  camRect?: NormRect | null;
 }
 
 /** Motores de transcripción soportados. */
@@ -141,6 +173,8 @@ export interface Job {
   createdAt: string;
   updatedAt: string;
   allowModelDownload?: boolean;
+  /** Dimensiones del vídeo de origen (para re-render y vista previa). */
+  sourceVideo?: { width: number; height: number };
   metrics?: JobMetrics;
   analysis?: AnalysisReport;
   engine?: EnginePlan;
@@ -221,6 +255,8 @@ export interface Settings {
   maxDownloadMB: number;
   minFreeDiskMB: number;
   cropOffsetX: number; // -1 (izquierda) .. 1 (derecha), 0 = centro
+  /** Layout por defecto de los clips: «auto» usa el análisis visual con fallback seguro. */
+  defaultLayout: LayoutChoice;
   subtitleFontSize: number;
   onboardingDone: boolean;
   /** Resultados del benchmark local por modelo (sólo los escribe el proceso principal). */
@@ -298,6 +334,9 @@ export interface ClipsApi {
   cancelJob(id: string): Promise<void>;
   deleteJob(id: string): Promise<boolean>;
   renameClip(jobId: string, clipId: string, title: string): Promise<Job>;
+  updateClip(jobId: string, clipId: string, patch: ClipPatch): Promise<Job>;
+  rerenderClip(jobId: string, clipId: string): Promise<Job>;
+  previewLayout(jobId: string, clipId: string, layout: LayoutId, camRect: NormRect | null, range?: { start: number; end: number } | null): Promise<string>;
   exportClip(jobId: string, clipId: string): Promise<string>;
   exportAll(jobId: string): Promise<number>;
   openJobFolder(jobId: string): Promise<void>;

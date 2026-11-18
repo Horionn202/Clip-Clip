@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { DURATION_PRESETS, ENGINE_IDS, MAX_CLIPS, type Settings } from '../shared/types';
 import { validateVideoUrl } from '../shared/validation';
+import { LAYOUT_IDS, validRect } from '../shared/layouts';
 import { validateExecutablePath } from './paths';
 
 export const idSchema = z.string().regex(/^[a-z0-9-]{8,64}$/);
@@ -55,6 +56,7 @@ export const settingsPatchSchema = z
     maxDownloadMB: z.number().int().min(10).max(20000),
     minFreeDiskMB: z.number().int().min(100).max(500000),
     cropOffsetX: z.number().min(-1).max(1),
+    defaultLayout: z.enum(['auto', ...LAYOUT_IDS]),
     subtitleFontSize: z.number().int().min(30).max(140),
     onboardingDone: z.boolean(),
   })
@@ -72,6 +74,26 @@ export const probeUrlSchema = z.string().max(2048).transform((u, ctx) => {
     return z.NEVER;
   }
 });
+
+export const normRectSchema = z
+  .object({ x: z.number(), y: z.number(), w: z.number(), h: z.number() })
+  .strict()
+  .refine((r) => validRect(r), 'Rectángulo de facecam fuera de la imagen o demasiado pequeño.');
+
+export const clipPatchSchema = z
+  .object({
+    title: z.string().trim().min(1).max(100).optional(),
+    hook: z.string().trim().max(200).optional(),
+    start: z.number().finite().min(0).optional(),
+    end: z.number().finite().min(0).optional(),
+    layout: z.enum(LAYOUT_IDS).optional(),
+    camRect: normRectSchema.nullable().optional(),
+  })
+  .strict();
+
+export const layoutIdSchema = z.enum(LAYOUT_IDS);
+
+export const previewRangeSchema = z.object({ start: z.number().finite().min(0), end: z.number().finite().min(0) }).strict();
 
 export const renameClipSchema = z.tuple([idSchema, idSchema, z.string().trim().min(1).max(100)]);
 export const modelNameSchema = z.string().regex(/^[A-Za-z0-9._:/-]{1,100}$/);

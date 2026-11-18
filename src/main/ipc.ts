@@ -2,15 +2,47 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { BrowserWindow, dialog, ipcMain, shell, type IpcMainInvokeEvent } from 'electron';
-import type { GpuInfo, Job, Settings } from '../shared/types';
+import type { ClipPatch, GpuInfo, Job, Settings } from '../shared/types';
 import { MAX_CLIPS } from '../shared/types';
 import { UserFacingError } from '../shared/validation';
-import { createJobSchema, idSchema, modelNameSchema, probeUrlSchema, renameClipSchema, rendererSettingsPatchSchema } from './ipcSchemas';
+import { clipPatchSchema, previewRangeSchema, createJobSchema, idSchema, layoutIdSchema, modelNameSchema, normRectSchema, probeUrlSchema, renameClipSchema, rendererSettingsPatchSchema } from './ipcSchemas';
 import { readSourceInfo } from './source';
 import { isInside } from './paths';
 import { log } from './logger';
 import { runDiagnostics, type ResolvedTools } from './deps';
 import { benchmarkModel, listModels, pullModel, unloadModel } from './ollama';
+import { renderClip, renderPreview, type RenderEnv } from './clipRender';
+import { applyClipPatch, renderedState } from '../shared/clipEdit';
+import { NEEDS_CAM } from '../shared/layouts';
+import { parseWhisperJson, type Word } from './media';
+import { event } from './logger';
+
+const TERMINAL = ['completed', 'cancelled', 'failed'];
+/** Trabajos con un re-render individual en curso (uno por trabajo a la vez). */
+const rerendering = new Set<string>();
+
+/** Entorno de render de un trabajo terminado: exige el vídeo original, la transcripción y las dimensiones. */
+function renderEnvFor(ctx: IpcContext, job: Job): RenderEnv {
+  const dir = jobDir(ctx.jobsDir, job.id);
+  const source = fs.readdirSync(dir).find((f) => /^source[.](mp4|mkv|webm|mov)$/i.test(f));
+  if (!source) throw new UserFacingError('El vídeo original ya no está (se borró en la limpieza): no se puede volver a renderizar. Desactiva «Borrar el vídeo original» para próximos trabajos.');
+  if (!job.sourceVideo) throw new UserFacingError('Este trabajo se creó con una versión anterior y no admite re-render.');
+  const tFile = path.join(dir, 'transcript.json');
+  if (!fs.existsSync(tFile)) throw new UserFacingError('Falta la transcripción del trabajo: no se pueden generar los subtítulos.');
+  const ffmpeg = ctx.tools().ffmpeg;
+  if (!ffmpeg) throw new UserFacingError('Falta FFmpeg. Revisa Configuración → Diagnóstico.');
+  const { words } = parseWhisperJson(fs.readFileSync(tFile, 'utf8'));
+  const s = ctx.settings.get();
+  return {
+    ffmpeg,
+    clipsDir: path.join(dir, 'clips'),
+    sourcePath: path.join(dir, source),
+    srcW: job.sourceVideo.width,
+    srcH: job.sourceVideo.height,
+    words: words as Word[],
+    settings: { cropOffsetX: s.cropOffsetX, subtitleFontSize: s.subtitleFontSize },
+  };
+}
 import { CancelledError } from './proc';
 
 let pullCtrl: AbortController | null = null;
@@ -81,6 +113,7 @@ function uniquePath(dir: string, file: string): string {
 function exportOne(ctx: IpcContext, job: Job, clipId: string): string {
   const clip = job.clips.find((c) => c.id === clipId);
   if (!clip?.file) throw new UserFacingError('El clip no está renderizado.');
+  if (clip.dirty) throw new UserFacingError(`El clip ${clip.index} tiene cambios sin renderizar: vuelve a renderizarlo antes de exportarlo.`);
   const clipsDir = path.join(jobDir(ctx.jobsDir, job.id), 'clips');
   const src = path.join(clipsDir, clip.file);
   if (!isInside(clipsDir, src) || !fs.existsSync(src)) throw new UserFacingError('No se encuentra el archivo del clip.');
@@ -240,6 +273,65 @@ export function registerIpc(ctx: IpcContext): void {
     emitJob(job);
     return job;
   });
+  h('clips:update', (jobId: unknown, clipId: unknown, patch: unknown) => {
+    const job = requireJob(ctx, jobId);
+    const id = idSchema.parse(clipId);
+    const p = clipPatchSchema.parse(patch) as ClipPatch;
+    if (!TERMINAL.includes(job.status)) throw new UserFacingError('Espera a que el trabajo termine para editar sus clips.');
+    // Mientras se re-renderiza un clip del trabajo no se aceptan cambios (evita perder el resultado del render).
+    if (rerendering.has(job.id)) throw new UserFacingError('Se está volviendo a renderizar un clip de este trabajo; espera a que termine.');
+    const next = applyClipPatch(id, p, { clips: job.clips, preset: job.preset, sourceDuration: job.sourceDuration ?? 0 });
+    // Un cambio que exige re-render sólo se guarda si se puede renderizar (vídeo original, transcripción…);
+    // así nunca queda un clip marcado como pendiente sin forma de resolverlo. Los cambios de título/hook siempre se permiten.
+    const prev = job.clips.find((c) => c.id === id);
+    if (next.dirty && !prev?.dirty) renderEnvFor(ctx, job);
+    job.clips = job.clips.map((c) => (c.id === id ? next : c));
+    ctx.jobs.put(job);
+    emitJob(job);
+    return job;
+  });
+  h('clips:rerender', async (jobId: unknown, clipId: unknown) => {
+    const job = requireJob(ctx, jobId);
+    const id = idSchema.parse(clipId);
+    const clip = job.clips.find((c) => c.id === id);
+    if (!clip) throw new UserFacingError('El clip no existe.');
+    if (job.status !== 'completed') throw new UserFacingError('Sólo se pueden re-renderizar clips de trabajos completados.');
+    if (rerendering.has(job.id)) throw new UserFacingError('Ya se está re-renderizando un clip de este trabajo.');
+    const env = renderEnvFor(ctx, job);
+    rerendering.add(job.id);
+    try {
+      const file = await renderClip({ ...clip }, env);
+      // Se aplica sobre el clip vigente del trabajo guardado (no sobre una copia antigua).
+      const current = ctx.jobs.get(job.id) ?? job;
+      const target = current.clips.find((c) => c.id === id);
+      if (!target) throw new UserFacingError('El clip ya no existe.');
+      target.file = file;
+      target.dirty = false;
+      target.rendered = renderedState({ ...clip });
+      target.exportedPath = undefined; // la exportación anterior ya no corresponde al clip actual
+      ctx.jobs.put(current);
+      emitJob(current);
+      event('clip_rerender', { job: current.id, clip: target.index, layout: target.layout });
+      return current;
+    } finally {
+      rerendering.delete(job.id);
+    }
+  });
+  h('clips:preview', async (jobId: unknown, clipId: unknown, layout: unknown, camRect: unknown, range: unknown) => {
+    const job = requireJob(ctx, jobId);
+    const id = idSchema.parse(clipId);
+    const clip = job.clips.find((c) => c.id === id);
+    if (!clip) throw new UserFacingError('El clip no existe.');
+    const l = layoutIdSchema.parse(layout);
+    const cam = camRect == null ? undefined : normRectSchema.parse(camRect);
+    if (NEEDS_CAM.includes(l) && !cam) throw new UserFacingError('Este layout necesita la posición de la facecam.');
+    // Rango en edición (sin guardar): se valida igual que al guardar para previsualizar lo que se renderizará.
+    const r = range == null ? null : previewRangeSchema.parse(range);
+    const draft = r ? applyClipPatch(id, { start: r.start, end: r.end }, { clips: job.clips, preset: job.preset, sourceDuration: job.sourceDuration ?? 0 }) : clip;
+    const env = renderEnvFor(ctx, job);
+    const name = `${String(clip.index).padStart(2, '0')}_preview_${l}.jpg`;
+    return renderPreview(env, { ...clip, start: draft.start, end: draft.end, layout: l, camRect: cam }, path.join(jobDir(ctx.jobsDir, job.id), 'frames'), name);
+  });
   h('clips:export', (jobId: unknown, clipId: unknown) => {
     const job = requireJob(ctx, jobId);
     const p = exportOne(ctx, job, idSchema.parse(clipId));
@@ -249,7 +341,8 @@ export function registerIpc(ctx: IpcContext): void {
   h('clips:exportAll', (jobId: unknown) => {
     const job = requireJob(ctx, jobId);
     let n = 0;
-    for (const c of job.clips) if (c.file) (exportOne(ctx, job, c.id), n++);
+    // Los clips con cambios sin renderizar no se exportan (serían una versión antigua).
+    for (const c of job.clips) if (c.file && !c.dirty) (exportOne(ctx, job, c.id), n++);
     emitJob(job);
     return n;
   });
