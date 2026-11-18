@@ -11,6 +11,7 @@ import {
   isTorchCpuOnly,
   openaiArgs,
   openaiCommand,
+  pythonNextToWhisper,
   parseNvidiaSmi,
   parseOpenaiSegmentEnd,
   selectEngine,
@@ -164,5 +165,13 @@ describe('revisión Codex: motor real y entorno diagnosticado', () => {
   it('sin ningún motor la transcripción no está lista', async () => {
     const d = await runDiagnostics({ ...tools, whisper: null }, defaultSettings('x'), { version: async () => 'v', ollamaModels: async () => ['llama3.2:3b'] }, { plan: null });
     expect(d.items.find((i) => i.id === 'whisper')).toMatchObject({ ok: false, detail: 'Ningún motor disponible' });
+  });
+});
+
+describe('revisión Codex: intérprete junto al lanzador del venv', () => {
+  it('prueba primero <venv>/Scripts/python.exe y luego la instalación normal', () => {
+    const c = pythonNextToWhisper(['C:', 'venv', 'Scripts', 'whisper.exe'].join('\\')).map((p) => p.split('\\').join('/'));
+    expect(c[0]).toBe('C:/venv/Scripts/python.exe');
+    expect(c[1]).toBe('C:/venv/python.exe');
   });
 });

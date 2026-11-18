@@ -48,8 +48,7 @@ export function resolveTools(s: Settings, bundledDir: string | null): ResolvedTo
   // Python del mismo entorno que whisper.exe (pip), o el configurado, o el del PATH.
   let python = s.pythonPath ? findExecutable('python', s.pythonPath, null) : null;
   if (!python && whisper) {
-    const sibling = pythonNextToWhisper(whisper);
-    if (fs.existsSync(sibling)) python = sibling;
+    python = pythonNextToWhisper(whisper).find((p) => fs.existsSync(p)) ?? null;
   }
   if (!python && !s.pythonPath) python = findExecutable('python', '', null);
   return {

@@ -115,3 +115,13 @@ describe('mensaje final obtenidos/meta', () => {
     expect(resultSummary(3, 5, 'otra causa')).toBe('3/5 clips generados: otra causa');
   });
 });
+
+describe('revisión Codex: sin recorte antes de puntuar', () => {
+  it('un candidato mejor tras 100 peores sigue ganando', () => {
+    const { words: w } = syntheticTranscript(5000);
+    const weak = Array.from({ length: 100 }, (_, k) => ({ ...goodClip(k * 31, 30, k), score: 1, hook: 'Nada que ver con el contenido real del clip' }));
+    const strong = { ...goodClip(4000, 30, 7), score: 100 };
+    const r = selectRound([...weak, strong], 1, { preset: 30, sourceDuration: 5000, words: w, taken: [] });
+    expect(r.accepted[0].start).toBeGreaterThanOrEqual(3990);
+  });
+});

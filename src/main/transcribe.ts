@@ -188,9 +188,15 @@ export function fasterArgs(script: string, plan: EnginePlan, audio: string, outJ
   return a;
 }
 
-/** python.exe asociado a un whisper.exe de pip (…\PythonXY\Scripts\whisper.exe → …\PythonXY\python.exe). */
-export function pythonNextToWhisper(whisperExe: string): string {
-  return path.join(path.dirname(path.dirname(whisperExe)), process.platform === 'win32' ? 'python.exe' : 'python');
+/**
+ * Intérpretes candidatos para un whisper.exe, en orden:
+ * 1) junto al lanzador (virtualenv de Windows: <venv>\Scripts\python.exe);
+ * 2) instalación normal de Python (…\PythonXY\Scripts\whisper.exe → …\PythonXY\python.exe).
+ */
+export function pythonNextToWhisper(whisperExe: string): string[] {
+  const exe = process.platform === 'win32' ? 'python.exe' : 'python';
+  const dir = path.dirname(whisperExe);
+  return [path.join(dir, exe), path.join(path.dirname(dir), exe)];
 }
 
 // ---- Progreso ----

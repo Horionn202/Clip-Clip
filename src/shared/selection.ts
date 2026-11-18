@@ -273,7 +273,9 @@ export function selectRound(raws: unknown[], need: number, o: Omit<EvaluateOptio
   const rejected: Partial<Record<RejectReason, number>> = {};
   const bump = (r: RejectReason) => (rejected[r] = (rejected[r] ?? 0) + 1);
   const valid: Candidate[] = [];
-  for (const raw of raws.slice(0, 100)) {
+  // Sin recorte por prefijo: se puntúa todo antes de ordenar (cada respuesta del LLM ya viene acotada).
+  // El tope sólo protege de entradas patológicas.
+  for (const raw of raws.slice(0, 5000)) {
     const ev = evaluateCandidate(raw, { ...o, taken: o.taken });
     if (ev.ok) valid.push(ev.candidate);
     else bump(ev.reason);
