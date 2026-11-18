@@ -10,10 +10,13 @@ import { readSourceInfo } from './source';
 import { isInside } from './paths';
 import { log } from './logger';
 import { runDiagnostics, type ResolvedTools } from './deps';
-import { benchmarkModel, listModels, pullModel } from './ollama';
+import { benchmarkModel, listModels, pullModel, unloadModel } from './ollama';
+import { CancelledError } from './proc';
 
 let pullCtrl: AbortController | null = null;
 let benchCtrl: AbortController | null = null;
+let benchRun: Promise<void> | null = null;
+let benchModel: string | null = null;
 import type { JobQueue } from './queue';
 import type { JobStore, SettingsStore } from './store';
 import { jobDir } from './pipeline';
@@ -152,17 +155,36 @@ export function registerIpc(ctx: IpcContext): void {
     if (ctx.queue.activeCount > 0) throw new UserFacingError('Hay un trabajo en curso; ejecuta el benchmark cuando termine.');
     if (benchCtrl) throw new UserFacingError('Ya hay un benchmark en curso.');
     benchCtrl = new AbortController();
+    benchModel = model;
+    const run = benchmarkModel(ctx.settings.get().ollamaHost, model, benchCtrl.signal);
+    benchRun = run.then(
+      () => undefined,
+      () => undefined,
+    );
     try {
-      const r = await benchmarkModel(ctx.settings.get().ollamaHost, model, benchCtrl.signal);
+      const r = await run;
       ctx.settings.update({ benchmarks: { ...(ctx.settings.get().benchmarks ?? {}), [model]: r } });
       return r;
+    } catch (e) {
+      if (e instanceof CancelledError) throw new UserFacingError('Benchmark cancelado: se ha iniciado un trabajo.');
+      throw e;
     } finally {
       benchCtrl = null;
+      benchRun = null;
+      benchModel = null;
     }
   });
 
-  h('jobs:create', (req: unknown) => {
+  h('jobs:create', async (req: unknown) => {
     const r = createJobSchema.parse(req);
+    // Un trabajo tiene prioridad: se cancela el benchmark y se espera a que suelte la GPU antes de encolar.
+    if (benchCtrl) {
+      const benched = benchModel;
+      benchCtrl.abort();
+      await benchRun;
+      // Al cancelar a mitad, Ollama puede seguir teniendo el modelo en VRAM: se libera explícitamente.
+      if (benched) await unloadModel(ctx.settings.get().ollamaHost, benched);
+    }
     if (ctx.queue.activeCount >= MAX_ACTIVE_JOBS) throw new UserFacingError('Hay demasiados trabajos en cola. Espera a que terminen.');
     const now = new Date().toISOString();
     const job: Job = {

@@ -18,7 +18,13 @@ const FIT_LABEL: Record<Fit, string> = {
 };
 
 /** Configuración → Modelo de IA: perfiles comprensibles, descarga confirmada y cancelable, benchmark. */
-export function AiModelPanel(props: { settings: Settings; diag: Diagnostics | null; patch: (p: Partial<Settings>) => Promise<void> }) {
+export function AiModelPanel(props: {
+  settings: Settings;
+  diag: Diagnostics | null;
+  patch: (p: Partial<Settings>) => Promise<void>;
+  /** Refresca el diagnóstico global (p. ej. el modelo configurado acaba de descargarse). */
+  onModelsChanged: () => void;
+}) {
   const s = props.settings;
   const gpu = props.diag?.gpu;
   const vram = gpu?.vramMB ?? null;
@@ -37,7 +43,10 @@ export function AiModelPanel(props: { settings: Settings; diag: Diagnostics | nu
     refresh();
     return api().onPullProgress((p) => {
       setPull(p);
-      if (p.done) refresh();
+      if (p.done) {
+        refresh();
+        props.onModelsChanged();
+      }
     });
   }, []);
 

@@ -56,7 +56,7 @@ export function SettingsPage(props: { settings: Settings; onChange: (s: Settings
       <LastRunPanel jobs={props.jobs} />
 
       <h2>Modelo de IA (Ollama)</h2>
-      <AiModelPanel settings={s} diag={props.diag} patch={(p) => patch(p).then(props.refreshDiag)} />
+      <AiModelPanel settings={s} diag={props.diag} patch={(p) => patch(p).then(props.refreshDiag)} onModelsChanged={() => void props.refreshDiag()} />
 
       <h2>Transcripción (Whisper local)</h2>
       <label className="field">

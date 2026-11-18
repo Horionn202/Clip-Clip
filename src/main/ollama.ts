@@ -70,12 +70,15 @@ export async function benchmarkModel(host: string, model: string, signal: AbortS
   } catch {
     validJson = false;
   }
+  const placement = (await modelPlacement(host, model)) ?? undefined;
+  // Libera la VRAM tras medir: el modelo del benchmark puede no ser el del próximo trabajo.
+  await unloadModel(host, model);
   return {
     model,
     tokensPerSec: tokensPerSecond(j.eval_count ?? 0, j.eval_duration ?? 0),
     loadSec: Math.round(((j.load_duration ?? 0) / 1e9) * 10) / 10,
     totalSec: Math.round((Date.now() - t0) / 100) / 10,
-    placement: (await modelPlacement(host, model)) ?? undefined,
+    placement,
     validJson,
     at: new Date().toISOString(),
   };
