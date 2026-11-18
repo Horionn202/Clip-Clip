@@ -93,6 +93,8 @@ export const clipPatchSchema = z
 
 export const layoutIdSchema = z.enum(LAYOUT_IDS);
 
+export const previewRangeSchema = z.object({ start: z.number().finite().min(0), end: z.number().finite().min(0) }).strict();
+
 export const renameClipSchema = z.tuple([idSchema, idSchema, z.string().trim().min(1).max(100)]);
 export const modelNameSchema = z.string().regex(/^[A-Za-z0-9._:/-]{1,100}$/);
 

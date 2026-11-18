@@ -327,7 +327,7 @@ export interface ClipsApi {
   renameClip(jobId: string, clipId: string, title: string): Promise<Job>;
   updateClip(jobId: string, clipId: string, patch: ClipPatch): Promise<Job>;
   rerenderClip(jobId: string, clipId: string): Promise<Job>;
-  previewLayout(jobId: string, clipId: string, layout: LayoutId, camRect: NormRect | null): Promise<string>;
+  previewLayout(jobId: string, clipId: string, layout: LayoutId, camRect: NormRect | null, range?: { start: number; end: number } | null): Promise<string>;
   exportClip(jobId: string, clipId: string): Promise<string>;
   exportAll(jobId: string): Promise<number>;
   openJobFolder(jobId: string): Promise<void>;

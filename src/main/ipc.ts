@@ -5,7 +5,7 @@ import { BrowserWindow, dialog, ipcMain, shell, type IpcMainInvokeEvent } from '
 import type { ClipPatch, GpuInfo, Job, Settings } from '../shared/types';
 import { MAX_CLIPS } from '../shared/types';
 import { UserFacingError } from '../shared/validation';
-import { clipPatchSchema, createJobSchema, idSchema, layoutIdSchema, modelNameSchema, normRectSchema, probeUrlSchema, renameClipSchema, rendererSettingsPatchSchema } from './ipcSchemas';
+import { clipPatchSchema, previewRangeSchema, createJobSchema, idSchema, layoutIdSchema, modelNameSchema, normRectSchema, probeUrlSchema, renameClipSchema, rendererSettingsPatchSchema } from './ipcSchemas';
 import { readSourceInfo } from './source';
 import { isInside } from './paths';
 import { log } from './logger';
@@ -278,6 +278,8 @@ export function registerIpc(ctx: IpcContext): void {
     const id = idSchema.parse(clipId);
     const p = clipPatchSchema.parse(patch) as ClipPatch;
     if (!TERMINAL.includes(job.status)) throw new UserFacingError('Espera a que el trabajo termine para editar sus clips.');
+    // Mientras se re-renderiza un clip del trabajo no se aceptan cambios (evita perder el resultado del render).
+    if (rerendering.has(job.id)) throw new UserFacingError('Se está volviendo a renderizar un clip de este trabajo; espera a que termine.');
     const next = applyClipPatch(id, p, { clips: job.clips, preset: job.preset, sourceDuration: job.sourceDuration ?? 0 });
     job.clips = job.clips.map((c) => (c.id === id ? next : c));
     ctx.jobs.put(job);
@@ -294,18 +296,23 @@ export function registerIpc(ctx: IpcContext): void {
     const env = renderEnvFor(ctx, job);
     rerendering.add(job.id);
     try {
-      clip.file = await renderClip(clip, env);
-      clip.dirty = false;
-      clip.exportedPath = undefined; // la exportación anterior ya no corresponde al clip actual
-      ctx.jobs.put(job);
-      emitJob(job);
-      event('clip_rerender', { job: job.id, clip: clip.index, layout: clip.layout });
-      return job;
+      const file = await renderClip({ ...clip }, env);
+      // Se aplica sobre el clip vigente del trabajo guardado (no sobre una copia antigua).
+      const current = ctx.jobs.get(job.id) ?? job;
+      const target = current.clips.find((c) => c.id === id);
+      if (!target) throw new UserFacingError('El clip ya no existe.');
+      target.file = file;
+      target.dirty = false;
+      target.exportedPath = undefined; // la exportación anterior ya no corresponde al clip actual
+      ctx.jobs.put(current);
+      emitJob(current);
+      event('clip_rerender', { job: current.id, clip: target.index, layout: target.layout });
+      return current;
     } finally {
       rerendering.delete(job.id);
     }
   });
-  h('clips:preview', async (jobId: unknown, clipId: unknown, layout: unknown, camRect: unknown) => {
+  h('clips:preview', async (jobId: unknown, clipId: unknown, layout: unknown, camRect: unknown, range: unknown) => {
     const job = requireJob(ctx, jobId);
     const id = idSchema.parse(clipId);
     const clip = job.clips.find((c) => c.id === id);
@@ -313,9 +320,12 @@ export function registerIpc(ctx: IpcContext): void {
     const l = layoutIdSchema.parse(layout);
     const cam = camRect == null ? undefined : normRectSchema.parse(camRect);
     if (NEEDS_CAM.includes(l) && !cam) throw new UserFacingError('Este layout necesita la posición de la facecam.');
+    // Rango en edición (sin guardar): se valida igual que al guardar para previsualizar lo que se renderizará.
+    const r = range == null ? null : previewRangeSchema.parse(range);
+    const draft = r ? applyClipPatch(id, { start: r.start, end: r.end }, { clips: job.clips, preset: job.preset, sourceDuration: job.sourceDuration ?? 0 }) : clip;
     const env = renderEnvFor(ctx, job);
     const name = `${String(clip.index).padStart(2, '0')}_preview_${l}.jpg`;
-    return renderPreview(env, { ...clip, layout: l, camRect: cam }, path.join(jobDir(ctx.jobsDir, job.id), 'frames'), name);
+    return renderPreview(env, { ...clip, start: draft.start, end: draft.end, layout: l, camRect: cam }, path.join(jobDir(ctx.jobsDir, job.id), 'frames'), name);
   });
   h('clips:export', (jobId: unknown, clipId: unknown) => {
     const job = requireJob(ctx, jobId);

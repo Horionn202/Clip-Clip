@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { applyClipPatch, readyCount } from '../src/shared/clipEdit';
-import { clipPatchSchema, normRectSchema } from '../src/main/ipcSchemas';
+import { clipPatchSchema, normRectSchema, previewRangeSchema } from '../src/main/ipcSchemas';
 import type { Clip } from '../src/shared/types';
 
 const mk = (id: string, index: number, start: number, extra: Partial<Clip> = {}): Clip => ({
@@ -61,5 +61,17 @@ describe('IPC: validación de la edición de clips', () => {
     expect(normRectSchema.safeParse({ x: 0.7, y: 0.6, w: 0.28, h: 0.36 }).success).toBe(true);
     expect(normRectSchema.safeParse({ x: 0.9, y: 0.6, w: 0.28, h: 0.36 }).success).toBe(false);
     expect(normRectSchema.safeParse({ x: 0.1, y: 0.1, w: 0.2, h: 0.2, extra: 1 }).success).toBe(false);
+  });
+});
+
+describe('revisión Codex: vista previa con el rango en edición', () => {
+  it('valida el rango de la vista previa', () => {
+    expect(previewRangeSchema.safeParse({ start: 12, end: 42 }).success).toBe(true);
+    expect(previewRangeSchema.safeParse({ start: -1, end: 42 }).success).toBe(false);
+    expect(previewRangeSchema.safeParse({ start: 12, end: 42, file: 'x' }).success).toBe(false);
+  });
+  it('el rango en edición pasa por la misma validación que al guardar', () => {
+    expect(applyClipPatch('aaaaaaaa-1', { start: 300, end: 330 }, ctx)).toMatchObject({ start: 300, end: 330 });
+    expect(() => applyClipPatch('aaaaaaaa-1', { start: 95, end: 125 }, ctx)).toThrow(/solapa/);
   });
 });

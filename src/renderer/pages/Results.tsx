@@ -97,7 +97,23 @@ function ClipCard({ job, clip, onError, onInfo }: { job: Job; clip: Clip; onErro
         >
           Exportar
         </button>
-        <button className="ghost" aria-expanded={editing} onClick={() => setEditing(!editing)}>
+        <button
+          className="ghost"
+          aria-expanded={editing}
+          onClick={() => {
+            // Al abrir el editor, los borradores parten del clip guardado actual.
+            if (!editing) {
+              setTitle(clip.title);
+              setHook(clip.hook);
+              setStart(clip.start.toFixed(2));
+              setEnd(clip.end.toFixed(2));
+              setLayout(clip.layout ?? 'gameplay_full');
+              setCam(clip.camRect ?? null);
+              setPreview(null);
+            }
+            setEditing(!editing);
+          }}
+        >
           {editing ? 'Cerrar edición' : 'Editar clip'}
         </button>
         {clip.exportedPath && <span className="small ok">✓ exportado</span>}
@@ -157,7 +173,7 @@ function ClipCard({ job, clip, onError, onInfo }: { job: Job; clip: Clip; onErro
           )}
           {preview && <img className="layout-preview" src={`clip://frame/${job.id}/${preview}?t=${Date.now()}`} alt="Vista previa del layout" />}
           <div className="row">
-            <button disabled={!!busy} onClick={() => run('preview', async () => setPreview(await api().previewLayout(job.id, clip.id, layout, needsCam ? cam : null)))}>
+            <button disabled={!!busy} onClick={() => run('preview', async () => setPreview(await api().previewLayout(job.id, clip.id, layout, needsCam ? cam : null, { start: Number(start), end: Number(end) })))}>
               {busy === 'preview' ? 'Generando…' : 'Vista previa'}
             </button>
             <button
@@ -251,7 +267,7 @@ export function ResultsPage(props: { jobs: Job[]; selected: string | null; onSel
       )}
       <div className="gallery">
         {job.clips.map((c) => (
-          <ClipCard key={`${c.id}-${job.updatedAt}`} job={job} clip={c} onError={(t) => setMsg({ kind: 'error', text: t })} onInfo={(t) => setMsg({ kind: 'info', text: t })} />
+          <ClipCard key={c.id} job={job} clip={c} onError={(t) => setMsg({ kind: 'error', text: t })} onInfo={(t) => setMsg({ kind: 'info', text: t })} />
         ))}
       </div>
     </section>
