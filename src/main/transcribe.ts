@@ -76,6 +76,8 @@ export interface SelectOptions {
   precision: Precision;
   vramMB: number | null;
   avail: EngineAvailability;
+  /** Nombre de la GPU (para detectar FP16 no fiable). */
+  gpuName?: string | null;
   /** Si se pasa, se prefieren modelos ya descargados al degradar por VRAM. */
   isCached?: (engine: EngineId, model: string) => boolean;
 }
@@ -88,17 +90,30 @@ export function engineCandidates(o: SelectOptions): EngineId[] {
   return avail;
 }
 
-/** Elige el modelo que cabe en VRAM (el pedido o el mayor inferior que quepa). */
+/** Margen de seguridad de VRAM: el modelo debe caber en el 95 % de la memoria de la GPU. */
+export const VRAM_SAFETY = 0.95;
+
+/**
+ * GPUs Turing sin Tensor Cores (GTX 16xx) producen NaN con Whisper en FP16
+ * (verificado en GTX 1660 SUPER: «Skipping … ValueError … invalid values»). En «auto» se usa FP32.
+ */
+export function fp16Unsafe(gpuName: string | null | undefined): boolean {
+  return !!gpuName && /GTX\s*16\d\d|GTX\s*1650/i.test(gpuName);
+}
+
+/** Elige el modelo que cabe en VRAM con margen (el pedido o el mayor inferior que quepa). */
 function fitModel(engine: EngineId, wanted: string, vramMB: number | null, warnings: string[]): string | null {
   if (engine === 'openai-whisper-cpu' || vramMB === null) return wanted;
   const table = engine === 'faster-whisper-cuda' ? VRAM_GB.faster : VRAM_GB.openai;
-  const vramGB = vramMB / 1024;
-  if ((table[wanted] ?? 99) <= vramGB) return wanted;
+  const usable = (vramMB / 1024) * VRAM_SAFETY;
+  if ((table[wanted] ?? 99) <= usable) return wanted;
   const smaller = MODEL_ORDER.slice(0, Math.max(0, MODEL_ORDER.indexOf(wanted)))
     .reverse()
-    .find((m) => (table[m] ?? 99) <= vramGB);
+    .find((m) => (table[m] ?? 99) <= usable);
   if (!smaller) return null;
-  warnings.push(`El modelo «${wanted}» necesita ≈ ${table[wanted]} GB de VRAM y la GPU tiene ${vramGB.toFixed(1)} GB; se usará «${smaller}».`);
+  warnings.push(
+    `El modelo «${wanted}» necesita ≈ ${table[wanted]} GB de VRAM y la GPU tiene ${(vramMB / 1024).toFixed(1)} GB (margen de seguridad ${Math.round((1 - VRAM_SAFETY) * 100)} %); se usará «${smaller}».`,
+  );
   return smaller;
 }
 
@@ -110,15 +125,19 @@ export function buildPlan(engine: EngineId, o: SelectOptions): EnginePlan | null
     // En CPU FP16 no está soportado: siempre --fp16 False.
     return { engine, device: 'cpu', model, fp16: false, warnings };
   }
+  const unsafe = o.precision === 'auto' && fp16Unsafe(o.gpuName);
+  if (unsafe) warnings.push(`FP16 no es fiable en ${o.gpuName}; se usa FP32 en GPU.`);
   if (engine === 'openai-whisper-cuda') {
-    const fp16 = o.precision !== 'fp32';
+    const fp16 = o.precision === 'fp16' || (o.precision === 'auto' && !unsafe);
     return { engine, device: 'cuda', model, fp16, warnings };
   }
-  // faster-whisper: float16 si hay VRAM holgada; int8_float16 si va justa (menos memoria).
+  // faster-whisper: float16 si hay VRAM holgada; int8_float16 si va justa. Sin FP16 fiable: float32 / int8_float32.
   const need = VRAM_GB.faster[model] ?? 2;
   const vramGB = (o.vramMB ?? 0) / 1024;
-  let computeType = o.precision === 'fp32' ? 'float32' : need * 1.5 <= vramGB || o.vramMB === null ? 'float16' : 'int8_float16';
-  if (computeType === 'int8_float16') warnings.push('VRAM justa: se usa int8_float16 para reducir memoria.');
+  const roomy = need * 1.5 <= vramGB || o.vramMB === null;
+  const noHalf = o.precision === 'fp32' || unsafe;
+  const computeType = noHalf ? (roomy ? 'float32' : 'int8_float32') : roomy ? 'float16' : 'int8_float16';
+  if (computeType.startsWith('int8')) warnings.push(`VRAM justa: se usa ${computeType} para reducir memoria.`);
   return { engine, device: 'cuda', model, fp16: computeType === 'float16', computeType, warnings };
 }
 
@@ -135,6 +154,11 @@ export function selectEngine(o: SelectOptions): EnginePlan | null {
 export function fallbackPlans(failed: EnginePlan, o: SelectOptions): EnginePlan[] {
   const out: EnginePlan[] = [];
   const idx = MODEL_ORDER.indexOf(failed.model);
+  if (failed.device === 'cuda' && failed.fp16) {
+    // Primero: mismo motor y modelo en FP32 (los NaN de FP16 no se arreglan bajando de modelo).
+    const p = buildPlan(failed.engine, { ...o, model: failed.model, precision: 'fp32' });
+    if (p && p.model === failed.model) out.push({ ...p, warnings: [...p.warnings, 'Reintento en FP32 tras fallo en FP16.'] });
+  }
   if (failed.device === 'cuda') {
     const smaller = MODEL_ORDER.slice(0, Math.max(0, idx)).reverse()[0];
     if (smaller) {
@@ -154,8 +178,20 @@ export function cpuModelFor(model: string): string {
   return ['turbo', 'large', 'medium'].includes(model) ? 'small' : model;
 }
 
-export function isGpuFailure(stderr: string): boolean {
-  return /CUDA out of memory|OutOfMemoryError|CUBLAS_STATUS|cuDNN|cudnn|CUDA error|no kernel image|cublas64|Could not load library|CUDA failed|out of memory/i.test(stderr);
+export function isGpuFailure(output: string): boolean {
+  return /CUDA out of memory|OutOfMemoryError|CUBLAS_STATUS|cuDNN|cudnn|CUDA error|no kernel image|cublas64|Could not load library|CUDA failed|out of memory|invalid values|\bnan\b/i.test(
+    output,
+  );
+}
+
+/**
+ * El CLI de openai-whisper captura la excepción, imprime «Skipping <audio> due to <Error>: …» en su propia
+ * línea y sale con código 0. Se exige ese formato (inicio de línea + nombre de excepción) para no confundirlo
+ * con texto transcrito como «Skipping breakfast due to…», que va tras «[mm:ss --> mm:ss]».
+ */
+export function whisperSkipped(output: string): string | null {
+  const m = output.match(/^Skipping \S.*? due to ([A-Za-z_][\w.]*(?:Error|Exception)\b[^\r\n]{0,300})$/m);
+  return m ? m[1] : null;
 }
 
 /** Argumentos para el CLI de openai-whisper. */

@@ -14,6 +14,7 @@ import type { JobRunner } from './queue';
 import { friendlyYtDlpError } from './ytdlp';
 import { readSourceInfo } from './source';
 import { analyzeClips } from './analysis';
+import { listFiles, locateTranscript, sanitizeArgs, tailLines } from './transcriptOutput';
 import {
   availability,
   DownloadClock,
@@ -22,6 +23,7 @@ import {
   fasterArgs,
   formatProgress,
   isGpuFailure,
+  whisperSkipped,
   isModelCached,
   isModelDownloadLine,
   openaiArgs,
@@ -39,6 +41,8 @@ export interface PipelineContext {
   /** Diagnóstico GPU/CUDA (ejecuta probe.py). */
   gpuInfo: () => Promise<GpuInfo>;
   fasterScript: string;
+  /** Ejecutor de procesos (inyectable en pruebas). */
+  run?: typeof runProcess;
 }
 
 export function jobDir(jobsDir: string, id: string): string {
@@ -110,6 +114,7 @@ export function createPipeline(ctx: PipelineContext): JobRunner {
         model: s.whisperModel,
         precision: s.whisperPrecision,
         vramMB: gpu.vramMB,
+        gpuName: gpu.nvidiaGpu,
         avail: availability(gpu, !!tools.whisper),
       };
       const plan = selectEngine(selOpts);
@@ -195,6 +200,7 @@ export function createPipeline(ctx: PipelineContext): JobRunner {
       let usedPlan: EnginePlan | null = null;
       let tFile = '';
       let lastErr = '';
+      let lastReason = '';
       for (const p of attempts) {
         if (p !== plan && !isModelCached(p.engine, p.model, gpu) && !job.allowModelDownload) continue;
         if (p !== plan) {
@@ -202,10 +208,22 @@ export function createPipeline(ctx: PipelineContext): JobRunner {
           event('transcribe_fallback', { job: job.id, from: plan.engine, to: p.engine, model: p.model });
         }
         update({ engine: p });
+        const tAttempt = Date.now();
         const r = await transcribe(ctx, tools, p, audioPath, dir, s.whisperLanguage, duration, !!job.allowModelDownload, !isModelCached(p.engine, p.model, gpu), signal, (d) =>
           update({ detail: d, progress: d.audioTotalSec ? Math.min(1, d.audioDoneSec / d.audioTotalSec) : 0, message: formatProgress(d) }),
           gpu.whisperInstalled,
         );
+        (metrics.transcribeAttempts ??= []).push({
+          engine: p.engine,
+          model: p.model,
+          device: p.device,
+          precision: p.computeType ?? (p.fp16 ? 'fp16' : 'fp32'),
+          exitCode: r.exitCode ?? null,
+          ok: r.ok,
+          reason: r.reason,
+          ms: Date.now() - tAttempt,
+        });
+        update({ metrics: { ...metrics } });
         if (r.ok) {
           usedPlan = p;
           tFile = r.outFile;
@@ -214,13 +232,20 @@ export function createPipeline(ctx: PipelineContext): JobRunner {
           break;
         }
         lastErr = r.stderr;
+        lastReason = r.reason ?? lastReason;
         if (p.device !== 'cuda' || !isGpuFailure(r.stderr)) break;
       }
-      if (!usedPlan) throw new UserFacingError('La transcripción local falló. Revisa Configuración → Diagnóstico.', lastErr);
+      if (!usedPlan) {
+        throw new UserFacingError(
+          lastReason.includes('JSON')
+            ? 'Whisper terminó sin generar un JSON válido; abre Configuración → Diagnóstico (Última ejecución).'
+            : `La transcripción local falló: ${lastReason || 'error desconocido'} Abre Configuración → Diagnóstico.`,
+          lastErr,
+        );
+      }
       metrics.engine = usedPlan.engine;
       metrics.device = usedPlan.device;
       metrics.whisperModel = usedPlan.model;
-      if (!fs.existsSync(tFile)) throw new UserFacingError('Whisper no generó la transcripción.');
       const { words, segments } = parseWhisperJson(fs.readFileSync(tFile, 'utf8'));
       fs.renameSync(tFile, path.join(dir, 'transcript.json'));
       if (segments.length === 0) throw new UserFacingError('No se detectó voz en el vídeo; no es posible proponer clips.');
@@ -320,10 +345,13 @@ interface TranscribeResult {
   outFile: string;
   speed?: number;
   downloadMs?: number;
+  exitCode?: number;
+  /** Motivo del fallo (sin rutas ni trazas) para el usuario y el historial. */
+  reason?: string;
 }
 
 /** Ejecuta un plan de transcripción emitiendo progreso real por fases. */
-async function transcribe(
+export async function transcribe(
   ctx: PipelineContext,
   tools: ResolvedTools,
   plan: EnginePlan,
@@ -360,9 +388,10 @@ async function transcribe(
   const env = { PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1', PYTHONUNBUFFERED: '1' };
   try {
     if (plan.engine === 'faster-whisper-cuda') {
-      if (!tools.python) return { ok: false, stderr: 'python no encontrado', outFile: '' };
+      if (!tools.python) return { ok: false, stderr: 'python no encontrado', outFile: '', reason: 'No se encontró Python.' };
       const outFile = path.join(dir, 'audio.json');
-      const r = await runProcess(tools.python, fasterArgs(ctx.fasterScript, plan, audioPath, outFile, language, allowDownload), {
+      const fArgs = fasterArgs(ctx.fasterScript, plan, audioPath, outFile, language, allowDownload);
+      const r = await (ctx.run ?? runProcess)(tools.python, fArgs, {
         signal,
         timeoutMs: 6 * 60 * 60 * 1000,
         env,
@@ -380,13 +409,14 @@ async function transcribe(
           onDownloadLine(l);
         },
       });
-      return finish(r.code === 0, r.stderr, outFile);
+      return finish(r.code, r.stdout, r.stderr, tools.python, fArgs);
     }
     const outFile = path.join(dir, 'audio.json');
     // Se ejecuta en el mismo intérprete que se diagnosticó (python -m whisper); whisper.exe sólo como respaldo.
     const cmd = openaiCommand(tools, pythonHasWhisper);
-    if (!cmd) return { ok: false, stderr: 'openai-whisper no encontrado', outFile: '' };
-    const r = await runProcess(cmd.exe, [...cmd.prefix, ...openaiArgs(plan, audioPath, dir, language)], {
+    if (!cmd) return { ok: false, stderr: 'openai-whisper no encontrado', outFile: '', reason: 'No se encontró openai-whisper.' };
+    const oArgs = [...cmd.prefix, ...openaiArgs(plan, audioPath, dir, language)];
+    const r = await (ctx.run ?? runProcess)(cmd.exe, oArgs, {
       signal,
       timeoutMs: 6 * 60 * 60 * 1000,
       env,
@@ -399,15 +429,55 @@ async function transcribe(
         if (st.phase === 'downloadingModel' && /Detecting language|Detected language/i.test(l)) st.phase = 'loadingModel';
       },
     });
-    return finish(r.code === 0, r.stderr, outFile);
+    return finish(r.code, r.stdout, r.stderr, cmd.exe, oArgs);
   } finally {
     clearInterval(timer);
     emit();
   }
 
-  function finish(ok: boolean, stderr: string, outFile: string): TranscribeResult {
+  /** Sólo es éxito si el proceso terminó bien, no omitió el audio y dejó un JSON válido. */
+  function finish(code: number, stdout: string, stderr: string, exe: string, args: string[]): TranscribeResult {
+    const audioBase = path.parse(audioPath).name;
+    const skipped = whisperSkipped(`${stdout}
+${stderr}`);
+    const check = locateTranscript(dir, audioBase, startedAt);
+    const ok = code === 0 && !skipped && check.ok;
+    const reason = ok
+      ? undefined
+      : code !== 0
+        ? `Whisper terminó con código ${code}.`
+        : skipped
+          ? `Whisper omitió el audio: ${skipped.slice(0, 200)}`
+          : `Whisper terminó sin generar un JSON válido (${check.error}).`;
+    event('transcribe_attempt', {
+      job: path.basename(dir),
+      engine: plan.engine,
+      model: plan.model,
+      device: plan.device,
+      precision: plan.computeType ?? (plan.fp16 ? 'fp16' : 'fp32'),
+      command: path.basename(exe),
+      args: sanitizeArgs(args),
+      exitCode: code,
+      ok,
+      reason,
+      expectedFile: `${audioBase}.json`,
+      foundFile: check.file ? path.basename(check.file) : null,
+      segments: check.segments,
+      producedFiles: listFiles(dir),
+      stdoutTail: tailLines(stdout, 15),
+      stderrTail: tailLines(stderr, 25),
+    });
     const t = dlClock.timing(Date.now(), duration);
-    return { ok, stderr, outFile, speed: ok ? t.speed : undefined, downloadMs: t.downloadMs };
+    return {
+      ok,
+      stderr: `${stderr}
+${skipped ?? ''}`,
+      outFile: check.file ?? '',
+      speed: ok ? t.speed : undefined,
+      downloadMs: t.downloadMs,
+      exitCode: code,
+      reason,
+    };
   }
 }
 

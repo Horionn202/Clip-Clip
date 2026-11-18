@@ -102,7 +102,7 @@ export function registerIpc(ctx: IpcContext): void {
     const s = ctx.settings.get();
     const info = await readSourceInfo(yt, u, s);
     // preset no se conoce aquí: el renderer calcula el máximo factible con la duración.
-    return { title: info.title, duration: info.duration, feasibleMax: 0 };
+    return { title: info.title, duration: info.duration, feasibleMax: 0, filesizeBytes: info.filesize };
   });
   h('settings:get', () => ctx.settings.get());
   h('settings:update', (patch: unknown) => {

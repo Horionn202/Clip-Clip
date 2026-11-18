@@ -20,7 +20,7 @@ En el primer inicio la app abre **Configuración → Diagnóstico**, comprueba c
 - Ningún modelo se incluye en el instalador.
 
 ## Uso
-1. **Inicio**: pega la URL y pulsa **Comprobar vídeo** (muestra título y duración). Elige la duración de cada clip (15/30/45/60 s) y una **meta de clips** explícita: Rápido (5), Estándar (10), Máximo (hasta 20) o un valor 1–20. La app calcula el máximo sin solapes (`floor(duración / preset)`, tope 20) y la **meta efectiva** = mín(meta, 20, máximo). Confirma que tienes derechos y pulsa **Iniciar**.
+1. **Inicio**: pega la URL y pulsa **Comprobar vídeo** (obligatorio). Se muestran por separado la **duración del vídeo fuente** (p. ej. «98 min 1 s») y la **duración de cada clip**, el máximo posible de clips, el espacio en disco y el tiempo de transcripción aproximados. Los vídeos de más de 20 minutos requieren una confirmación explícita. Elige la duración de cada clip (15/30/45/60 s) y una **meta de clips** explícita: Rápido (5), Estándar (10), Máximo (hasta 20) o un valor 1–20. La app calcula el máximo sin solapes (`floor(duración / preset)`, tope 20) y la **meta efectiva** = mín(meta, 20, máximo). Confirma que tienes derechos y pulsa **Iniciar**.
 2. **Trabajos**: progreso por etapas (`queued → validating → downloading → extractingAudio → transcribing → analyzing → rendering → completed`) con indicador **CPU/GPU**, botón **Cancelar** e historial con meta, máximo factible, candidatos, descartes y resultado.
 3. **Resultados**: previsualización, título editable, hook, timestamps, duración, **Exportar**, **Exportar todos**, **Abrir carpeta**, y el resultado honesto `obtenidos/meta`.
 
@@ -48,7 +48,11 @@ La app no publica en redes sociales.
 2. `openai-whisper · GPU`: `--device cuda` con FP16 (sin `--fp16 False`); opción FP32 para GPUs con problemas de FP16.
 3. `openai-whisper · CPU`: siempre `--fp16 False`.
 
-Si el modelo elegido no cabe en la VRAM (aprox.: openai-whisper turbo ≈ 6 GB, large ≈ 10 GB) se usa uno menor con aviso. Si la GPU falla durante la transcripción (falta de memoria, cuDNN…) se reintenta con un modelo menor en GPU y después en CPU, siempre con modelos ya descargados o con tu permiso. Antes de transcribir en GPU se pide a Ollama que libere su modelo de la VRAM (`keep_alive: 0`).
+Si el modelo elegido no cabe en la VRAM con un margen del 5 % (aprox.: openai-whisper turbo ≈ 6 GB, medium ≈ 5 GB, large ≈ 10 GB) se usa uno menor con aviso; con 6 GB, por ejemplo, se usa `medium`.
+
+**GTX 16xx (p. ej. GTX 1660 SUPER, GTX 1650):** Whisper en FP16 produce `NaN` en estas GPUs (verificado: el CLI imprime «Skipping … due to ValueError … invalid values» y sale con código 0 sin escribir la transcripción). En precisión «Automática» la app usa **FP32 en GPU** en esta serie; en otras GPUs usa FP16 y, si falla, reintenta en FP32 antes de bajar de modelo o pasar a CPU. Medido en GTX 1660 SUPER: `medium` FP32 transcribió 120 s de audio en ≈ 72 s incluyendo la carga del modelo.
+
+**Validación de la salida:** un código de salida 0 no basta. Tras cada intento se busca el JSON generado (nombre esperado u otro `.json` nuevo en la carpeta del trabajo) y se valida que sea parseable, con segmentos, timestamps y texto. Si no, el trabajo falla con «Whisper terminó sin generar un JSON válido; abre Configuración → Diagnóstico» y cada intento queda en *Última ejecución* y en `logs/events.jsonl` (`transcribe_attempt`: motor, modelo, dispositivo, precisión, argumentos sin rutas, código de salida, últimas líneas de stdout/stderr, archivo esperado y archivos presentes). Si la GPU falla durante la transcripción (falta de memoria, cuDNN…) se reintenta con un modelo menor en GPU y después en CPU, siempre con modelos ya descargados o con tu permiso. Antes de transcribir en GPU se pide a Ollama que libere su modelo de la VRAM (`keep_alive: 0`).
 
 ### Habilitar CUDA en Windows (pasos manuales)
 La app **no instala nada automáticamente**; muestra estos comandos con un botón «Copiar comandos». Con el Python del entorno de Whisper (PowerShell):
@@ -158,7 +162,7 @@ Los clips exportados se copian (sin sobrescribir) a la carpeta de exportación, 
 | La transcripción es muy lenta | Mira el indicador CPU/GPU. Si dice CPU y tienes NVIDIA, sigue «Habilitar CUDA en Windows». En CPU usa `base`. |
 | «GPU NVIDIA detectada» pero «CUDA habilitado: no» | Torch es la versión `+cpu`: reinstálalo desde el índice `cu126` (ver arriba). |
 | Falta de memoria en GPU | La app reintenta con un modelo menor y luego en CPU. Prueba `turbo` con faster-whisper o `small` con openai-whisper; cierra otras apps que usen la GPU. |
-| Resultados raros con FP16 (texto vacío o repetido) | Configuración → Precisión en GPU → FP32. |
+| Resultados raros con FP16 (texto vacío o repetido) o «Whisper terminó sin generar un JSON válido» | En GTX 16xx ya se usa FP32 automáticamente; en otras GPUs, Configuración → Precisión en GPU → FP32. Revisa *Última ejecución* para ver el motivo de cada intento. |
 | «El modelo … no está descargado» | Marca «Permitir descargar el modelo» en Inicio o elige un modelo ya descargado. |
 | Menos clips que la meta | El resultado indica `obtenidos/meta` y el motivo; Configuración → Última ejecución muestra rondas y descartes. Prueba un modelo de Ollama mayor. |
 | La descarga falla | El vídeo puede ser privado, con restricción de edad o geobloqueado; actualiza yt-dlp (`winget upgrade yt-dlp.yt-dlp`). |

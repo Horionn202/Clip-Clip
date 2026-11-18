@@ -133,6 +133,7 @@ export async function probeGpu(
     model: s.whisperModel,
     precision: s.whisperPrecision,
     vramMB: base.vramMB,
+    gpuName: base.nvidiaGpu,
     avail: availability(base, !!tools.whisper),
   });
   return { ...base, plan, recommendation: rec.text, installCommands: rec.commands };

@@ -1,11 +1,12 @@
 import { useEffect, useState } from 'react';
-import { CLIP_TARGET_PRESETS, DURATION_PRESETS, ENGINE_LABELS, MAX_CLIPS, WHISPER_MODEL_OPTIONS, type Diagnostics, type DurationPreset, type UrlProbe } from '../../shared/types';
+import { CLIP_TARGET_PRESETS, DURATION_PRESETS, ENGINE_LABELS, MAX_CLIPS, WHISPER_MODEL_OPTIONS, type Diagnostics, type DurationPreset, type Job, type UrlProbe } from '../../shared/types';
+import { LONG_VIDEO_SEC, engineLabel, estimateJob, humanBytes, humanDuration } from '../../shared/estimates';
 import { validateVideoUrl } from '../../shared/validation';
 import { effectiveTarget, feasibilityAdvice, feasibleMax, requiredDuration } from '../../shared/selection';
 import { isModelCached } from '../../shared/models';
 import { api, errMsg } from '../api';
 
-export function HomePage(props: { diag: Diagnostics | null; onCreated: () => void; goSettings: () => void; goPolicy: () => void }) {
+export function HomePage(props: { jobs: Job[]; diag: Diagnostics | null; onCreated: () => void; goSettings: () => void; goPolicy: () => void }) {
   const [url, setUrl] = useState('');
   const [preset, setPreset] = useState<DurationPreset>(30);
   const [target, setTarget] = useState<number | null>(null); // sin valor implícito: el usuario elige
@@ -13,10 +14,16 @@ export function HomePage(props: { diag: Diagnostics | null; onCreated: () => voi
   const [allowDownload, setAllowDownload] = useState(false);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
-  const [probe, setProbe] = useState<UrlProbe | null>(null);
+  // Cada resultado queda ligado a la URL consultada: una respuesta tardía de otra URL se ignora.
+  const [probeResult, setProbeResult] = useState<(UrlProbe & { url: string }) | null>(null);
+  const probe = probeResult && probeResult.url === url.trim() ? probeResult : null;
   const [probing, setProbing] = useState(false);
+  const [longOk, setLongOk] = useState(false);
 
-  useEffect(() => setProbe(null), [url]);
+  useEffect(() => {
+    setProbeResult(null);
+    setLongOk(false);
+  }, [url]);
 
   const urlError = (() => {
     if (!url.trim()) return '';
@@ -37,7 +44,11 @@ export function HomePage(props: { diag: Diagnostics | null; onCreated: () => voi
   const modelSize = WHISPER_MODEL_OPTIONS.find((m) => m.name === plan?.model)?.sizeLabel ?? '';
 
   const depsOk = props.diag?.ok ?? false;
-  const canStart = !!url.trim() && !urlError && rights && depsOk && !busy && target !== null && (modelCached || allowDownload);
+  const isLong = !!probe && probe.duration > LONG_VIDEO_SEC;
+  // Hay que comprobar el vídeo antes de iniciar: así se ven duración, estimaciones y máximo de clips.
+  const canStart =
+    !!url.trim() && !urlError && rights && depsOk && !busy && target !== null && !!probe && (!isLong || longOk) && (modelCached || allowDownload) && (feasibleMax(probe.duration, preset) > 0);
+  const est = probe ? estimateJob(probe.duration, probe.filesizeBytes, plan, props.jobs) : null;
   const feas = probe ? feasibleMax(probe.duration, preset) : null;
   const eff = probe && target !== null ? effectiveTarget(target, probe.duration, preset) : null;
   const advice = probe && target !== null ? feasibilityAdvice(target, probe.duration, preset) : null;
@@ -46,7 +57,9 @@ export function HomePage(props: { diag: Diagnostics | null; onCreated: () => voi
     setError('');
     setProbing(true);
     try {
-      setProbe(await api().probeUrl(url.trim()));
+      const asked = url.trim();
+      const r = await api().probeUrl(asked);
+      setProbeResult({ ...r, url: asked });
     } catch (e) {
       setError(errMsg(e));
     } finally {
@@ -62,6 +75,7 @@ export function HomePage(props: { diag: Diagnostics | null; onCreated: () => voi
       await api().createJob({ url: url.trim(), preset, maxClips: target, rightsConfirmed: rights, allowModelDownload: allowDownload });
       setUrl('');
       setRights(false);
+      setLongOk(false);
       setAllowDownload(false);
       props.onCreated();
     } catch (e) {
@@ -83,7 +97,7 @@ export function HomePage(props: { diag: Diagnostics | null; onCreated: () => voi
       )}
       {plan && (
         <div className={`engine-pill ${plan.device}`}>
-          Transcripción: <b>{plan.device === 'cuda' ? 'GPU' : 'CPU'}</b> · {ENGINE_LABELS[plan.engine]} · modelo {plan.model}
+          Transcripción: <b>{engineLabel(plan)}</b> · {ENGINE_LABELS[plan.engine]}
           {gpu?.nvidiaGpu && plan.device === 'cpu' && (
             <> · <button className="link" onClick={props.goSettings}>tu GPU no se está usando: ver cómo activarla</button></>
           )}
@@ -97,11 +111,38 @@ export function HomePage(props: { diag: Diagnostics | null; onCreated: () => voi
           <button disabled={!url.trim() || !!urlError || probing} onClick={check}>{probing ? 'Comprobando…' : 'Comprobar vídeo'}</button>
         </div>
         {urlError && <small className="error">{urlError}</small>}
-        {probe && <small className="muted">«{probe.title || 'Sin título'}» · {Math.round(probe.duration)} s</small>}
+        {!probe && url.trim() && !urlError && <small className="muted">Pulsa «Comprobar vídeo» para ver su duración y las estimaciones antes de iniciar.</small>}
       </label>
 
+      {probe && (
+        <div className="card source-card">
+          <div className="title">«{probe.title || 'Sin título'}»</div>
+          <table className="table kv">
+            <tbody>
+              <tr><td>Duración del vídeo fuente</td><td><b>{humanDuration(probe.duration)}</b></td></tr>
+              <tr><td>Duración de cada clip</td><td><b>{preset} s</b></td></tr>
+              <tr><td>Máximo posible de clips sin solapes</td><td>{feasibleMax(probe.duration, preset)}{feasibleMax(probe.duration, preset) === MAX_CLIPS ? ' (tope de la app)' : ''}</td></tr>
+              {est && (
+                <>
+                  <tr><td>Espacio en disco necesario (aprox.)</td><td>{humanBytes(est.diskBytes)}</td></tr>
+                  <tr><td>Tiempo de transcripción (aprox.)</td><td>{humanDuration(est.transcribeSec)} {plan ? `con ${engineLabel(plan)}` : ''}{est.speedMeasured ? ' · según tus trabajos anteriores' : ' · estimación orientativa'}</td></tr>
+                </>
+              )}
+            </tbody>
+          </table>
+          {isLong && (
+            <label className="check">
+              <input type="checkbox" checked={longOk} onChange={(e) => setLongOk(e.target.checked)} />
+              <span>
+                Este vídeo es largo ({humanDuration(probe.duration)}). Confirmo que quiero procesar el vídeo completo; tardará y ocupará espacio según las estimaciones de arriba.
+              </span>
+            </label>
+          )}
+        </div>
+      )}
+
       <div className="field">
-        <span>Duración de cada clip</span>
+        <span>Duración de cada clip (no es la duración del vídeo)</span>
         <div className="seg">
           {DURATION_PRESETS.map((p) => (
             <button key={p} className={p === preset ? 'on' : ''} onClick={() => setPreset(p)}>
