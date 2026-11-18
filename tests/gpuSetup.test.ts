@@ -160,3 +160,9 @@ describe('plan y estado de la aceleración', () => {
     expect(friendlySetupError('OSError: [Errno 28] No space left on device')).toMatch(/espacio/);
   });
 });
+
+describe('revisión Codex (PR #8)', () => {
+  it('una re-verificación fallida manda sobre el «listo» anterior', () => {
+    expect(accelStatus({ nvidiaGpu: 'GTX', cudaAvailable: true, verifiedPython: 'A', currentPython: 'A', running: false, lastError: 'La transcripción de prueba en GPU falló' })).toBe('error');
+  });
+});
