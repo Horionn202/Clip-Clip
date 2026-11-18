@@ -1,8 +1,9 @@
 // Preload aislado (sandbox): expone una API mínima y tipada. Sin acceso a Node en el renderer.
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron';
 import type { ClipsApi, Job, PullProgress } from '../shared/types';
+import type { SetupState } from '../shared/gpuSetup';
 
-const subscribe = <T>(channel: 'job:update' | 'ollama:pullProgress', cb: (v: T) => void) => {
+const subscribe = <T>(channel: 'job:update' | 'ollama:pullProgress' | 'gpu:setupProgress', cb: (v: T) => void) => {
   const listener = (_e: IpcRendererEvent, v: T) => cb(v);
   ipcRenderer.on(channel, listener);
   return () => {
@@ -34,6 +35,12 @@ const api: ClipsApi = {
   openExportFolder: () => ipcRenderer.invoke('shell:openExportFolder'),
   onJobUpdate: (cb) => subscribe<Job>('job:update', cb),
   onPullProgress: (cb) => subscribe<PullProgress>('ollama:pullProgress', cb),
+  onGpuSetup: (cb) => subscribe<SetupState>('gpu:setupProgress', cb),
+  gpuSetupInfo: () => ipcRenderer.invoke('gpu:setupInfo'),
+  startGpuSetup: (mode) => ipcRenderer.invoke('gpu:setupStart', mode === 'verify' ? 'verify' : 'install'),
+  cancelGpuSetup: () => ipcRenderer.invoke('gpu:setupCancel'),
+  useCpuEngine: () => ipcRenderer.invoke('gpu:useCpu'),
+  useSystemPython: () => ipcRenderer.invoke('gpu:useSystemPython'),
 };
 
 contextBridge.exposeInMainWorld('clipsApi', api);

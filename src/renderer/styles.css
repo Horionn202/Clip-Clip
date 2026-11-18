@@ -53,3 +53,6 @@ button:focus-visible,select:focus-visible,summary:focus-visible{outline:2px soli
 .cam-frame img{width:100%;height:100%;object-fit:fill;display:block}.cam-box{position:absolute;border:2px solid var(--accent);box-shadow:0 0 0 9999px rgba(0,0,0,.35);border-radius:3px}
 .slider{display:flex;flex-direction:column;font-size:12px}.layout-preview{width:50%;align-self:center;border-radius:8px;border:1px solid var(--border)}
 .ready-count{margin:4px 0 0}
+.accel{display:flex;flex-direction:column;gap:8px}.badge.accel-ok{color:#fff;background:#2e8b57}.badge.accel-warn{color:#111;background:var(--warn)}.badge.accel-error{color:#fff;background:var(--err)}.badge.accel-info{color:#fff;background:var(--accent)}
+.setup-steps{list-style:none;padding:0;margin:0;display:flex;flex-direction:column;gap:8px}.setup-steps li{display:flex;gap:10px}.step-icon{width:18px;font-weight:700}.step-hecho .step-icon{color:var(--ok)}.step-error .step-icon{color:var(--err)}.step-en-curso .step-icon{color:var(--accent)}.step-omitido{opacity:.6}
+.modal{background:var(--panel);color:var(--text);border:1px solid var(--border);border-radius:12px;max-width:560px;padding:20px}.modal::backdrop{background:rgba(0,0,0,.6)}.modal h3{margin-top:0}
