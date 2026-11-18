@@ -1,3 +1,4 @@
+import type { BenchmarkResult, Placement } from './aiProfiles';
 // Tipos compartidos entre main, preload y renderer. Sin dependencias de Node.
 
 export const MAX_CLIPS = 20;
@@ -84,6 +85,10 @@ export interface JobMetrics {
   modelDownloadMs?: number;
   /** Cada intento de transcripción (incluidos los reintentos) con su resultado. */
   transcribeAttempts?: TranscribeAttempt[];
+  /** VRAM libre justo antes del análisis con Ollama. */
+  vramFreeBeforeAnalysisMB?: number;
+  /** Dónde quedó cargado el modelo de Ollama durante el análisis (según /api/ps). */
+  ollamaPlacement?: Placement;
 }
 
 export interface TranscribeAttempt {
@@ -175,6 +180,9 @@ export interface UrlProbe {
 export interface GpuInfo {
   nvidiaGpu: string | null;
   vramMB: number | null;
+  /** VRAM libre en el momento del diagnóstico (nvidia-smi). */
+  vramFreeMB?: number | null;
+  ramTotalMB?: number;
   driver: string | null;
   python: string | null;
   pythonPath: string | null;
@@ -215,6 +223,8 @@ export interface Settings {
   cropOffsetX: number; // -1 (izquierda) .. 1 (derecha), 0 = centro
   subtitleFontSize: number;
   onboardingDone: boolean;
+  /** Resultados del benchmark local por modelo (sólo los escribe el proceso principal). */
+  benchmarks?: Record<string, BenchmarkResult>;
 }
 
 export type DepId = 'ffmpeg' | 'ffprobe' | 'ytDlp' | 'whisper' | 'ollamaInstalled' | 'ollamaService' | 'ollamaModel';
@@ -281,6 +291,8 @@ export interface ClipsApi {
   chooseExportDir(): Promise<string | null>;
   listOllamaModels(): Promise<string[]>;
   pullOllamaModel(name: string): Promise<void>;
+  cancelOllamaPull(): Promise<void>;
+  benchmarkModel(name: string): Promise<BenchmarkResult>;
   createJob(req: CreateJobRequest): Promise<Job>;
   listJobs(): Promise<Job[]>;
   cancelJob(id: string): Promise<void>;

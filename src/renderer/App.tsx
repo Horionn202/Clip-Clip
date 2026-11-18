@@ -70,7 +70,7 @@ export function App() {
         <p className="local-note">Todo se procesa en este equipo.</p>
       </aside>
       <main className="content">
-        {page === 'home' && <HomePage jobs={jobs} diag={diag} onCreated={() => setPage('jobs')} goSettings={() => setPage('settings')} goPolicy={() => setPage('policy')} />}
+        {page === 'home' && <HomePage ollamaModel={settings?.ollamaModel} jobs={jobs} diag={diag} onCreated={() => setPage('jobs')} goSettings={() => setPage('settings')} goPolicy={() => setPage('policy')} />}
         {page === 'jobs' && <JobsPage jobs={jobs} onOpen={openResults} onDeleted={(id) => setJobs((p) => p.filter((j) => j.id !== id))} />}
         {page === 'results' && <ResultsPage jobs={jobs} selected={selected} onSelect={setSelected} />}
         {page === 'settings' && settings && (

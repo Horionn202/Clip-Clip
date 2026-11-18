@@ -1,5 +1,6 @@
-import { useEffect, useState } from 'react';
-import { OLLAMA_MODEL_OPTIONS, WHISPER_MODEL_OPTIONS, type Diagnostics, type Job, type PullProgress, type Settings } from '../../shared/types';
+import { useState } from 'react';
+import { WHISPER_MODEL_OPTIONS, type Diagnostics, type Job, type Settings } from '../../shared/types';
+import { AiModelPanel } from './AiModels';
 import { GpuPanel, LastRunPanel } from './Performance';
 import { api, errMsg } from '../api';
 
@@ -7,17 +8,6 @@ export function SettingsPage(props: { settings: Settings; onChange: (s: Settings
   const s = props.settings;
   const [err, setErr] = useState('');
   const [checking, setChecking] = useState(false);
-  const [installed, setInstalled] = useState<string[]>([]);
-  const [pull, setPull] = useState<PullProgress | null>(null);
-  const [customModel, setCustomModel] = useState('');
-
-  useEffect(() => {
-    void api().listOllamaModels().then(setInstalled);
-    return api().onPullProgress((p) => {
-      setPull(p);
-      if (p.done) void api().listOllamaModels().then(setInstalled).then(props.refreshDiag);
-    });
-  }, []);
 
   const patch = async (p: Partial<Settings>) => {
     setErr('');
@@ -32,16 +22,6 @@ export function SettingsPage(props: { settings: Settings; onChange: (s: Settings
     await props.refreshDiag();
     setChecking(false);
   };
-  const doPull = async (name: string) => {
-    setErr('');
-    setPull({ model: name, status: 'iniciando', done: false });
-    try {
-      await api().pullOllamaModel(name);
-    } catch (e) {
-      setErr(errMsg(e));
-    }
-  };
-  const pct = pull?.total ? Math.round(((pull.completed ?? 0) / pull.total) * 100) : null;
 
   return (
     <section className="page narrow">
@@ -76,55 +56,12 @@ export function SettingsPage(props: { settings: Settings; onChange: (s: Settings
       <LastRunPanel jobs={props.jobs} />
 
       <h2>Modelo de IA (Ollama)</h2>
-      <p className="muted small">Los modelos se descargan una vez y quedan en tu equipo. No se incluyen en el instalador.</p>
-      <table className="table">
-        <tbody>
-          {OLLAMA_MODEL_OPTIONS.map((m) => {
-            const have = installed.some((n) => n === m.name || n === `${m.name}:latest`);
-            return (
-              <tr key={m.name}>
-                <td>
-                  <input type="radio" name="model" checked={s.ollamaModel === m.name} onChange={() => patch({ ollamaModel: m.name })} />
-                </td>
-                <td className="grow">
-                  <b>{m.name}</b> <span className="muted small">{m.sizeLabel} · {m.note}</span>
-                </td>
-                <td>{have ? <span className="ok small">Descargado</span> : <button disabled={!!pull && !pull.done} onClick={() => doPull(m.name)}>Descargar ({m.sizeLabel})</button>}</td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
-      {installed.length > 0 && (
-        <label className="field">
-          <span>Modelos ya instalados en Ollama</span>
-          <select value={installed.includes(s.ollamaModel) ? s.ollamaModel : ''} onChange={(e) => e.target.value && patch({ ollamaModel: e.target.value }).then(props.refreshDiag)}>
-            <option value="">— Elegir —</option>
-            {installed.map((n) => (
-              <option key={n} value={n}>{n}</option>
-            ))}
-          </select>
-        </label>
-      )}
-      <div className="row">
-        <input placeholder="Otro modelo, p. ej. mistral:7b" value={customModel} onChange={(e) => setCustomModel(e.target.value)} />
-        <button disabled={!customModel.trim()} onClick={() => patch({ ollamaModel: customModel.trim() })}>Usar</button>
-        <button disabled={!customModel.trim() || (!!pull && !pull.done)} onClick={() => doPull(customModel.trim())}>Descargar</button>
-      </div>
-      <p className="small muted">Modelo actual: <b>{s.ollamaModel}</b></p>
-      {pull && (
-        <div className="card">
-          <div className="small">
-            {pull.model}: {pull.error ? <span className="error">{pull.error}</span> : pull.done ? 'completado' : pull.status} {pct !== null && !pull.done ? `${pct}%` : ''}
-          </div>
-          {pct !== null && !pull.done && <div className="progress"><div style={{ width: `${pct}%` }} /></div>}
-        </div>
-      )}
+      <AiModelPanel settings={s} diag={props.diag} patch={(p) => patch(p).then(props.refreshDiag)} onModelsChanged={() => void props.refreshDiag()} />
 
       <h2>Transcripción (Whisper local)</h2>
       <label className="field">
         <span>Modelo de Whisper (sólo se descarga si lo confirmas al iniciar un trabajo)</span>
-        <small className="muted">Recomendado: CPU → «base» (equilibrio) o «small» (más preciso) · GPU CUDA → «turbo» (velocidad).</small>
+        <small className="muted">Recomendado: CPU → «base» (equilibrio) o «small» (más preciso) · GPU CUDA → «turbo» con 8 GB de VRAM o más; con 6 GB se usa «medium» automáticamente.</small>
         <select value={s.whisperModel} onChange={(e) => patch({ whisperModel: e.target.value }).then(props.refreshDiag)}>
           {WHISPER_MODEL_OPTIONS.map((m) => (
             <option key={m.name} value={m.name}>{m.name} — {m.sizeLabel} — {m.note}</option>

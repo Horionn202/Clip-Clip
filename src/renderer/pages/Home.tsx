@@ -6,7 +6,7 @@ import { effectiveTarget, feasibilityAdvice, feasibleMax, requiredDuration } fro
 import { isModelCached } from '../../shared/models';
 import { api, errMsg } from '../api';
 
-export function HomePage(props: { jobs: Job[]; diag: Diagnostics | null; onCreated: () => void; goSettings: () => void; goPolicy: () => void }) {
+export function HomePage(props: { ollamaModel?: string; jobs: Job[]; diag: Diagnostics | null; onCreated: () => void; goSettings: () => void; goPolicy: () => void }) {
   const [url, setUrl] = useState('');
   const [preset, setPreset] = useState<DurationPreset>(30);
   const [target, setTarget] = useState<number | null>(null); // sin valor implícito: el usuario elige
@@ -121,6 +121,8 @@ export function HomePage(props: { jobs: Job[]; diag: Diagnostics | null; onCreat
             <tbody>
               <tr><td>Duración del vídeo fuente</td><td><b>{humanDuration(probe.duration)}</b></td></tr>
               <tr><td>Duración de cada clip</td><td><b>{preset} s</b></td></tr>
+              <tr><td>Transcripción (Whisper)</td><td>{plan ? engineLabel(plan) : '—'}</td></tr>
+              <tr><td>Modelo de IA (Ollama)</td><td>{props.ollamaModel ?? '—'}</td></tr>
               <tr><td>Máximo posible de clips sin solapes</td><td>{feasibleMax(probe.duration, preset)}{feasibleMax(probe.duration, preset) === MAX_CLIPS ? ' (tope de la app)' : ''}</td></tr>
               {est && (
                 <>

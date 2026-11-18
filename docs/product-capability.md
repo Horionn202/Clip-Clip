@@ -17,6 +17,12 @@ Dada una URL autorizada, un preset (15/30/45/60 s) y una **meta** N (1–20), la
 6. Cada candidato pasa por validación de calidad (timestamps, duración, solapes, título/razón no genéricos, sin texto de plantilla, voz suficiente) y por una puntuación local determinista combinada con el score del modelo.
 7. Resultado: `N/N clips generados`, o `k/N clips generados: <motivo>` si es parcial. El historial guarda meta, máximo factible, meta efectiva, rondas, candidatos, descartes por motivo y resultado.
 
+## Modelos de IA y selección (v0.3)
+- Perfiles Rápido/Equilibrado/Calidad/Personalizado con tamaño, memoria, calidad, velocidad y encaje en GPU (`src/shared/aiProfiles.ts`).
+- Antes del análisis se registra la VRAM libre y, después, dónde quedó cargado el modelo (`/api/ps`); nunca se afirma «GPU» si parte del modelo está en CPU/RAM.
+- Selección: rechazo de ideas repetidas (similitud ≥ 0,6), bonus de diversidad temporal, puntuación local con densidad, claridad, ajuste a la duración, bordes de frase, énfasis y coincidencia del hook.
+- Informe por trabajo visible en el historial: solicitados, máximo posible, meta efectiva, generados, candidatos, descartes por motivo, rondas y modelo.
+
 ## Rendimiento y motor de transcripción
 - Motores: faster-whisper GPU → openai-whisper GPU → openai-whisper CPU (automático o fijo). CUDA sólo cuenta como disponible si Torch/CTranslate2 lo confirman; una GPU NVIDIA con Torch `+cpu` se trata como CPU y se explica.
 - CPU: `--fp16 False`. GPU: FP16 (o `int8_float16` en faster-whisper si la VRAM va justa); FP32 opcional.
