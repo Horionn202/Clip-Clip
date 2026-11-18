@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { AI_PROFILES, evaluateProfile, evaluateProfiles, placementFrom, placementLabel, recommendProfile, tokensPerSecond } from '../src/shared/aiProfiles';
-import { diversityBonus, selectRound, similarity } from '../src/shared/selection';
+import { MIN_WORDS_PER_SEC, diversityBonus, evaluateCandidate, selectRound, similarity, speechRate } from '../src/shared/selection';
 import { parseNvidiaSmi } from '../src/main/transcribe';
 import { goodClip, syntheticTranscript } from './fixtures';
 
@@ -64,5 +64,17 @@ describe('selección: ideas repetidas y diversidad temporal', () => {
     const r = selectRound([near, far], 1, { preset: 30, sourceDuration: 1200, words, taken: [{ start: 0, end: 30 }] });
     expect(r.accepted[0].start).toBeGreaterThanOrEqual(890);
     expect(diversityBonus({ start: 900, end: 930 }, [{ start: 0, end: 30 }], 1200)).toBeGreaterThan(diversityBonus({ start: 40, end: 70 }, [{ start: 0, end: 30 }], 1200));
+  });
+});
+
+describe('revisión Codex: tramos casi sin voz', () => {
+  it('una sola palabra en 30 s se rechaza aunque sume bonus de claridad/duración', () => {
+    const words = [{ start: 10, end: 10.5, text: ' hola' }];
+    const ev = evaluateCandidate(
+      { start: 0, end: 30, title: 'Un saludo inesperado al público', hook: 'Algo que nadie esperaba escuchar hoy', reason: 'Aporta un momento de sorpresa con contexto suficiente', score: 90 },
+      { preset: 30, sourceDuration: 300, words, taken: [] },
+    );
+    expect(ev).toEqual({ ok: false, reason: 'poca_voz' });
+    expect(speechRate(0, 30, words)).toBeLessThan(MIN_WORDS_PER_SEC);
   });
 });

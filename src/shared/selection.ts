@@ -196,6 +196,13 @@ export function localScore(start: number, end: number, hook: string, words: Time
   return Math.round(Math.max(0, Math.min(1, s)) * 100);
 }
 
+/** Palabras por segundo dentro del tramo. */
+export const MIN_WORDS_PER_SEC = 0.8;
+export function speechRate(start: number, end: number, words: TimedWord[]): number {
+  const n = words.filter((w) => w.start >= start - 0.05 && w.end <= end + 0.05).length;
+  return n / Math.max(1, end - start);
+}
+
 /** Primera frase hablada del clip (hasta un signo de cierre o ~14 palabras): hook real, no inventado. */
 export function openingPhrase(words: TimedWord[], start: number, end: number): string {
   const inside = words.filter((w) => w.start >= start - 0.05 && w.end <= end + 0.05);
@@ -260,6 +267,9 @@ export function evaluateCandidate(raw: unknown, o: EvaluateOptions): Evaluation 
     if (isGenericText(hook, 12)) return { ok: false, reason: 'hook' };
   }
 
+  // Voz suficiente, comprobada aparte de la puntuación (los bonus de claridad/duración no pueden saltársela):
+  // al menos 0,8 palabras/s de media en el tramo (≈ 24 palabras en 30 s).
+  if (o.words.length > 0 && speechRate(start, end, o.words) < MIN_WORDS_PER_SEC) return { ok: false, reason: 'poca_voz' };
   const ls = localScore(start, end, hook, o.words, o.preset);
   if (o.words.length > 0 && ls < 15) return { ok: false, reason: 'poca_voz' };
   const llm = num(r.score);
