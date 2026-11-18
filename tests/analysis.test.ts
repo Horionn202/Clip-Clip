@@ -146,3 +146,23 @@ describe('revisión Codex: ronda 1 con varios fragmentos', () => {
     expect(r.report.rounds[0]).toMatchObject({ received: call, accepted: 1 });
   });
 });
+
+describe('revisión Codex: rondas de relleno sobre todos los tramos libres', () => {
+  it('pide a la IA cada fragmento libre y encuentra candidatos al final del vídeo', async () => {
+    const long = syntheticTranscript(1500); // tramos libres > 12 000 caracteres
+    const prompts: string[] = [];
+    const chat: ChatFn = async (_s, user) => {
+      prompts.push(user);
+      // sólo el fragmento que contiene el final del vídeo devuelve un candidato
+      // la ronda 1 no aporta nada; en el relleno sólo el fragmento con el final del vídeo devuelve candidato
+      return user.includes('Faltan') && user.includes('[1448.0')
+        ? JSON.stringify({ clips: [goodClip(1440, 30, 9)] })
+        : JSON.stringify({ clips: [] });
+    };
+    const r = await analyzeClips({ segments: long.segments, words: long.words, duration: 1500, preset: 30, userTarget: 1, chat, maxFillRounds: 1 });
+    const fill = prompts.filter((p) => p.includes('Faltan'));
+    expect(fill.length).toBeGreaterThan(1);
+    expect(r.clips).toHaveLength(1);
+    expect(r.clips[0].start).toBeGreaterThanOrEqual(1430);
+  });
+});

@@ -126,14 +126,6 @@ export async function analyzeClips(input: AnalyzeInput): Promise<AnalyzeResult> 
     mergeRejected(round.rejected, sel.rejected);
   };
 
-  const ask = async (user: string, requested: number, roundNo: number): Promise<AnalysisRound> => {
-    const round: AnalysisRound = { round: roundNo, requested, received: 0, accepted: 0, rejected: {} };
-    const raws = await fetchRaws(user, requested, roundNo);
-    if (raws === null) round.failed = true;
-    else selectInto(round, raws);
-    return round;
-  };
-
   // Ronda 1: meta exacta sobre todo el vídeo (por fragmentos si es largo).
   const chunks = chunkSegments(segments);
   const r1: AnalysisRound = { round: 1, requested: eff, received: 0, accepted: 0, rejected: {} };
@@ -167,14 +159,27 @@ ${lines(chunk)}`;
       .sort((a, b) => a.start - b.start)
       .map((c) => `${c.start.toFixed(1)}-${c.end.toFixed(1)}`)
       .join(', ');
-    const user = `Duración total del vídeo: ${duration.toFixed(1)} s. Duración de cada clip: ${preset} s.
+    // Todos los tramos libres, troceados como en la ronda 1; se seleccionan juntos al final de la ronda.
+    const free = segments.filter((s) => gaps.some((g) => s.start >= g.start - 0.5 && s.end <= g.end + 0.5));
+    const freeChunks = chunkSegments(free);
+    if (freeChunks.length === 0) break;
+    input.onProgress?.((n - 1) / totalRounds, `Ronda ${n}: faltan ${need} de ${eff}…`);
+    const r: AnalysisRound = { round: n, requested: need, received: 0, accepted: 0, rejected: {} };
+    const pooledFill: unknown[] = [];
+    let failedFill = 0;
+    for (const chunk of freeChunks) {
+      const user = `Duración total del vídeo: ${duration.toFixed(1)} s. Duración de cada clip: ${preset} s.
 Ya están elegidos estos intervalos (NO los repitas ni los solapes): ${takenTxt || 'ninguno'}.
 Faltan ${need}. Genera exactamente ${need} candidatos nuevos no solapados, sólo dentro de los tramos de abajo.
 
-TRANSCRIPCIÓN (sólo tramos libres):
-${lines(segments, gaps).slice(0, 12000)}`;
-    input.onProgress?.((n - 1) / totalRounds, `Ronda ${n}: faltan ${need} de ${eff}…`);
-    const r = await ask(user, need, n);
+TRANSCRIPCIÓN (sólo tramos libres${freeChunks.length > 1 ? ', un fragmento' : ''}):
+${lines(chunk)}`;
+      const raws = await fetchRaws(user, need, n);
+      if (raws === null) failedFill++;
+      else pooledFill.push(...raws);
+    }
+    if (failedFill === freeChunks.length) r.failed = true;
+    else selectInto(r, pooledFill);
     report.rounds.push(r);
     input.log?.(`ronda ${n}`, r);
     if (!r.failed && r.accepted === 0) break; // el modelo no encuentra más momentos distintos
