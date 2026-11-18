@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { BrowserWindow, dialog, ipcMain, shell, type IpcMainInvokeEvent } from 'electron';
-import type { ClipPatch, GpuInfo, GpuSetupInfo, Job, Settings } from '../shared/types';
+import type { ClipPatch, GpuInfo, Job, Settings } from '../shared/types';
 import { MAX_CLIPS } from '../shared/types';
 import { UserFacingError } from '../shared/validation';
 import { clipPatchSchema, previewRangeSchema, createJobSchema, idSchema, layoutIdSchema, modelNameSchema, normRectSchema, probeUrlSchema, renameClipSchema, rendererSettingsPatchSchema } from './ipcSchemas';
@@ -43,16 +43,12 @@ function renderEnvFor(ctx: IpcContext, job: Job): RenderEnv {
     settings: { cropOffsetX: s.cropOffsetX, subtitleFontSize: s.subtitleFontSize },
   };
 }
-import { CancelledError, runProcess } from './proc';
-import { runSetup, venvPython, windowsSpeech } from './gpuSetupRunner';
-import { accelStatus, planSetup, type SetupState } from '../shared/gpuSetup';
+import { CancelledError } from './proc';
 
 let pullCtrl: AbortController | null = null;
 let benchCtrl: AbortController | null = null;
 let benchRun: Promise<void> | null = null;
 let benchModel: string | null = null;
-let setupCtrl: AbortController | null = null;
-let setupState: SetupState | null = null;
 import type { JobQueue } from './queue';
 import type { JobStore, SettingsStore } from './store';
 import { jobDir } from './pipeline';
@@ -66,10 +62,6 @@ export interface IpcContext {
   tools: () => ResolvedTools;
   gpuInfo: (refresh?: boolean) => Promise<GpuInfo>;
   onSettingsChanged: () => void;
-  /** Carpeta de datos de la app (userData): aquí vive el entorno Python aislado. */
-  userDataDir: string;
-  logsDir: string;
-  probeScript: string;
 }
 
 const MAX_ACTIVE_JOBS = 10;
@@ -214,98 +206,6 @@ export function registerIpc(ctx: IpcContext): void {
       benchRun = null;
       benchModel = null;
     }
-  });
-
-  // ---- Aceleración GPU guiada (entorno aislado en userData) ----
-  const venvDir = () => path.join(ctx.userDataDir, 'python-env');
-  const freeGB = () => {
-    try {
-      const st = fs.statfsSync(ctx.userDataDir);
-      return (st.bavail * st.bsize) / 1024 ** 3;
-    } catch {
-      return 0;
-    }
-  };
-  const setupInfo = async (): Promise<GpuSetupInfo> => {
-    const gpu = await ctx.gpuInfo(true);
-    const s = ctx.settings.get();
-    const appPy = venvPython(venvDir());
-    const usingAppEnv = !!gpu.pythonPath && path.resolve(gpu.pythonPath) === path.resolve(appPy);
-    const plan = planSetup({
-      nvidiaGpu: gpu.nvidiaGpu,
-      python: gpu.pythonPath,
-      pythonVersion: gpu.python,
-      venvDir: venvDir(),
-      freeGB: freeGB(),
-      tinyCached: gpu.cachedModels.openai.includes('tiny.pt'),
-    });
-    const status = accelStatus({
-      nvidiaGpu: gpu.nvidiaGpu,
-      cudaAvailable: gpu.cudaAvailable,
-      verifiedPython: s.gpuVerifiedPython ?? null,
-      currentPython: gpu.pythonPath,
-      running: !!setupCtrl,
-      lastError: setupState && !setupState.ok && !setupState.running ? setupState.error : undefined,
-    });
-    return { plan, state: setupState, status, verifiedPython: s.gpuVerifiedPython ?? null, currentPython: gpu.pythonPath, usingAppEnv, engine: s.transcriptionEngine };
-  };
-  h('gpu:setupInfo', () => setupInfo());
-  h('gpu:setupStart', async (mode: unknown) => {
-    const m = mode === 'verify' ? 'verify' : 'install';
-    if (setupCtrl) throw new UserFacingError('Ya hay una instalación o verificación en curso.');
-    if (ctx.queue.activeCount > 0) throw new UserFacingError('Hay un trabajo en curso; espera a que termine para usar la GPU.');
-    const info = await setupInfo();
-    if (m === 'install' && !info.plan.compatible) throw new UserFacingError(info.plan.reason ?? 'Este equipo no es compatible.');
-    if (!info.currentPython) throw new UserFacingError('No se encontró Python.');
-    const gpu = await ctx.gpuInfo();
-    setupCtrl = new AbortController();
-    const ctrl = setupCtrl;
-    const workDir = path.join(ctx.userDataDir, 'gpu-setup');
-    // En segundo plano: el progreso llega por «gpu:setupProgress».
-    void runSetup(
-      m,
-      {
-        run: runProcess,
-        python: info.currentPython,
-        venvDir: venvDir(),
-        probeScript: ctx.probeScript,
-        workDir,
-        logFile: path.join(ctx.logsDir, 'gpu-setup.log'),
-        gpuName: gpu.nvidiaGpu,
-        onState: (st) => {
-          setupState = st;
-          // El estado final se emite en «finally», cuando los ajustes (Python verificado) ya están guardados.
-          if (st.running) broadcast('gpu:setupProgress', st);
-        },
-        makeSpeech: windowsSpeech(workDir),
-      },
-      ctrl.signal,
-    )
-      .then((st) => {
-        if (st.ok) {
-          const py = m === 'install' ? venvPython(venvDir()) : info.currentPython!;
-          ctx.settings.update({ pythonPath: py, gpuVerifiedPython: py, transcriptionEngine: 'auto' });
-          ctx.onSettingsChanged();
-        }
-        event('gpu_setup', { mode: m, ok: st.ok, cancelled: st.cancelled, error: st.error });
-      })
-      .catch((e) => log.error('gpu setup', e))
-      .finally(() => {
-        setupCtrl = null;
-        if (setupState) broadcast('gpu:setupProgress', setupState);
-      });
-  });
-  h('gpu:setupCancel', () => {
-    setupCtrl?.abort();
-  });
-  // Volver a CPU sin romper nada.
-  h('gpu:useCpu', () => {
-    ctx.settings.update({ transcriptionEngine: 'openai-whisper-cpu' });
-    ctx.onSettingsChanged();
-  });
-  h('gpu:useSystemPython', () => {
-    ctx.settings.update({ pythonPath: '', gpuVerifiedPython: undefined });
-    ctx.onSettingsChanged();
   });
 
   h('jobs:create', async (req: unknown) => {

@@ -128,9 +128,6 @@ app.whenReady().then(() => {
     queue,
     tools: () => tools,
     gpuInfo,
-    userDataDir: paths.userData,
-    logsDir: paths.logsDir,
-    probeScript,
     onSettingsChanged: () => {
       tools = resolveTools(settings.get(), bundledBin);
       gpuCache = null;

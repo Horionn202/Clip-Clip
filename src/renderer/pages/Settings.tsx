@@ -1,7 +1,6 @@
 import { useState } from 'react';
 import { WHISPER_MODEL_OPTIONS, type Diagnostics, type Job, type Settings } from '../../shared/types';
 import { AiModelPanel } from './AiModels';
-import { AccelPanel } from './Accel';
 import { LAYOUT_IDS, LAYOUT_LABELS } from '../../shared/layouts';
 import { GpuPanel, LastRunPanel } from './Performance';
 import { api, errMsg } from '../api';
@@ -51,15 +50,7 @@ export function SettingsPage(props: { settings: Settings; onChange: (s: Settings
         )}
       </div>
 
-      <h2>Aceleración</h2>
-      <AccelPanel
-        onChanged={() => {
-          void api().getSettings().then(props.onChange);
-          void props.refreshDiag();
-        }}
-      />
-
-      <h2>GPU y motor de transcripción (detalles)</h2>
+      <h2>GPU y motor de transcripción</h2>
       <GpuPanel gpu={props.diag?.gpu} settings={s} patch={(p) => patch(p).then(props.refreshDiag)} />
 
       <h2>Última ejecución</h2>
