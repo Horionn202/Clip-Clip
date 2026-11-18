@@ -80,7 +80,9 @@ export class JobQueue {
       if (ctrl.signal.aborted || err instanceof CancelledError) {
         this.patch(job.id, { status: 'cancelled', message: 'Cancelado por el usuario' });
       } else {
-        this.deps.logError?.(`Trabajo ${job.id} falló`, err);
+        // El detalle técnico (stderr, etc.) sólo va al log local, nunca a la UI.
+        const technical = err instanceof UserFacingError && err.technical ? `\n${err.technical.slice(-4000)}` : '';
+        this.deps.logError?.(`Trabajo ${job.id} falló${technical}`, err);
         const msg = err instanceof UserFacingError ? err.message : 'Ocurrió un error inesperado. Consulta los logs para más detalle.';
         this.patch(job.id, { status: 'failed', error: msg, message: msg });
       }
