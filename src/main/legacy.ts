@@ -113,6 +113,15 @@ export function verifyMigration(oldDir: string, newDir: string): { ok: boolean; 
   } catch (e) {
     missing.push(`historial: ${(e as Error).message}`);
   }
+  try {
+    const oldPub = path.join(oldDir, 'data', 'publish.json');
+    if (fs.existsSync(oldPub)) {
+      const n = JSON.parse(fs.readFileSync(path.join(newDir, 'data', 'publish.json'), 'utf8')) as Record<string, unknown>;
+      for (const k of Object.keys(JSON.parse(fs.readFileSync(oldPub, 'utf8')) as Record<string, unknown>)) if (!(k in n)) missing.push(`publicación: ${k}`);
+    }
+  } catch (e) {
+    missing.push(`publicación: ${(e as Error).message}`);
+  }
   return { ok: missing.length === 0 && errs.length === 0, missing: [...missing, ...errs].slice(0, 50) };
 }
 

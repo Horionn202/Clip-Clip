@@ -161,7 +161,7 @@ export function SettingsPage(props: { settings: Settings; onChange: (s: Settings
         </button>
       </div>
       <PublishedExportsCleanup open={pubClean} onClose={() => setPubClean(false)} />
-      <LegacyModal open={legacy} onClose={() => setLegacy(false)} />
+      <LegacyModal open={legacy} onClose={() => setLegacy(false)} onDone={() => window.location.reload()} />
       <div className="grid2">
         <NumField label="Limpieza automática tras N días (0 = desactivada)" value={s.autoCleanupDays} min={0} max={365} onSave={(v) => patch({ autoCleanupDays: v })} />
         <p className="small muted">Sólo afecta a trabajos completados y sigue las opciones de arriba. Nunca toca exports ni trabajos en curso.</p>

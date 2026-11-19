@@ -34,6 +34,7 @@ describe('exports publicados', () => {
   it('sólo cuenta como publicado si ninguna plataforma está pendiente', () => {
     expect(publishedPlatforms({ tiktok: entry('publicado') })).toEqual(['tiktok']);
     expect(publishedPlatforms({ tiktok: entry('publicado'), shorts: entry('listo') })).toEqual([]);
+    expect(publishedPlatforms({ tiktok: entry('publicado'), reels: entry('borrador') })).toEqual([]);
     expect(publishedPlatforms({ tiktok: entry('borrador') })).toEqual([]);
     expect(publishedPlatforms({ tiktok: entry('publicado'), reels: entry('publicado') }, ['reels'])).toEqual(['reels']);
     expect(publishedPlatforms(undefined)).toEqual([]);
@@ -200,6 +201,15 @@ describe('migración desde ClipsVirales', () => {
     const again = new PublishStore(dir);
     expect(again.get('old', 'c', 'tiktok')?.status).toBe('publicado');
     expect(again.get('nuevo', 'c', 'tiktok')?.status).toBe('borrador');
+  });
+
+  it('fusiona publish.json por trabajo y lo verifica antes de liberar espacio', async () => {
+    const { lp, userData, prot } = setup();
+    w(path.join(lp.data, 'data', 'publish.json'), JSON.stringify({ 'old-1': { c: {} } }));
+    w(path.join(userData, 'data', 'publish.json'), JSON.stringify({ 'new-1': { c: {} } }));
+    const r = await runLegacyMigration('free', lp, prot, { trash: async () => undefined, log: () => undefined });
+    expect(r.verified).toBe(true);
+    expect(Object.keys(JSON.parse(fs.readFileSync(path.join(userData, 'data', 'publish.json'), 'utf8'))).sort()).toEqual(['new-1', 'old-1']);
   });
 
   it('verificación detecta lo que falta', () => {

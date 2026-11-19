@@ -17,8 +17,8 @@ export interface PublishedExport {
   platforms: Platform[];
 }
 
-/** Estados que significan «pendiente de publicar»: si alguna plataforma está así, el clip no se limpia. */
-const PENDING = new Set(['listo', 'programado']);
+/** Estados que significan «pendiente de publicar» (incluido borrador): si alguna plataforma está así, el clip no se limpia. */
+const PENDING = new Set(['borrador', 'listo', 'programado']);
 
 /** Plataformas en las que el clip está publicado (de entre las elegidas), o [] si no cumple las reglas. */
 export function publishedPlatforms(pub: ClipPublish | undefined, platforms: Platform[] = PLATFORMS): Platform[] {
