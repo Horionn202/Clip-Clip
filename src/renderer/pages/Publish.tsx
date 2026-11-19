@@ -207,6 +207,8 @@ export function usePublish(jobId: string | undefined): [PubMap, (forJob: string,
     setData({});
     if (jobId) void api().getPublish(jobId).then((d) => setFor(jobId, d)).catch(() => undefined);
   }, [jobId]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Cambios hechos desde el proceso principal (p. ej. una generación que terminó tras salir y volver).
+  useEffect(() => api().onPublishUpdate((u) => setFor(u.jobId, u.data)), []); // eslint-disable-line react-hooks/exhaustive-deps
   return [data, setFor];
 }
 

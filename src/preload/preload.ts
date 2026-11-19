@@ -3,7 +3,7 @@ import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron';
 import type { ClipsApi, Job, PullProgress } from '../shared/types';
 import type { SetupState } from '../shared/gpuSetup';
 
-const subscribe = <T>(channel: 'job:update' | 'ollama:pullProgress' | 'gpu:setupProgress', cb: (v: T) => void) => {
+const subscribe = <T>(channel: 'job:update' | 'ollama:pullProgress' | 'gpu:setupProgress' | 'publish:update', cb: (v: T) => void) => {
   const listener = (_e: IpcRendererEvent, v: T) => cb(v);
   ipcRenderer.on(channel, listener);
   return () => {
@@ -21,6 +21,7 @@ const api: ClipsApi = {
   copyPublish: (jobId, clipId, platform) => ipcRenderer.invoke('publish:copy', String(jobId), String(clipId), String(platform)),
   revealClipVideo: (jobId, clipId) => ipcRenderer.invoke('publish:revealVideo', String(jobId), String(clipId)),
   publishConnections: () => ipcRenderer.invoke('publish:connections'),
+  onPublishUpdate: (cb) => subscribe<{ jobId: string; data: Record<string, import('../shared/publish').ClipPublish> }>('publish:update', cb),
   analyzeStorage: (opts, jobId) => ipcRenderer.invoke('storage:analyze', opts ?? null, jobId ?? null),
   cleanStorage: (opts, jobId) => ipcRenderer.invoke('storage:clean', opts, jobId ?? null),
   startupNotice: () => ipcRenderer.invoke('app:startupNotice'),

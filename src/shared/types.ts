@@ -366,6 +366,7 @@ export interface ClipsApi {
   copyPublish(jobId: string, clipId: string, platform: import('./publish').Platform): Promise<boolean>;
   revealClipVideo(jobId: string, clipId: string): Promise<boolean>;
   publishConnections(): Promise<import('./publish').ConnectionInfo[]>;
+  onPublishUpdate(cb: (u: { jobId: string; data: Record<string, import('./publish').ClipPublish> }) => void): () => void;
   checkDeps(): Promise<Diagnostics>;
   analyzeStorage(opts?: CleanupOptions, jobId?: string): Promise<StorageReport>;
   cleanStorage(opts: CleanupOptions, jobId?: string): Promise<CleanupResult>;

@@ -6,6 +6,8 @@ import type { ClipPublish, Platform, PlatformEntry, PublishData } from '../share
 export class PublishStore {
   private file: string;
   private data: PublishData;
+  /** Aviso tras cada cambio (se difunde al renderer). */
+  onChange?: (jobId: string, data: Record<string, ClipPublish>) => void;
 
   constructor(dataDir: string) {
     this.file = path.join(dataDir, 'publish.json');
@@ -34,6 +36,7 @@ export class PublishStore {
     const clip = (job[clipId] ??= {});
     clip[p] = entry;
     this.flush();
+    this.onChange?.(jobId, job);
   }
 
   /** Al borrar un trabajo se borran también sus metadatos de publicación. */

@@ -632,6 +632,8 @@ export function registerIpc(ctx: IpcContext): void {
     return { job, clip };
   };
   let generating = false;
+  // Cualquier cambio se difunde: una página de Resultados re-montada recibe los textos generados mientras no estaba.
+  ctx.publish.onChange = (jobId, data) => broadcast('publish:update', { jobId, data });
   h('publish:get', (jobId: unknown) => ctx.publish.forJob(requireJob(ctx, jobId).id));
   h('publish:connections', () => listConnections());
   h('publish:generate', async (jobId: unknown, clipId: unknown) => {
@@ -720,6 +722,7 @@ export function registerIpc(ctx: IpcContext): void {
   });
   h('publish:revealVideo', (jobId: unknown, clipId: unknown) => {
     const { job, clip } = pubClip(jobId, clipId);
+    if (clip.dirty) throw new UserFacingError('Este clip tiene cambios sin renderizar: vuelve a renderizarlo (y exportarlo) antes de publicarlo.');
     // Se prefiere el export (es el archivo que se sube); si no, el clip interno.
     const internal = clip.file ? path.join(jobDir(ctx.jobsDir, job.id), 'clips', clip.file) : '';
     const target = clip.exportedPath && fs.existsSync(clip.exportedPath) ? clip.exportedPath : internal && fs.existsSync(internal) ? internal : '';
