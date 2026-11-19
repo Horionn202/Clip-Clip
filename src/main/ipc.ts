@@ -647,8 +647,8 @@ export function registerIpc(ctx: IpcContext): void {
       const raw = await chatJson(s.ollamaHost, s.ollamaModel, PUBLISH_SYSTEM_PROMPT, user, new AbortController().signal, { schema: publishSchema(), numPredict: 1200, temperature: 0.6, timeoutMs: 3 * 60 * 1000 });
       // El trabajo o el clip pudieron borrarse mientras Ollama respondía: no se recrean sus datos.
       if (!ctx.jobs.get(job.id)?.clips.some((c) => c.id === clip.id)) throw new UserFacingError('El trabajo o el clip se eliminó mientras se generaban los textos.');
-      const now = ctx.jobs.get(job.id)!.clips.find((c) => c.id === clip.id)!;
-      if (now.start !== clip.start || now.end !== clip.end) throw new UserFacingError('El tramo del clip cambió mientras se generaban los textos. Vuelve a generarlos.');
+      const latest = ctx.jobs.get(job.id)!.clips.find((c) => c.id === clip.id)!;
+      if (latest.start !== clip.start || latest.end !== clip.end) throw new UserFacingError('El tramo del clip cambió mientras se generaban los textos. Vuelve a generarlos.');
       const metas = parseAiMeta(raw);
       const got = PLATFORMS.filter((p) => metas[p]);
       if (!got.length) throw new UserFacingError('La IA no devolvió metadatos válidos. Prueba de nuevo o escríbelos a mano.', raw.slice(0, 500));
