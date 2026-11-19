@@ -53,7 +53,7 @@ export function Modal({ open, title, onClose, children, footer, headerExtra, dir
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLDialogElement>) => {
     if (e.key !== 'Tab') return;
-    const items = [...(ref.current?.querySelectorAll<HTMLElement>(FOCUSABLE) ?? [])].filter((el) => el.offsetParent !== null || el === document.activeElement);
+    const items = [...(ref.current?.querySelectorAll<HTMLElement>(FOCUSABLE) ?? [])].filter((el) => !el.matches(':disabled') && (el.offsetParent !== null || el === document.activeElement));
     const i = nextFocusIndex(items.length, items.indexOf(document.activeElement as HTMLElement), e.shiftKey);
     if (i >= 0) {
       e.preventDefault();
