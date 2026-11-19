@@ -172,6 +172,9 @@ export interface MigrateDeps {
   size?: (p: string) => number;
   io?: MigrationFs;
   log: (msg: string, extra?: unknown) => void;
+  /** Se llama JUSTO después de migrar (síncrono, antes de cualquier espera): recarga los almacenes en memoria
+   *  para que ninguna escritura posterior pise los datos fusionados en disco. */
+  afterMigrate?: () => void;
 }
 
 /**
@@ -185,6 +188,11 @@ export async function runLegacyMigration(mode: 'keep' | 'free', lp: LegacyPaths,
     rep = migrateLegacyData(lp.data, prot.userData, deps.io);
   } catch (e) {
     rep = { status: 'failed', from: lp.data, to: prot.userData, linked: 0, copied: 0, skippedExisting: 0, mergedJobs: 0, errors: [String(e)], at: new Date().toISOString() };
+  }
+  try {
+    deps.afterMigrate?.();
+  } catch (e) {
+    rep.errors.push(`recarga: ${(e as Error).message}`);
   }
   deps.log('legado: migración', { modo: mode, estado: rep.status, enlazados: rep.linked, copiados: rep.copied, existentes: rep.skippedExisting, historial: rep.mergedJobs, errores: rep.errors.length });
   const result: LegacyMigrateResult = {

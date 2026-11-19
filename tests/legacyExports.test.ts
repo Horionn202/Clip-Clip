@@ -281,3 +281,18 @@ describe('exports publicados: re-export durante el lote', () => {
     expect(r.errors).toHaveLength(1);
   });
 });
+
+describe('migración: recarga antes de esperar a la Papelera', () => {
+  it('afterMigrate se llama antes del primer envío a la Papelera', async () => {
+    const lp = legacyPaths(path.join(root, 'R'), path.join(root, 'L'), path.join(root, 'V'));
+    w(path.join(lp.data, 'data', 'jobs.json'), JSON.stringify([{ id: 'old-1' }]));
+    const order: string[] = [];
+    await runLegacyMigration('free', lp, { userData: path.join(root, 'R', 'Clip Clip'), installDir: path.join(root, 'L', 'cc'), exportDir: path.join(root, 'V', 'cc'), inUse: [] }, {
+      trash: async () => void order.push('trash'),
+      afterMigrate: () => void order.push('reload'),
+      log: () => undefined,
+    });
+    expect(order[0]).toBe('reload');
+    expect(order).toContain('trash');
+  });
+});

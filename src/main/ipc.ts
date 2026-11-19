@@ -308,8 +308,7 @@ export function registerIpc(ctx: IpcContext): void {
         installDir: ctx.installDir,
         exportDir: s.exportDir,
         inUse: [s.pythonPath, s.whisperPath, s.gpuVerifiedPython ?? '', s.ffmpegPath, s.ffprobePath, s.ytDlpPath].filter(Boolean),
-      }, { trash: (p) => shell.trashItem(p), log: (msg, x) => (log.info(msg, x), event('legacy', { msg, ...(x as object) })) });
-      ctx.reloadStores();
+      }, { trash: (p) => shell.trashItem(p), afterMigrate: () => ctx.reloadStores(), log: (msg, x) => (log.info(msg, x), event('legacy', { msg, ...(x as object) })) });
       writeState(ctx.userDataDir, { ...readState(ctx.userDataDir), lastResult: res, dismissed: true });
       return res;
     } finally {
