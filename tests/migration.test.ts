@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { MARKER, mergeJobs, migrateLegacyData, migrationNotice } from '../src/main/migration';
+import { MARKER, mergeJobs, migrateLegacyData, migrationNotice, walk } from '../src/main/migration';
 
 let root: string;
 let oldDir: string;
@@ -105,5 +105,21 @@ describe('migración: el origen no cambia después', () => {
     expect(rep.copied).toBe(4);
     fs.appendFileSync(path.join(newDir, 'logs/app.log'), ' + nuevo');
     expect(r(oldDir, 'logs/app.log')).toBe('antiguo');
+  });
+});
+
+describe('revisión Codex: errores al leer carpetas', () => {
+  it('una carpeta ilegible (EACCES) no se da por migrada: no hay marcador y se avisa', () => {
+    const errors: string[] = [];
+    const denied = (p: string) => {
+      if (p.includes('jobs')) throw Object.assign(new Error('EACCES: acceso denegado'), { code: 'EACCES' });
+      return fs.readdirSync(p, { withFileTypes: true });
+    };
+    expect(walk(path.join(oldDir, 'jobs'), errors, '', denied)).toEqual([]);
+    expect(errors[0]).toMatch(/EACCES/);
+    // una carpeta inexistente sí se ignora
+    const none: string[] = [];
+    expect(walk(path.join(oldDir, 'no-existe'), none)).toEqual([]);
+    expect(none).toEqual([]);
   });
 });

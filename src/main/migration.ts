@@ -28,17 +28,22 @@ interface JobLike {
   id: string;
 }
 
-function walk(dir: string, rel = ''): string[] {
+/**
+ * Lista los archivos de una carpeta. Una carpeta inexistente se ignora (es opcional); cualquier otro error
+ * de lectura (p. ej. acceso denegado) se registra en `errors` para que la migración no se dé por terminada.
+ */
+export function walk(dir: string, errors: string[], rel = '', readdir: (p: string) => fs.Dirent[] = (p) => fs.readdirSync(p, { withFileTypes: true })): string[] {
   let out: string[] = [];
   let entries: fs.Dirent[] = [];
   try {
-    entries = fs.readdirSync(path.join(dir, rel), { withFileTypes: true });
-  } catch {
+    entries = readdir(path.join(dir, rel));
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== 'ENOENT') errors.push(`${rel || path.basename(dir)}: no se pudo leer la carpeta (${(e as Error).message})`.slice(0, 300));
     return out;
   }
   for (const e of entries) {
     const r = path.join(rel, e.name);
-    if (e.isDirectory()) out = out.concat(walk(dir, r));
+    if (e.isDirectory()) out = out.concat(walk(dir, errors, r, readdir));
     else if (e.isFile()) out.push(r);
   }
   return out;
@@ -67,7 +72,10 @@ export function migrateLegacyData(oldDir: string, newDir: string, io: MigrationF
   if (fs.existsSync(path.join(newDir, MARKER))) return { ...report, status: 'already' };
 
   for (const top of MIGRATED_DIRS) {
-    for (const rel of walk(path.join(oldDir, top))) {
+    const enumErrors: string[] = [];
+    const files = walk(path.join(oldDir, top), enumErrors);
+    report.errors.push(...enumErrors.map((e) => `${top}/${e}`));
+    for (const rel of files) {
       const relPath = path.join(top, rel);
       const src = path.join(oldDir, relPath);
       const dst = path.join(newDir, relPath);
