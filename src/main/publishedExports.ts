@@ -70,7 +70,7 @@ export function findPublishedExports(jobs: Job[], pubFor: (jobId: string) => Rec
 export const recoverableBytes = (list: PublishedExport[]) => list.reduce((a, x) => a + x.bytes, 0);
 
 export interface DeleteResult {
-  deleted: { jobId: string; clipId: string; bytes: number }[];
+  deleted: { jobId: string; clipId: string; bytes: number; path: string }[];
   errors: { clipId: string; message: string }[];
   freedBytes: number;
 }
@@ -96,7 +96,7 @@ export async function deletePublishedExports(
     }
     try {
       await trash(x.path);
-      res.deleted.push({ jobId: x.jobId, clipId: x.clipId, bytes: x.bytes });
+      res.deleted.push({ jobId: x.jobId, clipId: x.clipId, bytes: x.bytes, path: x.path });
       res.freedBytes += x.bytes;
       log('exports publicados: enviado a la Papelera', { job: x.jobId, clip: x.clipId, archivo: x.name, bytes: x.bytes });
     } catch (e) {

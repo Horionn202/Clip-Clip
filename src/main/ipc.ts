@@ -780,7 +780,10 @@ export function registerIpc(ctx: IpcContext): void {
     for (const d of r.deleted) {
       const job = ctx.jobs.get(d.jobId);
       if (!job) continue;
-      const updated = { ...job, clips: job.clips.map((c) => (c.id === d.clipId ? markExportDeleted(c, now) : c)), updatedAt: now };
+      const updated = { ...job, clips: job.clips.map((c) =>
+          // Sólo si el clip sigue apuntando al archivo eliminado: un re-export durante el lote se conserva.
+          c.id === d.clipId && c.exportedPath && path.resolve(c.exportedPath).toLowerCase() === d.path.toLowerCase() ? markExportDeleted(c, now) : c,
+        ), updatedAt: now };
       ctx.jobs.put(updated);
       emitJob(updated);
     }
