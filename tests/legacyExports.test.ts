@@ -272,3 +272,12 @@ describe('limpieza de release/ (sólo desarrollo)', () => {
     expect(assertReleaseDir(path.join(root, 'release'), root)).toBe(path.join(root, 'release'));
   });
 });
+
+describe('exports publicados: re-export durante el lote', () => {
+  it('omite el clip si su export actual ya no es el confirmado', async () => {
+    const trashed: string[] = [];
+    const r = await deletePublishedExports([{ jobId: 'j', clipId: 'c', path: '/e/viejo.mp4' }], () => [{ jobId: 'j', clipId: 'c', title: 't', path: '/e/nuevo.mp4', name: 'nuevo.mp4', bytes: 1, platforms: ['tiktok'] }], async (p) => void trashed.push(p), () => undefined);
+    expect(trashed).toEqual([]);
+    expect(r.errors).toHaveLength(1);
+  });
+});

@@ -80,7 +80,8 @@ export interface DeleteResult {
  * Si la Papelera falla, el archivo se conserva (no hay borrado irreversible).
  */
 export async function deletePublishedExports(
-  items: { jobId: string; clipId: string }[],
+  /** `path`: el archivo que el usuario confirmó; si el export actual es otro (re-export), se omite. */
+  items: { jobId: string; clipId: string; path?: string }[],
   current: () => PublishedExport[],
   trash: (p: string) => Promise<void>,
   log: (msg: string, extra?: unknown) => void,
@@ -89,7 +90,7 @@ export async function deletePublishedExports(
   for (const it of items) {
     // Se re-evalúa justo antes de cada borrado: el estado pudo cambiar mientras se procesaban los anteriores.
     const x = current().find((c) => c.jobId === it.jobId && c.clipId === it.clipId);
-    if (!x) {
+    if (!x || (it.path && x.path.toLowerCase() !== path.resolve(it.path).toLowerCase())) {
       res.errors.push({ clipId: it.clipId, message: 'ya no cumple las condiciones (no publicado, pendiente o fuera de la carpeta de exportación)' });
       log('exports publicados: omitido', { job: it.jobId, clip: it.clipId });
       continue;

@@ -767,14 +767,14 @@ export function registerIpc(ctx: IpcContext): void {
     event('publish_status', { job: job.id, clip: clip.index, platform: p, status: st });
     // Opción explícita del usuario (desactivada por defecto): el export publicado va a la Papelera.
     if (st === 'publicado' && confirmedByUser && ctx.settings.get().deleteExportsAfterPublish) {
-      const r = await trashPublished([{ jobId: job.id, clipId: clip.id }]);
+      const r = await trashPublished([{ jobId: job.id, clipId: clip.id, path: clip.exportedPath }]);
       if (r.errors.length && clip.exportedPath) log.warn('export publicado no eliminado', r.errors);
     }
     return ctx.publish.forJob(job.id);
   });
   // ---- Exports ya publicados (sólo con confirmación; a la Papelera; se conserva la metadata) ----
   const publishedNow = (platforms?: Platform[]) => findPublishedExports(ctx.jobs.list(), (id) => ctx.publish.forJob(id), ctx.settings.get().exportDir, ctx.jobsDir, platforms);
-  const trashPublished = async (items: { jobId: string; clipId: string }[]) => {
+  const trashPublished = async (items: { jobId: string; clipId: string; path?: string }[]) => {
     const r = await deletePublishedExports(items, () => publishedNow(), (p) => shell.trashItem(p), (m, x) => event('exports_published_clean', { msg: m, ...(x as object) }));
     const now = new Date().toISOString();
     for (const d of r.deleted) {
