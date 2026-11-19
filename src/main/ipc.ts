@@ -155,7 +155,8 @@ function freeDiskBytes(dir: string): number | undefined {
  * Papelera de reciclaje y, si la Papelera falla, pide una confirmación reforzada antes de borrar definitivamente.
  */
 async function cleanWith(ctx: IpcContext, o: CleanupOptions, jobId?: string, interactive = true): Promise<CleanupResult> {
-  const jobs = ctx.jobs.list();
+  // Un trabajo con un re-render en curso sigue «completed»: se trata como activo para no tocar sus archivos.
+  const jobs = ctx.jobs.list().map((j) => (rerendering.has(j.id) ? { ...j, status: 'rendering' as const } : j));
   const plan = planCleanup(jobs, ctx.jobsDir, o, {}, jobId);
   const trashFailed: PlannedFile[] = [];
   const first = await executeCleanup(plan.files, jobs, ctx.jobsDir, {
@@ -226,9 +227,15 @@ export async function autoCleanup(ctx: IpcContext): Promise<void> {
   const s = ctx.settings.get();
   if (!s.autoCleanupDays) return;
   const limit = Date.now() - s.autoCleanupDays * 86400_000;
-  const o: CleanupOptions = { source: s.keepSource !== 'siempre', audio: s.keepTemp !== 'siempre', frames: s.keepTemp !== 'siempre', temp: s.keepTemp !== 'siempre', transcript: !s.keepTranscript, internalClips: true };
   for (const j of ctx.jobs.list()) {
-    if (j.status === 'completed' && Date.parse(j.updatedAt) < limit && !j.archivedExportsOnly) await cleanWith(ctx, o, j.id, false);
+    if (j.status !== 'completed' || Date.parse(j.updatedAt) >= limit || j.archivedExportsOnly || rerendering.has(j.id)) continue;
+    // «hasta exportar» / «tras exportar» exigen que todos los clips tengan export verificado; «confirmar» nunca borra sin el usuario.
+    const withFiles = j.clips.filter((c) => c.file);
+    const exported = withFiles.length > 0 && withFiles.every((c) => verifyExport(ctx.jobsDir, j.id, c));
+    const temps = s.keepTemp === 'tras-completar' || (s.keepTemp === 'tras-exportar' && exported);
+    const o: CleanupOptions = { source: s.keepSource === 'hasta-exportar' && exported, audio: temps, frames: temps, temp: temps, transcript: !s.keepTranscript && exported, internalClips: true };
+    if (!o.source && !temps && !o.transcript && !exported) continue;
+    await cleanWith(ctx, o, j.id, false);
   }
 }
 
@@ -538,6 +545,7 @@ export function registerIpc(ctx: IpcContext): void {
     if (!clip) throw new UserFacingError('El clip no existe.');
     if (job.status !== 'completed') throw new UserFacingError('Sólo se pueden re-renderizar clips de trabajos completados.');
     if (rerendering.has(job.id)) throw new UserFacingError('Ya se está re-renderizando un clip de este trabajo.');
+    if (cleaning) throw new UserFacingError('Hay una limpieza de almacenamiento en curso; espera a que termine.');
     const env = renderEnvFor(ctx, job);
     rerendering.add(job.id);
     try {
@@ -550,6 +558,8 @@ export function registerIpc(ctx: IpcContext): void {
       target.dirty = false;
       target.rendered = renderedState({ ...clip });
       target.exportedPath = undefined; // la exportación anterior ya no corresponde al clip actual
+      target.archived = false; // vuelve a haber clip interno
+      target.exportVerified = false;
       ctx.jobs.put(current);
       emitJob(current);
       event('clip_rerender', { job: current.id, clip: target.index, layout: target.layout });
