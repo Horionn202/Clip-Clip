@@ -13,6 +13,14 @@ const subscribe = <T>(channel: 'job:update' | 'ollama:pullProgress' | 'gpu:setup
 
 const api: ClipsApi = {
   checkDeps: () => ipcRenderer.invoke('deps:check'),
+  getPublish: (jobId) => ipcRenderer.invoke('publish:get', String(jobId)),
+  generatePublish: (jobId, clipId) => ipcRenderer.invoke('publish:generate', String(jobId), String(clipId)),
+  savePublish: (jobId, clipId, platform, meta) => ipcRenderer.invoke('publish:save', String(jobId), String(clipId), String(platform), meta),
+  restorePublish: (jobId, clipId, platform, index) => ipcRenderer.invoke('publish:restore', String(jobId), String(clipId), String(platform), Number(index)),
+  setPublishStatus: (jobId, clipId, platform, status, url) => ipcRenderer.invoke('publish:setStatus', String(jobId), String(clipId), String(platform), String(status), url ?? null),
+  copyPublish: (jobId, clipId, platform) => ipcRenderer.invoke('publish:copy', String(jobId), String(clipId), String(platform)),
+  revealClipVideo: (jobId, clipId) => ipcRenderer.invoke('publish:revealVideo', String(jobId), String(clipId)),
+  publishConnections: () => ipcRenderer.invoke('publish:connections'),
   analyzeStorage: (opts, jobId) => ipcRenderer.invoke('storage:analyze', opts ?? null, jobId ?? null),
   cleanStorage: (opts, jobId) => ipcRenderer.invoke('storage:clean', opts, jobId ?? null),
   startupNotice: () => ipcRenderer.invoke('app:startupNotice'),

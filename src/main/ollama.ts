@@ -125,9 +125,9 @@ export async function chatJson(host: string, model: string, system: string, user
       body: JSON.stringify({
         model,
         stream: true,
-        format: opts.maxItems ? clipsSchema(opts.maxItems) : 'json',
+        format: opts.schema ?? (opts.maxItems ? clipsSchema(opts.maxItems) : 'json'),
         keep_alive: '5m',
-        options: { temperature: 0.3, num_ctx: 8192, num_predict: opts.numPredict ?? 2048 },
+        options: { temperature: opts.temperature ?? 0.3, num_ctx: 8192, num_predict: opts.numPredict ?? 2048 },
         messages: [
           { role: 'system', content: system },
           { role: 'user', content: user },
@@ -169,6 +169,9 @@ export async function chatJson(host: string, model: string, system: string, user
 export interface ChatOptions {
   /** Si se indica, se usa salida estructurada con este máximo de clips. */
   maxItems?: number;
+  /** Esquema JSON propio (tiene prioridad sobre maxItems). */
+  schema?: object;
+  temperature?: number;
   numPredict?: number;
   timeoutMs?: number;
 }

@@ -4,6 +4,8 @@ import { formatTime } from '../../shared/validation';
 import { LAYOUT_IDS, LAYOUT_LABELS, NEEDS_CAM, VISUAL_LABELS, type LayoutId, type NormRect } from '../../shared/layouts';
 import { readyCount } from '../../shared/clipEdit';
 import { api, errMsg } from '../api';
+import { PublishBadges, PublishPanel, usePublish } from './Publish';
+import type { ClipPublish } from '../../shared/publish';
 
 const DEFAULT_CAM: NormRect = { x: 0.7, y: 0.6, w: 0.28, h: 0.36 };
 
@@ -49,8 +51,9 @@ function CamEditor({ job, clip, value, onChange }: { job: Job; clip: Clip; value
   );
 }
 
-function ClipCard({ job, clip, onError, onInfo }: { job: Job; clip: Clip; onError: (m: string) => void; onInfo: (m: string) => void }) {
+function ClipCard({ job, clip, pub, onPub, onError, onInfo }: { job: Job; clip: Clip; pub?: ClipPublish; onPub: (d: Record<string, ClipPublish>) => void; onError: (m: string) => void; onInfo: (m: string) => void }) {
   const [editing, setEditing] = useState(false);
+  const [publishing, setPublishing] = useState(false);
   const [title, setTitle] = useState(clip.title);
   const [hook, setHook] = useState(clip.hook);
   const [start, setStart] = useState(clip.start.toFixed(2));
@@ -89,6 +92,7 @@ function ClipCard({ job, clip, onError, onInfo }: { job: Job; clip: Clip; onErro
         {clip.dirty && <span className="badge partial">Cambios sin renderizar</span>}
         {clip.archived && <span className="badge">Archivado · se muestra el export</span>}
       </div>
+      <PublishBadges pub={pub} />
       {clip.hook && <p className="hook">«{clip.hook}»</p>}
       <div className="muted small">
         {formatTime(clip.start)} → {formatTime(clip.end)} · {(clip.end - clip.start).toFixed(1)} s · {LAYOUT_LABELS[clip.layout ?? 'gameplay_full']}
@@ -136,9 +140,13 @@ function ClipCard({ job, clip, onError, onInfo }: { job: Job; clip: Clip; onErro
         >
           {editing ? 'Cerrar edición' : 'Editar clip'}
         </button>
+        <button className="ghost" aria-expanded={publishing} onClick={() => setPublishing(!publishing)}>
+          {publishing ? 'Cerrar publicar' : 'Publicar'}
+        </button>
         {clip.exportedPath && <span className="small ok">✓ exportado</span>}
       </div>
 
+      {publishing && <PublishPanel job={job} clip={clip} pub={pub} onData={onPub} onError={onError} onInfo={onInfo} />}
       {editing && (
         <div className="editor">
           <label className="field">
@@ -231,6 +239,7 @@ export function ResultsPage(props: { jobs: Job[]; selected: string | null; onSel
   const done = props.jobs.filter((j) => j.status === 'completed');
   const job = done.find((j) => j.id === props.selected) ?? done[0];
   const [msg, setMsg] = useState<{ kind: 'error' | 'info'; text: string } | null>(null);
+  const [pub, setPub] = usePublish(job?.id);
 
   if (!job)
     return (
@@ -287,7 +296,7 @@ export function ResultsPage(props: { jobs: Job[]; selected: string | null; onSel
       )}
       <div className="gallery">
         {job.clips.map((c) => (
-          <ClipCard key={c.id} job={job} clip={c} onError={(t) => setMsg({ kind: 'error', text: t })} onInfo={(t) => setMsg({ kind: 'info', text: t })} />
+          <ClipCard key={c.id} job={job} clip={c} pub={pub[c.id]} onPub={setPub} onError={(t) => setMsg({ kind: 'error', text: t })} onInfo={(t) => setMsg({ kind: 'info', text: t })} />
         ))}
       </div>
     </section>

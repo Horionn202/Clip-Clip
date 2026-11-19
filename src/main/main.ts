@@ -7,6 +7,7 @@ import { event, initLogger, log } from './logger';
 import { LEGACY_DIR_NAME, migrateLegacyData, migrationNotice, type MigrationReport } from './migration';
 import { JobStore, SettingsStore, defaultSettings } from './store';
 import { JobQueue } from './queue';
+import { PublishStore } from './publishStore';
 import { createPipeline, jobDir } from './pipeline';
 import { probeGpu, resolveTools, type ResolvedTools } from './deps';
 import type { GpuInfo } from '../shared/types';
@@ -42,6 +43,7 @@ let startupNotice = migration ? migrationNotice(migration) : null;
 
 const settings = new SettingsStore(paths.dataDir, defaultSettings(path.join(app.getPath('videos'), 'Clip Clip')));
 const jobs = new JobStore(paths.dataDir);
+const publish = new PublishStore(paths.dataDir);
 jobs.recoverInterrupted();
 
 const resourcesDir = app.isPackaged ? process.resourcesPath : path.join(app.getAppPath(), 'resources');
@@ -159,6 +161,7 @@ app.whenReady().then(() => {
     userDataDir: paths.userData,
     logsDir: paths.logsDir,
     probeScript,
+    publish,
     // Aviso de una sola vez (p. ej. datos migrados): el renderer lo pide al arrancar.
     takeStartupNotice: () => {
       const n = startupNotice;

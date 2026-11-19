@@ -63,3 +63,15 @@ button:focus-visible,select:focus-visible,summary:focus-visible{outline:2px soli
 .timeline{display:flex;flex-wrap:wrap;gap:6px;list-style:none;padding:0;margin:0}.timeline li{font-size:12px;padding:3px 9px;border-radius:20px;background:var(--panel2);color:var(--muted)}.timeline li.tl-hecho{color:var(--ok)}.timeline li.tl-en-curso{background:var(--accent);color:#fff}
 
 .modal.wide{max-width:680px;width:92vw}.cleanup-options{border:1px solid var(--border);border-radius:8px;padding:8px 12px;margin:10px 0}.cleanup-options .check{margin:6px 0}
+
+/* ---- Publicar ---- */
+.publish-panel textarea { width: 100%; resize: vertical; font: inherit; }
+.publish-badges { gap: 6px; flex-wrap: wrap; }
+.publish-preview { white-space: pre-wrap; font: inherit; font-size: 12px; background: rgba(127,127,127,.1); padding: 8px; border-radius: 6px; max-height: 200px; overflow: auto; }
+.publish-status { border: 1px solid rgba(127,127,127,.3); border-radius: 8px; padding: 8px; display: grid; gap: 8px; }
+.publish-status button.on, .tabs button.on { outline: 2px solid currentColor; }
+.versions { padding-left: 18px; display: grid; gap: 6px; }
+.badge.pub-publicado { background: #1f7a3a; color: #fff; }
+.badge.pub-listo { background: #2b5fb3; color: #fff; }
+.badge.pub-programado { background: #7a5a1f; color: #fff; }
+.badge.pub-descartado { opacity: .6; }
