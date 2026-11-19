@@ -69,6 +69,12 @@ describe('versiones y estados', () => {
     expect(back.publishedAt).toBeUndefined();
     expect(back.publishedUrl).toBeUndefined();
   });
+  it('cambiar el texto de algo publicado lo devuelve a borrador', () => {
+    const p = applyStatus(applyMeta(undefined, meta(), 'ia', NOW), 'publicado', NOW, { confirmedByUser: true, url: 'https://x.com/1' });
+    const e = applyMeta(p, meta('otro'), 'manual', NOW);
+    expect(e).toMatchObject({ status: 'borrador', publishedAt: undefined, publishedUrl: undefined });
+    expect(applyMeta(p, meta(), 'manual', NOW).status).toBe('publicado');
+  });
   it('generar con IA no cambia el estado', () => {
     const p = applyStatus(applyMeta(undefined, meta(), 'ia', NOW), 'listo', NOW);
     expect(applyMeta(p, meta('nuevo'), 'ia', NOW).status).toBe('listo');

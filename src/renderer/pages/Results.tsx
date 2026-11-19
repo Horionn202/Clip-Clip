@@ -296,7 +296,7 @@ export function ResultsPage(props: { jobs: Job[]; selected: string | null; onSel
       )}
       <div className="gallery">
         {job.clips.map((c) => (
-          <ClipCard key={c.id} job={job} clip={c} pub={pub[c.id]} onPub={setPub} onError={(t) => setMsg({ kind: 'error', text: t })} onInfo={(t) => setMsg({ kind: 'info', text: t })} />
+          <ClipCard key={c.id} job={job} clip={c} pub={pub[c.id]} onPub={(d) => setPub(job.id, d)} onError={(t) => setMsg({ kind: 'error', text: t })} onInfo={(t) => setMsg({ kind: 'info', text: t })} />
         ))}
       </div>
     </section>

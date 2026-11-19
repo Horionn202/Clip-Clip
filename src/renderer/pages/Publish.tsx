@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { Clip, Job } from '../../shared/types';
 import {
   EMPTY_META,
@@ -195,13 +195,19 @@ export function PublishPanel(props: { job: Job; clip: Clip; pub?: ClipPublish; o
 }
 
 /** Carga los metadatos de publicación del trabajo seleccionado. */
-export function usePublish(jobId: string | undefined): [PubMap, (d: PubMap) => void] {
+export function usePublish(jobId: string | undefined): [PubMap, (forJob: string, d: PubMap) => void] {
   const [data, setData] = useState<PubMap>({});
+  const current = useRef(jobId);
+  current.current = jobId;
+  // Las respuestas de otro trabajo (cambiado mientras se esperaba) se descartan.
+  const setFor = (forJob: string, d: PubMap) => {
+    if (forJob === current.current) setData(d);
+  };
   useEffect(() => {
     setData({});
-    if (jobId) void api().getPublish(jobId).then(setData).catch(() => undefined);
-  }, [jobId]);
-  return [data, setData];
+    if (jobId) void api().getPublish(jobId).then((d) => setFor(jobId, d)).catch(() => undefined);
+  }, [jobId]); // eslint-disable-line react-hooks/exhaustive-deps
+  return [data, setFor];
 }
 
 /** Pantalla «Conexiones»: hoy todo es manual; se explica cómo se haría la conexión en el futuro. */

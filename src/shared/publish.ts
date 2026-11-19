@@ -134,7 +134,10 @@ export function applyMeta(entry: PlatformEntry | undefined, meta: PublishMeta, s
   const base: PlatformEntry = entry ?? { meta: EMPTY_META, status: 'borrador', versions: [], updatedAt: now };
   if (entry && sameMeta(entry.meta, m)) return entry;
   const v: MetaVersion = { at: now, source, meta: m, ...(model ? { model } : {}) };
-  return { ...base, meta: m, versions: [v, ...base.versions].slice(0, MAX_VERSIONS), updatedAt: now };
+  const next: PlatformEntry = { ...base, meta: m, versions: [v, ...base.versions].slice(0, MAX_VERSIONS), updatedAt: now };
+  // El texto nuevo nunca se confirmó como publicado: vuelve a borrador.
+  if (next.status === 'publicado') return { ...next, status: 'borrador', publishedAt: undefined, publishedUrl: undefined };
+  return next;
 }
 
 /**
