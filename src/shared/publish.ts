@@ -21,6 +21,8 @@ export interface PublishMeta {
   title: string;
   description: string;
   hashtags: string[];
+  /** Llamada a la acción opcional (se añade al final del texto). */
+  cta?: string;
 }
 
 export type PublishStatus = 'borrador' | 'listo' | 'programado' | 'publicado' | 'descartado';
@@ -50,7 +52,19 @@ export interface PlatformEntry {
   updatedAt: string;
 }
 
-export type ClipPublish = Partial<Record<Platform, PlatformEntry>>;
+export interface TitleVariantInfo {
+  title: string;
+  reason: string;
+}
+/** Preferencias editoriales y variantes de título del clip (no son de ninguna plataforma). */
+export interface ClipEditorial {
+  tone?: string;
+  niche?: string;
+  variants?: TitleVariantInfo[];
+  model?: string;
+  generatedAt?: string;
+}
+export type ClipPublish = Partial<Record<Platform, PlatformEntry>> & { editorial?: ClipEditorial };
 /** publish.json: jobId → clipId → plataforma. */
 export type PublishData = Record<string, Record<string, ClipPublish>>;
 
@@ -68,8 +82,10 @@ export function normalizeHashtags(input: string | string[]): string[] {
   return out;
 }
 
-export function cleanMeta(m: { title?: string; description?: string; hashtags?: string | string[] }): PublishMeta {
+export function cleanMeta(m: { title?: string; description?: string; hashtags?: string | string[]; cta?: string }): PublishMeta {
+  const cta = (m.cta ?? '').replace(/\s+/g, ' ').trim();
   return {
+    ...(cta ? { cta } : {}),
     title: (m.title ?? '').replace(/\s+/g, ' ').trim(),
     description: (m.description ?? '').replace(/\r\n/g, '\n').trim(),
     hashtags: normalizeHashtags(m.hashtags ?? []),
@@ -92,8 +108,18 @@ export function metaWarnings(p: Platform, m: PublishMeta): string[] {
 /** Texto listo para pegar en la plataforma. */
 export function copyText(p: Platform, m: PublishMeta): string {
   const tags = m.hashtags.join(' ');
-  const body = PLATFORM_LIMITS[p].hasTitle ? m.description : [m.title, m.description].filter(Boolean).join('\n\n');
+  const desc = [m.description, m.cta].filter(Boolean).join(' ');
+  const body = PLATFORM_LIMITS[p].hasTitle ? desc : [m.title, desc].filter(Boolean).join('\n\n');
   return [body, tags].filter(Boolean).join('\n\n');
+}
+
+export type CopyPart = 'all' | 'title' | 'description' | 'hashtags';
+/** Texto de una parte concreta (para los botones «Copiar título/descripción/hashtags»). */
+export function copyPart(p: Platform, m: PublishMeta, part: CopyPart): string {
+  if (part === 'title') return m.title;
+  if (part === 'description') return [m.description, m.cta].filter(Boolean).join(' ');
+  if (part === 'hashtags') return m.hashtags.join(' ');
+  return copyText(p, m);
 }
 
 /** Interpreta la respuesta JSON de la IA con tolerancia (campos sueltos o faltantes). */
@@ -126,7 +152,7 @@ export function parseAiMeta(raw: string): Partial<Record<Platform, PublishMeta>>
   return out;
 }
 
-const sameMeta = (a: PublishMeta, b: PublishMeta) => a.title === b.title && a.description === b.description && a.hashtags.join(' ') === b.hashtags.join(' ');
+const sameMeta = (a: PublishMeta, b: PublishMeta) => a.title === b.title && a.description === b.description && (a.cta ?? '') === (b.cta ?? '') && a.hashtags.join(' ') === b.hashtags.join(' ');
 
 /** Guarda una nueva versión (la vigente pasa al historial). No cambia el estado salvo «publicado», que vuelve a borrador si se edita. */
 export function applyMeta(entry: PlatformEntry | undefined, meta: PublishMeta, source: MetaVersion['source'], now: string, model?: string): PlatformEntry {
@@ -163,38 +189,6 @@ export function restoreVersion(entry: PlatformEntry, index: number, now: string)
 /** Resumen para la tarjeta: «TikTok: Listo · Shorts: Publicado». */
 export function publishSummary(c: ClipPublish | undefined): { platform: Platform; status: PublishStatus }[] {
   return PLATFORMS.filter((p) => c?.[p]).map((p) => ({ platform: p, status: c![p]!.status }));
-}
-
-/** Prompt del sistema para generar metadatos en español, sin inventar hechos. */
-export const PUBLISH_SYSTEM_PROMPT = [
-  'Eres un editor de redes sociales. Escribes metadatos para un clip vertical corto.',
-  'Responde SOLO con JSON con las claves tiktok, shorts y reels; cada una con title, description y hashtags (lista).',
-  'Idioma: el mismo de la transcripción. No inventes datos que no estén en la transcripción. Sin emojis excesivos.',
-  'TikTok: título vacío, descripción breve (máx. 150 caracteres) con gancho; 3-6 hashtags.',
-  'YouTube Shorts: título de máx. 80 caracteres; descripción de 1-3 frases; 3-5 hashtags.',
-  'Instagram Reels: título vacío; descripción de 1-3 frases con llamada a la acción; 5-10 hashtags.',
-].join('\n');
-
-export function publishUserPrompt(clip: { title: string; hook: string; reason: string }, transcript: string, sourceTitle?: string): string {
-  return [
-    sourceTitle ? `Vídeo original: ${sourceTitle}` : '',
-    `Título del clip: ${clip.title}`,
-    clip.hook ? `Gancho: ${clip.hook}` : '',
-    clip.reason ? `Por qué es interesante: ${clip.reason}` : '',
-    `Transcripción del clip:\n${transcript.slice(0, 4000) || '(sin transcripción)'}`,
-  ]
-    .filter(Boolean)
-    .join('\n');
-}
-
-/** Esquema JSON (structured outputs de Ollama). */
-export function publishSchema(): object {
-  const meta = {
-    type: 'object',
-    properties: { title: { type: 'string' }, description: { type: 'string' }, hashtags: { type: 'array', items: { type: 'string' }, maxItems: 30 } },
-    required: ['title', 'description', 'hashtags'],
-  };
-  return { type: 'object', properties: { tiktok: meta, shorts: meta, reels: meta }, required: ['tiktok', 'shorts', 'reels'] };
 }
 
 /** Estado de conexión de una plataforma (pantalla Conexiones). */

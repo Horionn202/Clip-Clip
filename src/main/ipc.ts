@@ -14,8 +14,11 @@ import { log } from './logger';
 import { runDiagnostics, type ResolvedTools } from './deps';
 import { benchmarkModel, chatJson, listModels, pullModel, unloadModel } from './ollama';
 import { PublishStore } from './publishStore';
+import { readState, runLegacyMigration, scanLegacy, writeState, type LegacyPaths } from './legacy';
+import { deletePublishedExports, findPublishedExports, markExportDeleted, recoverableBytes } from './publishedExports';
 import { listConnections } from './publishers';
-import { PLATFORMS, PLATFORM_LABELS, PUBLISH_SYSTEM_PROMPT, applyMeta, applyStatus, copyText, parseAiMeta, publishSchema, publishUserPrompt, restoreVersion, type Platform } from '../shared/publish';
+import { PLATFORMS, PLATFORM_LABELS, applyMeta, applyStatus, copyPart, restoreVersion, type Platform } from '../shared/publish';
+import { TONES, buildEditorialContext, editorialSchema, generateEditorial } from '../shared/editorial';
 import { renderClip, renderPreview, type RenderEnv } from './clipRender';
 import { applyClipPatch, renderedState } from '../shared/clipEdit';
 import { FREE_SPACE_DEFAULTS, humanSize, type CleanupOptions, type CleanupResult, type PlannedFile } from '../shared/storage';
@@ -79,6 +82,10 @@ export interface IpcContext {
   probeScript: string;
   takeStartupNotice: () => { kind: 'info' | 'error'; text: string } | null;
   publish: PublishStore;
+  legacy: LegacyPaths;
+  installDir: string;
+  appVersion: string;
+  reloadStores: () => void;
 }
 
 const MAX_ACTIVE_JOBS = 10;
@@ -279,6 +286,36 @@ export function registerIpc(ctx: IpcContext): void {
   });
 
   h('app:startupNotice', () => ctx.takeStartupNotice());
+  h('app:version', () => ({ version: ctx.appVersion, name: 'Clip Clip' }));
+
+  // ---- Datos de la versión anterior («ClipsVirales»): sólo con la elección del usuario en el modal ----
+  let migratingLegacy = false;
+  h('legacy:scan', () => scanLegacy(ctx.legacy, ctx.userDataDir));
+  h('legacy:dismiss', () => {
+    writeState(ctx.userDataDir, { ...readState(ctx.userDataDir), dismissed: true });
+    event('legacy_dismiss', {});
+  });
+  h('legacy:migrate', async (mode: unknown) => {
+    const m = z.enum(['keep', 'free']).parse(mode);
+    if (migratingLegacy) throw new UserFacingError('Ya hay una migración en curso.');
+    if (ctx.queue.activeCount > 0) throw new UserFacingError('Espera a que terminen los trabajos en curso antes de migrar.');
+    migratingLegacy = true;
+    try {
+      ctx.jobs.flush();
+      const s = ctx.settings.get();
+      const res = await runLegacyMigration(m, ctx.legacy, {
+        userData: ctx.userDataDir,
+        installDir: ctx.installDir,
+        exportDir: s.exportDir,
+        inUse: [s.pythonPath, s.whisperPath, s.gpuVerifiedPython ?? '', s.ffmpegPath, s.ffprobePath, s.ytDlpPath].filter(Boolean),
+      }, { trash: (p) => shell.trashItem(p), log: (msg, x) => (log.info(msg, x), event('legacy', { msg, ...(x as object) })) });
+      ctx.reloadStores();
+      writeState(ctx.userDataDir, { ...readState(ctx.userDataDir), lastResult: res, dismissed: true });
+      return res;
+    } finally {
+      migratingLegacy = false;
+    }
+  });
   h('deps:check', async () => {
     const gpu = await ctx.gpuInfo(true);
     const d = await runDiagnostics(ctx.tools(), ctx.settings.get(), undefined, gpu);
@@ -636,26 +673,40 @@ export function registerIpc(ctx: IpcContext): void {
   ctx.publish.onChange = (jobId, data) => broadcast('publish:update', { jobId, data });
   h('publish:get', (jobId: unknown) => ctx.publish.forJob(requireJob(ctx, jobId).id));
   h('publish:connections', () => listConnections());
-  h('publish:generate', async (jobId: unknown, clipId: unknown) => {
+  h('publish:generate', async (jobId: unknown, clipId: unknown, options: unknown) => {
     const { job, clip } = pubClip(jobId, clipId);
+    const o = z.object({ tone: z.enum(TONES as [string, ...string[]]).optional(), niche: z.string().max(40).optional() }).strict().optional().parse(options) ?? {};
     if (generating) throw new UserFacingError('Ya se están generando metadatos; espera a que termine.');
     generating = true;
     try {
       const s = ctx.settings.get();
       const words = transcriptWords(ctx, job.id).filter((w) => w.end > clip.start && w.start < clip.end);
-      const user = publishUserPrompt(clip, words.map((w) => w.text).join(' ').replace(/\s+/g, ' ').trim(), job.sourceTitle);
-      const raw = await chatJson(s.ollamaHost, s.ollamaModel, PUBLISH_SYSTEM_PROMPT, user, new AbortController().signal, { schema: publishSchema(), numPredict: 1200, temperature: 0.6, timeoutMs: 3 * 60 * 1000 });
+      // Contexto editorial limpio: sin URL, rutas, nombres de archivo, IDs ni metadata técnica (ni siquiera el título del vídeo de origen).
+      const ectx = buildEditorialContext(clip, words.map((w) => w.text).join(' '), { tone: o.tone as never, niche: o.niche, language: s.whisperLanguage || undefined });
+      const ask = (system: string, user: string) => chatJson(s.ollamaHost, s.ollamaModel, system, user, new AbortController().signal, { schema: editorialSchema(), numPredict: 1400, temperature: 0.5, timeoutMs: 3 * 60 * 1000 });
+      const out = await generateEditorial(ectx, ask);
       // El trabajo o el clip pudieron borrarse mientras Ollama respondía: no se recrean sus datos.
       if (!ctx.jobs.get(job.id)?.clips.some((c) => c.id === clip.id)) throw new UserFacingError('El trabajo o el clip se eliminó mientras se generaban los textos.');
       const latest = ctx.jobs.get(job.id)!.clips.find((c) => c.id === clip.id)!;
       if (latest.start !== clip.start || latest.end !== clip.end) throw new UserFacingError('El tramo del clip cambió mientras se generaban los textos. Vuelve a generarlos.');
-      const metas = parseAiMeta(raw);
-      const got = PLATFORMS.filter((p) => metas[p]);
-      if (!got.length) throw new UserFacingError('La IA no devolvió metadatos válidos. Prueba de nuevo o escríbelos a mano.', raw.slice(0, 500));
       const now = new Date().toISOString();
-      for (const p of got) ctx.publish.put(job.id, clip.id, p, applyMeta(ctx.publish.get(job.id, clip.id, p), metas[p]!, 'ia', now, s.ollamaModel));
-      event('publish_generate', { job: job.id, clip: clip.index, platforms: got, model: s.ollamaModel });
-      return ctx.publish.forJob(job.id);
+      ctx.publish.putEditorial(job.id, clip.id, { tone: o.tone, niche: o.niche });
+      if (!out.ok) {
+        // Nunca se guarda basura: el editor queda como estaba y se pide edición manual.
+        event('publish_generate', { job: job.id, clip: clip.index, ok: false, reason: out.reason, attempts: out.attempts, model: s.ollamaModel });
+        return { ok: false, reason: out.reason, issues: out.issues, data: ctx.publish.forJob(job.id) };
+      }
+      const { variants, platforms } = out.result;
+      const title = variants[0]?.title ?? '';
+      for (const p of PLATFORMS) {
+        const d = platforms[p];
+        if (!d) continue;
+        const meta = { title: p === 'shorts' ? title : '', description: d.description, hashtags: d.hashtags, cta: d.cta };
+        ctx.publish.put(job.id, clip.id, p, applyMeta(ctx.publish.get(job.id, clip.id, p), meta, 'ia', now, s.ollamaModel));
+      }
+      ctx.publish.putEditorial(job.id, clip.id, { variants, model: s.ollamaModel, generatedAt: now });
+      event('publish_generate', { job: job.id, clip: clip.index, ok: true, attempts: out.attempts, repaired: out.repaired, model: s.ollamaModel });
+      return { ok: true, repaired: out.repaired, data: ctx.publish.forJob(job.id) };
     } finally {
       generating = false;
     }
@@ -697,7 +748,7 @@ export function registerIpc(ctx: IpcContext): void {
         cancelId: 0,
         title: 'Marcar como publicado',
         message: `¿Ya publicaste «${clip.title}» en ${PLATFORM_LABELS[p]}?`,
-        detail: 'Clip Clip no sube vídeos: sólo guarda que tú lo publicaste manualmente.',
+        detail: `Clip Clip no sube vídeos: sólo guarda que tú lo publicaste manualmente.${ctx.settings.get().deleteExportsAfterPublish && clip.exportedPath ? '\n\nTienes activada la opción «Eliminar exports después de marcarlos como publicados»: el MP4 exportado de este clip irá a la Papelera de reciclaje.' : ''}`,
       };
       const r = win ? await dialog.showMessageBox(win, opts) : await dialog.showMessageBox(opts);
       if (r.response !== 1) return ctx.publish.forJob(job.id);
@@ -712,14 +763,59 @@ export function registerIpc(ctx: IpcContext): void {
       throw new UserFacingError((err as Error).message);
     }
     event('publish_status', { job: job.id, clip: clip.index, platform: p, status: st });
+    // Opción explícita del usuario (desactivada por defecto): el export publicado va a la Papelera.
+    if (st === 'publicado' && confirmedByUser && ctx.settings.get().deleteExportsAfterPublish) {
+      const r = await trashPublished([{ jobId: job.id, clipId: clip.id }]);
+      if (r.errors.length && clip.exportedPath) log.warn('export publicado no eliminado', r.errors);
+    }
     return ctx.publish.forJob(job.id);
   });
-  h('publish:copy', (jobId: unknown, clipId: unknown, platform: unknown) => {
+  // ---- Exports ya publicados (sólo con confirmación; a la Papelera; se conserva la metadata) ----
+  const publishedNow = (platforms?: Platform[]) => findPublishedExports(ctx.jobs.list(), (id) => ctx.publish.forJob(id), ctx.settings.get().exportDir, ctx.jobsDir, platforms);
+  const trashPublished = async (items: { jobId: string; clipId: string }[]) => {
+    const r = await deletePublishedExports(items, () => publishedNow(), (p) => shell.trashItem(p), (m, x) => event('exports_published_clean', { msg: m, ...(x as object) }));
+    const now = new Date().toISOString();
+    for (const d of r.deleted) {
+      const job = ctx.jobs.get(d.jobId);
+      if (job) ctx.jobs.put({ ...job, clips: job.clips.map((c) => (c.id === d.clipId ? markExportDeleted(c, now) : c)), updatedAt: now });
+    }
+    return r;
+  };
+  h('exports:listPublished', (platforms: unknown, jobId: unknown, clipId: unknown) => {
+    const plats = z.array(platformSchema).max(3).optional().parse(platforms ?? undefined) as Platform[] | undefined;
+    const jid = jobId == null ? undefined : idSchema.parse(jobId);
+    const cid = clipId == null ? undefined : idSchema.parse(clipId);
+    const items = publishedNow(plats).filter((x) => (!jid || x.jobId === jid) && (!cid || x.clipId === cid));
+    return { items, totalBytes: recoverableBytes(items) };
+  });
+  h('exports:deletePublished', async (items: unknown) => {
+    const list = z.array(z.object({ jobId: idSchema, clipId: idSchema }).strict()).min(1).max(500).parse(items);
+    // Confirmación nativa en el proceso principal (además de la del modal): el renderer no puede borrar por su cuenta.
+    const sel = publishedNow().filter((x) => list.some((i) => i.jobId === x.jobId && i.clipId === x.clipId));
+    if (!sel.length) throw new UserFacingError('Ninguno de esos exports cumple las condiciones (publicado y dentro de la carpeta de exportación).');
+    const win = BrowserWindow.getFocusedWindow();
+    const opts = {
+      type: 'warning' as const,
+      buttons: ['Cancelar', 'Enviar a la Papelera'],
+      defaultId: 0,
+      cancelId: 0,
+      title: 'Eliminar exports publicados',
+      message: `¿Enviar ${sel.length} export${sel.length === 1 ? '' : 's'} publicado${sel.length === 1 ? '' : 's'} (${humanSize(recoverableBytes(sel))}) a la Papelera de reciclaje?`,
+      detail: 'Se conservan los títulos, textos, hashtags e historial de cada clip.',
+    };
+    const r = win ? await dialog.showMessageBox(win, opts) : await dialog.showMessageBox(opts);
+    if (r.response !== 1) return { deleted: 0, freedBytes: 0, errors: [] };
+    const res = await trashPublished(sel);
+    return { deleted: res.deleted.length, freedBytes: res.freedBytes, errors: res.errors };
+  });
+  h('publish:copy', (jobId: unknown, clipId: unknown, platform: unknown, part: unknown) => {
     const { job, clip } = pubClip(jobId, clipId);
     const p = platformSchema.parse(platform) as Platform;
     const e = ctx.publish.get(job.id, clip.id, p);
     if (!e) throw new UserFacingError('No hay texto para copiar.');
-    clipboard.writeText(copyText(p, e.meta));
+    const text = copyPart(p, e.meta, z.enum(['all', 'title', 'description', 'hashtags']).parse(part ?? 'all'));
+    if (!text) throw new UserFacingError('Ese campo está vacío.');
+    clipboard.writeText(text);
     return true;
   });
   h('publish:revealVideo', (jobId: unknown, clipId: unknown) => {

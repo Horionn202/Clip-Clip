@@ -1,7 +1,7 @@
 // Almacén local de metadatos de publicación (data/publish.json). Separado de jobs.json: no altera trabajos existentes.
 import fs from 'node:fs';
 import path from 'node:path';
-import type { ClipPublish, Platform, PlatformEntry, PublishData } from '../shared/publish';
+import type { ClipEditorial, ClipPublish, Platform, PlatformEntry, PublishData } from '../shared/publish';
 
 export class PublishStore {
   private file: string;
@@ -35,6 +35,18 @@ export class PublishStore {
     const job = (this.data[jobId] ??= {});
     const clip = (job[clipId] ??= {});
     clip[p] = entry;
+    this.flush();
+    this.onChange?.(jobId, job);
+  }
+
+  editorial(jobId: string, clipId: string): ClipEditorial | undefined {
+    return this.data[jobId]?.[clipId]?.editorial;
+  }
+
+  putEditorial(jobId: string, clipId: string, ed: ClipEditorial): void {
+    const job = (this.data[jobId] ??= {});
+    const clip = (job[clipId] ??= {});
+    clip.editorial = { ...clip.editorial, ...ed };
     this.flush();
     this.onChange?.(jobId, job);
   }

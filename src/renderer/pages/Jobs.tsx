@@ -5,6 +5,7 @@ import { humanDuration } from '../../shared/estimates';
 import { api, errMsg } from '../api';
 import { JobReport } from './Performance';
 import { FreeSpaceDialog } from './Storage';
+import { ConfirmModal, Modal } from '../components/Modal';
 import { TEMP_ONLY, humanSize } from '../../shared/storage';
 
 export function DeviceBadge({ job }: { job: Job }) {
@@ -43,6 +44,7 @@ function useNow(active: boolean): number {
 }
 
 function ActiveCard({ job, now, onError }: { job: Job; now: number; onError: (m: string) => void }) {
+  const [modal, setModal] = useState<'' | 'cancel' | 'detail'>('');
   const stages = stageTimeline(job, now);
   const elapsed = job.stageStartedAt ? now - Date.parse(job.stageStartedAt) : undefined;
   const eta = currentEta(job, elapsed);
@@ -67,14 +69,22 @@ function ActiveCard({ job, now, onError }: { job: Job; now: number; onError: (m:
             {eta !== null && ` · quedan ≈ ${fmtMs(eta)}`}
           </div>
         </div>
-        <button
-          className="danger"
-          onClick={() => {
-            if (window.confirm('¿Cancelar este trabajo? Lo procesado hasta ahora no se usará.')) api().cancelJob(job.id).catch((e) => onError(errMsg(e)));
-          }}
-        >
+        <button className="danger" aria-haspopup="dialog" onClick={() => setModal('cancel')}>
           Cancelar
         </button>
+        <ConfirmModal
+          open={modal === 'cancel'}
+          title="Cancelar trabajo"
+          confirmLabel="Cancelar trabajo"
+          danger
+          onClose={() => setModal('')}
+          onConfirm={() => {
+            setModal('');
+            api().cancelJob(job.id).catch((e) => onError(errMsg(e)));
+          }}
+        >
+          <p>¿Cancelar este trabajo? Lo procesado hasta ahora no se usará.</p>
+        </ConfirmModal>
       </div>
       <div className="progress" role="progressbar" aria-valuenow={pct} aria-valuemin={0} aria-valuemax={100} aria-label="Progreso de la etapa">
         <div style={{ width: `${pct}%` }} />
@@ -87,11 +97,13 @@ function ActiveCard({ job, now, onError }: { job: Job; now: number; onError: (m:
           </li>
         ))}
       </ol>
-      <details>
-        <summary className="small">Detalle técnico</summary>
+      <button className="link small" aria-haspopup="dialog" onClick={() => setModal('detail')}>
+        Ver detalle técnico
+      </button>
+      <Modal open={modal === 'detail'} onClose={() => setModal('')} title="Detalle técnico" size="md">
         <p className="small muted">{job.message}</p>
         <JobReport job={job} />
-      </details>
+      </Modal>
     </article>
   );
 }
@@ -99,6 +111,8 @@ function ActiveCard({ job, now, onError }: { job: Job; now: number; onError: (m:
 function HistoryCard(props: { job: Job; onOpen: (id: string) => void; onDeleted: (id: string) => void; onRetry: () => void; goDiagnostics: () => void; onError: (m: string) => void }) {
   const j = props.job;
   const got = j.clips.filter((c) => c.file).length;
+  const [modal, setModal] = useState<'' | 'temp' | 'report'>('');
+  const [temp, setTemp] = useState(0);
   const act = async (fn: () => Promise<unknown>) => {
     try {
       await fn();
@@ -141,18 +155,35 @@ function HistoryCard(props: { job: Job; onOpen: (id: string) => void; onDeleted:
         {j.status === 'completed' && <button onClick={() => act(() => api().openJobFolder(j.id))}>Abrir carpeta</button>}
         <button
           className="ghost"
+          aria-haspopup="dialog"
           onClick={() =>
             act(async () => {
               const r = await api().analyzeStorage(TEMP_ONLY, j.id);
               if (r.recoverableBytes === 0) return props.onError('Este trabajo no tiene temporales que limpiar.');
-              if (!window.confirm(`Limpiar temporales de este trabajo: se liberarán ${humanSize(r.recoverableBytes)} (audio, subtítulos y fotogramas). No se tocan el vídeo original, los clips ni los exports.`)) return;
-              const res = await api().cleanStorage(TEMP_ONLY, j.id);
-              props.onError(res.errors.length ? `Se liberaron ${humanSize(res.freedBytes)}; ${res.errors.length} archivo(s) no se pudieron borrar.` : '');
+              setTemp(r.recoverableBytes);
+              setModal('temp');
             })
           }
         >
           Limpiar temporales
         </button>
+        <ConfirmModal
+          open={modal === 'temp'}
+          title="Limpiar temporales"
+          confirmLabel={`Liberar ${humanSize(temp)}`}
+          onClose={() => setModal('')}
+          onConfirm={() =>
+            act(async () => {
+              setModal('');
+              const res = await api().cleanStorage(TEMP_ONLY, j.id);
+              props.onError(res.errors.length ? `Se liberaron ${humanSize(res.freedBytes)}; ${res.errors.length} archivo(s) no se pudieron borrar.` : '');
+            })
+          }
+        >
+          <p>
+            Se liberarán <b>{humanSize(temp)}</b> (audio, subtítulos y fotogramas) y van a la Papelera de reciclaje. No se tocan el vídeo original, los clips ni los exports.
+          </p>
+        </ConfirmModal>
         {(j.status === 'failed' || j.status === 'cancelled') && (
           <button className="primary" onClick={() => act(async () => (await api().retryJob(j.id), props.onRetry()))}>
             Reintentar
@@ -169,11 +200,13 @@ function HistoryCard(props: { job: Job; onOpen: (id: string) => void; onDeleted:
           Eliminar
         </button>
       </div>
-      <details>
-        <summary className="small">Ver informe del trabajo</summary>
+      <button className="link small" aria-haspopup="dialog" onClick={() => setModal('report')}>
+        {j.status === 'failed' ? 'Ver errores y diagnóstico' : 'Ver informe del trabajo'}
+      </button>
+      <Modal open={modal === 'report'} onClose={() => setModal('')} title={j.status === 'failed' ? 'Errores y diagnóstico' : 'Informe del trabajo'} size="md">
         {j.status === 'failed' && j.error && <p className="small muted">{j.error}</p>}
         <JobReport job={j} />
-      </details>
+      </Modal>
     </article>
   );
 }

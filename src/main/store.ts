@@ -36,6 +36,7 @@ export function defaultSettings(exportDir: string): Settings {
     keepSource: 'confirmar',
     keepTemp: 'tras-completar',
     keepTranscript: true,
+    deleteExportsAfterPublish: false,
     autoCleanupDays: 0,
     maxConcurrentJobs: 1,
     maxSourceMinutes: 180,
@@ -73,6 +74,10 @@ export class SettingsStore {
   get(): Settings {
     return { ...this.value };
   }
+  /** Vuelve a leer el archivo (tras una migración de datos antiguos). */
+  reload(defaults: Settings): void {
+    this.value = migrateSettings(defaults, readJson<Partial<Settings>>(this.file, {}));
+  }
   update(patch: Partial<Settings>): Settings {
     this.value = { ...this.value, ...patch };
     writeJson(this.file, this.value);
@@ -87,6 +92,19 @@ export class JobStore {
 
   constructor(dataDir: string) {
     this.file = path.join(dataDir, 'jobs.json');
+    for (const j of readJson<Job[]>(this.file, [])) this.jobs.set(j.id, j);
+  }
+
+  /**
+   * Vuelve a leer el historial (tras una migración). Quien migra debe llamar antes a flush(): aquí NO se escribe,
+   * porque sobrescribiría el archivo recién fusionado con la lista antigua.
+   */
+  reload(): void {
+    if (this.timer) {
+      clearTimeout(this.timer);
+      this.timer = null;
+    }
+    this.jobs.clear();
     for (const j of readJson<Job[]>(this.file, [])) this.jobs.set(j.id, j);
   }
 

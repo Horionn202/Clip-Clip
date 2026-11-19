@@ -77,6 +77,41 @@ export interface Clip {
   exportVerified?: boolean;
   /** El clip interno se borró al liberar espacio; se usa el export. */
   archived?: boolean;
+  /** Fecha en que se envió a la Papelera el export tras publicarlo (se conserva toda la metadata). */
+  exportDeletedAfterPublish?: string;
+}
+
+export interface PublishedExportInfo {
+  jobId: string;
+  clipId: string;
+  title: string;
+  path: string;
+  name: string;
+  bytes: number;
+  platforms: import('./publish').Platform[];
+}
+
+/** Datos de la versión anterior («ClipsVirales») encontrados en el equipo. */
+export interface LegacyItem {
+  kind: 'data' | 'install' | 'exports';
+  path: string;
+  bytes: number;
+}
+export interface LegacyScan {
+  found: boolean;
+  items: LegacyItem[];
+  totalBytes: number;
+  /** El usuario eligió «Ignorar por ahora» (no se vuelve a mostrar el aviso automáticamente). */
+  dismissed: boolean;
+  migrated: boolean;
+}
+export interface LegacyMigrateResult {
+  ok: boolean;
+  migrated: { linked: number; copied: number; skippedExisting: number; mergedJobs: number };
+  verified: boolean;
+  trashed: { path: string; bytes: number }[];
+  freedBytes: number;
+  errors: string[];
 }
 
 export interface RenderedState {
@@ -283,6 +318,8 @@ export interface Settings {
   /** Temporales (audio WAV, subtítulos, fotogramas): siempre / tras completar / tras exportar. */
   keepTemp: KeepTemp;
   keepTranscript: boolean;
+  /** Enviar a la Papelera el MP4 exportado al marcar el clip como publicado (desactivado por defecto). */
+  deleteExportsAfterPublish?: boolean;
   /** Limpieza automática de trabajos completados tras N días (0 = desactivada). */
   autoCleanupDays: number;
   maxConcurrentJobs: number;
@@ -359,11 +396,11 @@ export interface PullProgress {
 export interface ClipsApi {
   // Publicar (local; sin subida real)
   getPublish(jobId: string): Promise<Record<string, import('./publish').ClipPublish>>;
-  generatePublish(jobId: string, clipId: string): Promise<Record<string, import('./publish').ClipPublish>>;
+  generatePublish(jobId: string, clipId: string, opts?: { tone?: string; niche?: string }): Promise<{ ok: boolean; reason?: 'contexto' | 'invalido'; issues?: string[]; repaired?: boolean; data: Record<string, import('./publish').ClipPublish> }>;
   savePublish(jobId: string, clipId: string, platform: import('./publish').Platform, meta: import('./publish').PublishMeta): Promise<Record<string, import('./publish').ClipPublish>>;
   restorePublish(jobId: string, clipId: string, platform: import('./publish').Platform, index: number): Promise<Record<string, import('./publish').ClipPublish>>;
   setPublishStatus(jobId: string, clipId: string, platform: import('./publish').Platform, status: import('./publish').PublishStatus, url?: string): Promise<Record<string, import('./publish').ClipPublish>>;
-  copyPublish(jobId: string, clipId: string, platform: import('./publish').Platform): Promise<boolean>;
+  copyPublish(jobId: string, clipId: string, platform: import('./publish').Platform, part?: import('./publish').CopyPart): Promise<boolean>;
   revealClipVideo(jobId: string, clipId: string): Promise<boolean>;
   publishConnections(): Promise<import('./publish').ConnectionInfo[]>;
   onPublishUpdate(cb: (u: { jobId: string; data: Record<string, import('./publish').ClipPublish> }) => void): () => void;
@@ -396,6 +433,12 @@ export interface ClipsApi {
   previewLayout(jobId: string, clipId: string, layout: LayoutId, camRect: NormRect | null, range?: { start: number; end: number } | null): Promise<string>;
   exportClip(jobId: string, clipId: string): Promise<string>;
   exportAll(jobId: string): Promise<number>;
+  listPublishedExports(platforms?: import('./publish').Platform[], jobId?: string, clipId?: string): Promise<{ items: PublishedExportInfo[]; totalBytes: number }>;
+  deletePublishedExports(items: { jobId: string; clipId: string }[]): Promise<{ deleted: number; freedBytes: number; errors: { clipId: string; message: string }[] }>;
+  legacyScan(): Promise<LegacyScan>;
+  legacyMigrate(mode: 'keep' | 'free'): Promise<LegacyMigrateResult>;
+  legacyDismiss(): Promise<void>;
+  appVersion(): Promise<{ version: string; name: string }>;
   openJobFolder(jobId: string): Promise<void>;
   openExportFolder(): Promise<void>;
   onJobUpdate(cb: (job: Job) => void): () => void;

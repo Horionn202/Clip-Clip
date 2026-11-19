@@ -1,15 +1,23 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { WHISPER_MODEL_OPTIONS, type Diagnostics, type Job, type Settings } from '../../shared/types';
 import { AiModelPanel } from './AiModels';
 import { AccelPanel } from './Accel';
 import { LAYOUT_IDS, LAYOUT_LABELS } from '../../shared/layouts';
 import { GpuPanel, LastRunPanel } from './Performance';
 import { api, errMsg } from '../api';
+import { PublishedExportsCleanup } from './PublishedExport';
+import { LegacyModal } from './Legacy';
 
 export function SettingsPage(props: { settings: Settings; onChange: (s: Settings) => void; diag: Diagnostics | null; refreshDiag: () => Promise<void>; jobs: Job[] }) {
   const s = props.settings;
   const [err, setErr] = useState('');
   const [checking, setChecking] = useState(false);
+  const [pubClean, setPubClean] = useState(false);
+  const [legacy, setLegacy] = useState(false);
+  const [version, setVersion] = useState('');
+  useEffect(() => {
+    void api().appVersion().then((v) => setVersion(v.version)).catch(() => undefined);
+  }, []);
 
   const patch = async (p: Partial<Settings>) => {
     setErr('');
@@ -137,6 +145,23 @@ export function SettingsPage(props: { settings: Settings; onChange: (s: Settings
         <input type="checkbox" checked={s.keepTranscript} onChange={(e) => patch({ keepTranscript: e.target.checked })} />
         <span>Conservar la transcripción (ocupa poco y permite rehacer subtítulos)</span>
       </label>
+      <label className="check">
+        <input type="checkbox" checked={!!s.deleteExportsAfterPublish} onChange={(e) => patch({ deleteExportsAfterPublish: e.target.checked })} />
+        <span>
+          Eliminar exports después de marcarlos como publicados
+          <span className="small muted"> — elimina el MP4 exportado (no sólo temporales), lo envía a la Papelera al confirmar «publicado». Se conservan títulos, textos e historial. Desactivado por defecto.</span>
+        </span>
+      </label>
+      <div className="row">
+        <button aria-haspopup="dialog" onClick={() => setPubClean(true)}>
+          Limpiar exports publicados…
+        </button>
+        <button className="ghost" aria-haspopup="dialog" onClick={() => setLegacy(true)}>
+          Datos de ClipsVirales…
+        </button>
+      </div>
+      <PublishedExportsCleanup open={pubClean} onClose={() => setPubClean(false)} />
+      <LegacyModal open={legacy} onClose={() => setLegacy(false)} />
       <div className="grid2">
         <NumField label="Limpieza automática tras N días (0 = desactivada)" value={s.autoCleanupDays} min={0} max={365} onSave={(v) => patch({ autoCleanupDays: v })} />
         <p className="small muted">Sólo afecta a trabajos completados y sigue las opciones de arriba. Nunca toca exports ni trabajos en curso.</p>
@@ -157,6 +182,11 @@ export function SettingsPage(props: { settings: Settings; onChange: (s: Settings
       <PathField label="yt-dlp.exe" value={s.ytDlpPath} onSave={(v) => patch({ ytDlpPath: v }).then(props.refreshDiag)} />
       <PathField label="whisper.exe" value={s.whisperPath} onSave={(v) => patch({ whisperPath: v }).then(props.refreshDiag)} />
       <PathField label="python.exe (del entorno de Whisper)" value={s.pythonPath} onSave={(v) => patch({ pythonPath: v }).then(props.refreshDiag)} />
+
+      <h2>Acerca de</h2>
+      <p className="small">
+        <b>Clip Clip</b> {version ? `versión ${version}` : ''} · todo se procesa en este equipo. Las actualizaciones sustituyen la instalación anterior y conservan tus datos en %APPDATA%\Clip Clip.
+      </p>
     </section>
   );
 }
