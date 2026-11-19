@@ -86,9 +86,9 @@ export async function deletePublishedExports(
   log: (msg: string, extra?: unknown) => void,
 ): Promise<DeleteResult> {
   const res: DeleteResult = { deleted: [], errors: [], freedBytes: 0 };
-  const allowed = new Map(current().map((x) => [`${x.jobId}/${x.clipId}`, x]));
   for (const it of items) {
-    const x = allowed.get(`${it.jobId}/${it.clipId}`);
+    // Se re-evalúa justo antes de cada borrado: el estado pudo cambiar mientras se procesaban los anteriores.
+    const x = current().find((c) => c.jobId === it.jobId && c.clipId === it.clipId);
     if (!x) {
       res.errors.push({ clipId: it.clipId, message: 'ya no cumple las condiciones (no publicado, pendiente o fuera de la carpeta de exportación)' });
       log('exports publicados: omitido', { job: it.jobId, clip: it.clipId });

@@ -199,12 +199,13 @@ export function visualTagsFrom(v: { cls: string; confidence: number } | undefine
 }
 
 /** Lenguaje probable a partir de la transcripción (es/en/pt). */
-export function guessLanguage(text: string, fallback = 'es'): string {
+export function guessLanguage(text: string, fallback = 'el mismo de la transcripción'): string {
   const w = ` ${fold(text)} `;
   const score = (list: string[]) => list.reduce((n, x) => n + (w.split(` ${x} `).length - 1), 0);
   const s = { es: score(['que', 'de', 'el', 'y', 'es', 'por', 'pero', 'esto']), en: score(['the', 'and', 'is', 'you', 'that', 'this', 'what']), pt: score(['que', 'nao', 'voce', 'uma', 'isso', 'com']) };
   const best = (Object.entries(s) as [string, number][]).sort((a, b) => b[1] - a[1])[0];
-  return best[1] >= 3 ? best[0] : fallback;
+  // Sólo se fija el idioma si la detección es clara; si no, se pide el mismo idioma de la transcripción (fr, de…).
+  return best[1] >= 3 && best[1] >= 2 * (Object.values(s).sort((a, b) => b - a)[1] ?? 0) ? best[0] : fallback;
 }
 
 /**

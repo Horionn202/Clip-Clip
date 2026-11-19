@@ -72,6 +72,9 @@ describe('contexto editorial limpio', () => {
     expect(c.language).toBe('es');
     expect(buildEditorialContext({ ...CLIP, visual: { cls: 'facecam_inferior', confidence: 0.2 }, layout: undefined }, TRANSCRIPT).visualTags).toEqual([]);
   });
+  it('idioma no detectado: se pide el de la transcripción, no español', () => {
+    expect(buildEditorialContext(CLIP, 'Alors je suis allé au garage avec la voiture et le mécanicien a dit que le moteur était cassé, incroyable').language).toBe('el mismo de la transcripción');
+  });
   it('stripTechnical quita lo técnico y conserva el texto', () => {
     expect(stripTechnical('Hola https://a.com/x y C:\\a\\b.mp4 en 01:02 con clip_3')).toBe('Hola y en con');
   });
