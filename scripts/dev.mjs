@@ -3,6 +3,10 @@ import { spawn, spawnSync } from 'node:child_process';
 import { createServer } from 'vite';
 import electronPath from 'electron';
 
+// Iconos y logo de la interfaz (generados desde resources/brand/clip-clip-logo.png; no versionados).
+const icons = spawnSync(process.execPath, ['scripts/make-icons.mjs'], { stdio: 'inherit' });
+if (icons.status !== 0) process.exit(icons.status ?? 1);
+
 const tsc = spawnSync(process.execPath, ['node_modules/typescript/bin/tsc', '-p', 'tsconfig.node.json'], { stdio: 'inherit' });
 if (tsc.status !== 0) process.exit(tsc.status ?? 1);
 

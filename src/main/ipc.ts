@@ -70,6 +70,7 @@ export interface IpcContext {
   userDataDir: string;
   logsDir: string;
   probeScript: string;
+  takeStartupNotice: () => { kind: 'info' | 'error'; text: string } | null;
 }
 
 const MAX_ACTIVE_JOBS = 10;
@@ -137,6 +138,7 @@ function exportOne(ctx: IpcContext, job: Job, clipId: string): string {
 export function registerIpc(ctx: IpcContext): void {
   const h = <A extends unknown[], R>(ch: string, fn: (...a: A) => Promise<R> | R) => ipcMain.handle(ch, wrap(ctx, ch, fn));
 
+  h('app:startupNotice', () => ctx.takeStartupNotice());
   h('deps:check', async () => {
     const gpu = await ctx.gpuInfo(true);
     const d = await runDiagnostics(ctx.tools(), ctx.settings.get(), undefined, gpu);

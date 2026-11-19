@@ -13,6 +13,7 @@ const subscribe = <T>(channel: 'job:update' | 'ollama:pullProgress' | 'gpu:setup
 
 const api: ClipsApi = {
   checkDeps: () => ipcRenderer.invoke('deps:check'),
+  startupNotice: () => ipcRenderer.invoke('app:startupNotice'),
   probeUrl: (url) => ipcRenderer.invoke('source:probe', String(url)),
   getSettings: () => ipcRenderer.invoke('settings:get'),
   updateSettings: (patch) => ipcRenderer.invoke('settings:update', patch),

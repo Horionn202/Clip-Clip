@@ -49,3 +49,8 @@ npm-debug.log*
 Thumbs.db
 .vscode/
 .idea/
+
+# Iconos generados desde resources/brand/clip-clip-logo.png (npm run icons)
+build/icon.ico
+build/icons/
+src/renderer/assets/logo-*.png

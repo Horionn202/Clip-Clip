@@ -128,7 +128,7 @@ export function LastRunPanel({ jobs }: { jobs: Job[] }) {
           </tbody>
         </table>
       )}
-      <p className="small muted">Detalle técnico: %APPDATA%\ClipsVirales\logs\events.jsonl y app.log</p>
+      <p className="small muted">Detalle técnico: %APPDATA%\Clip Clip\logs\events.jsonl y app.log</p>
     </div>
   );
 }
