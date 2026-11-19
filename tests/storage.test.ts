@@ -69,6 +69,14 @@ describe('análisis y espacio recuperable', () => {
     const r = planCleanup([job('job-a', 'completed', [clip(1)])], jobsDir, TEMP_ONLY);
     expect(new Set(r.files.map((f) => f.category))).toEqual(new Set(['audio', 'frames', 'temp']));
   });
+  it('conserva los fotogramas de referencia de los clips', () => {
+    makeJob('job-a');
+    w(path.join(jobsDir, 'job-a', 'frames/thumb1.jpg'), 10);
+    const r = planCleanup([job('job-a', 'completed', [clip(1, { thumb: 'thumb1.jpg' })])], jobsDir, TEMP_ONLY);
+    const rels = r.files.map((f) => f.rel.replace(/\\/g, '/'));
+    expect(rels).toContain('frames/01.jpg');
+    expect(rels).not.toContain('frames/thumb1.jpg');
+  });
   it('transcripción sólo si se marca', () => {
     makeJob('job-a');
     expect(planCleanup([job('job-a', 'completed', [])], jobsDir, { ...FREE_SPACE_DEFAULTS, transcript: true }).files.some((f) => f.category === 'transcript')).toBe(true);

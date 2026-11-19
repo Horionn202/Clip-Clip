@@ -112,8 +112,11 @@ export function planCleanup(jobs: Job[], jobsDir: string, opts: CleanupOptions, 
     }
     // Clips internos borrables: sólo los que tienen export verificado.
     const verified = new Set(job.clips.filter((c) => c.file && verifyExport(jobsDir, job.id, c, deps)).map((c) => path.join('clips', c.file!)));
+    // Fotogramas de referencia de los clips (miniaturas y editor de facecam): sólo se generan en el pipeline, se conservan.
+    const thumbs = keptThumbs(job);
     for (const f of list) {
       const cat = classify(f.rel);
+      if (thumbs.has(f.rel.replace(/\\/g, '/'))) continue;
       const take =
         (cat === 'source' && opts.source) ||
         (cat === 'audio' && opts.audio) ||
@@ -177,10 +180,16 @@ export async function executeCleanup(files: PlannedFile[], jobs: Job[], jobsDir:
   return res;
 }
 
+/** Fotogramas de referencia de los clips (rutas relativas con «/»). */
+function keptThumbs(job: Job): Set<string> {
+  return new Set(job.clips.filter((c) => c.thumb).map((c) => `frames/${c.thumb}`));
+}
+
 /** Actualiza los indicadores del trabajo según lo que ya no existe en disco (no destructivo). */
 export function refreshJobFlags(job: Job, jobsDir: string, freedBytes: number, deps: VerifyDeps = {}): Job {
   const dir = path.join(jobsDir, job.id);
-  const cats = new Set(listJobFiles(dir).map((f) => classify(f.rel)));
+  const thumbs = keptThumbs(job);
+  const cats = new Set(listJobFiles(dir).filter((f) => !thumbs.has(f.rel.replace(/\\/g, '/'))).map((f) => classify(f.rel)));
   const files = new Set(listJobFiles(dir).map((f) => f.rel.replace(/\\/g, '/')));
   const clips = job.clips.map((c) => {
     const exportVerified = verifyExport(jobsDir, job.id, c, deps);
