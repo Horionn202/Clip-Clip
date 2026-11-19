@@ -104,5 +104,17 @@ export const previewRangeSchema = z.object({ start: z.number().finite().min(0), 
 export const renameClipSchema = z.tuple([idSchema, idSchema, z.string().trim().min(1).max(100)]);
 export const modelNameSchema = z.string().regex(/^[A-Za-z0-9._:/-]{1,100}$/);
 
+// ---- Publicar ----
+export const platformSchema = z.enum(['tiktok', 'shorts', 'reels']);
+export const publishStatusSchema = z.enum(['borrador', 'listo', 'programado', 'publicado', 'descartado']);
+export const publishMetaSchema = z
+  .object({
+    title: z.string().max(300),
+    description: z.string().max(6000),
+    hashtags: z.array(z.string().max(100)).max(40),
+  })
+  .strict();
+export const publishUrlSchema = z.string().trim().max(500).optional().nullable();
+
 export type SettingsPatch = z.infer<typeof settingsPatchSchema>;
 export const _settingsKeysCheck: (keyof Settings)[] = Object.keys(settingsPatchSchema.shape) as (keyof Settings)[];

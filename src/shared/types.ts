@@ -357,6 +357,16 @@ export interface PullProgress {
 
 /** API expuesta por el preload en window.clipsApi. */
 export interface ClipsApi {
+  // Publicar (local; sin subida real)
+  getPublish(jobId: string): Promise<Record<string, import('./publish').ClipPublish>>;
+  generatePublish(jobId: string, clipId: string): Promise<Record<string, import('./publish').ClipPublish>>;
+  savePublish(jobId: string, clipId: string, platform: import('./publish').Platform, meta: import('./publish').PublishMeta): Promise<Record<string, import('./publish').ClipPublish>>;
+  restorePublish(jobId: string, clipId: string, platform: import('./publish').Platform, index: number): Promise<Record<string, import('./publish').ClipPublish>>;
+  setPublishStatus(jobId: string, clipId: string, platform: import('./publish').Platform, status: import('./publish').PublishStatus, url?: string): Promise<Record<string, import('./publish').ClipPublish>>;
+  copyPublish(jobId: string, clipId: string, platform: import('./publish').Platform): Promise<boolean>;
+  revealClipVideo(jobId: string, clipId: string): Promise<boolean>;
+  publishConnections(): Promise<import('./publish').ConnectionInfo[]>;
+  onPublishUpdate(cb: (u: { jobId: string; data: Record<string, import('./publish').ClipPublish> }) => void): () => void;
   checkDeps(): Promise<Diagnostics>;
   analyzeStorage(opts?: CleanupOptions, jobId?: string): Promise<StorageReport>;
   cleanStorage(opts: CleanupOptions, jobId?: string): Promise<CleanupResult>;

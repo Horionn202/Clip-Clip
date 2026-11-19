@@ -1,16 +1,21 @@
 import fs from 'node:fs';
+import { z } from 'zod';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { BrowserWindow, dialog, ipcMain, shell, type IpcMainInvokeEvent } from 'electron';
+import { BrowserWindow, clipboard, dialog, ipcMain, shell, type IpcMainInvokeEvent } from 'electron';
 import type { ClipPatch, GpuInfo, GpuSetupInfo, Job, Settings } from '../shared/types';
 import { MAX_CLIPS } from '../shared/types';
 import { UserFacingError } from '../shared/validation';
+import { platformSchema, publishMetaSchema, publishStatusSchema, publishUrlSchema } from './ipcSchemas';
 import { cleanupOptionsSchema, clipPatchSchema, previewRangeSchema, createJobSchema, idSchema, layoutIdSchema, modelNameSchema, normRectSchema, probeUrlSchema, renameClipSchema, rendererSettingsPatchSchema } from './ipcSchemas';
 import { readSourceInfo } from './source';
 import { isInside } from './paths';
 import { log } from './logger';
 import { runDiagnostics, type ResolvedTools } from './deps';
-import { benchmarkModel, listModels, pullModel, unloadModel } from './ollama';
+import { benchmarkModel, chatJson, listModels, pullModel, unloadModel } from './ollama';
+import { PublishStore } from './publishStore';
+import { listConnections } from './publishers';
+import { PLATFORMS, PLATFORM_LABELS, PUBLISH_SYSTEM_PROMPT, applyMeta, applyStatus, copyText, parseAiMeta, publishSchema, publishUserPrompt, restoreVersion, type Platform } from '../shared/publish';
 import { renderClip, renderPreview, type RenderEnv } from './clipRender';
 import { applyClipPatch, renderedState } from '../shared/clipEdit';
 import { FREE_SPACE_DEFAULTS, humanSize, type CleanupOptions, type CleanupResult, type PlannedFile } from '../shared/storage';
@@ -73,6 +78,7 @@ export interface IpcContext {
   logsDir: string;
   probeScript: string;
   takeStartupNotice: () => { kind: 'info' | 'error'; text: string } | null;
+  publish: PublishStore;
 }
 
 const MAX_ACTIVE_JOBS = 10;
@@ -105,6 +111,15 @@ function broadcast(channel: string, payload: unknown): void {
 
 export function emitJob(job: Job): void {
   broadcast('job:update', job);
+}
+
+/** Palabras de la transcripción del trabajo (vacío si ya no existe). */
+function transcriptWords(ctx: IpcContext, jobId: string): Word[] {
+  try {
+    return parseWhisperJson(fs.readFileSync(path.join(jobDir(ctx.jobsDir, jobId), 'transcript.json'), 'utf8')).words as Word[];
+  } catch {
+    return [];
+  }
 }
 
 function requireJob(ctx: IpcContext, id: unknown): Job {
@@ -511,6 +526,7 @@ export function registerIpc(ctx: IpcContext): void {
     const dir = jobDir(ctx.jobsDir, job.id);
     if (isInside(ctx.jobsDir, dir) && dir !== path.resolve(ctx.jobsDir)) fs.rmSync(dir, { recursive: true, force: true });
     ctx.jobs.delete(job.id);
+    ctx.publish.deleteJob(job.id);
     return true;
   });
   h('clips:rename', (...args: unknown[]) => {
@@ -607,6 +623,116 @@ export function registerIpc(ctx: IpcContext): void {
     if (!isInside(ctx.jobsDir, dir) || !fs.existsSync(dir)) throw new UserFacingError('La carpeta no existe.');
     await shell.openPath(dir);
   });
+  // ---- Publicar (todo local; sin subida real) ----
+  const pubClip = (jobId: unknown, clipId: unknown) => {
+    const job = requireJob(ctx, jobId);
+    const id = idSchema.parse(clipId);
+    const clip = job.clips.find((c) => c.id === id);
+    if (!clip) throw new UserFacingError('El clip no existe.');
+    return { job, clip };
+  };
+  let generating = false;
+  // Cualquier cambio se difunde: una página de Resultados re-montada recibe los textos generados mientras no estaba.
+  ctx.publish.onChange = (jobId, data) => broadcast('publish:update', { jobId, data });
+  h('publish:get', (jobId: unknown) => ctx.publish.forJob(requireJob(ctx, jobId).id));
+  h('publish:connections', () => listConnections());
+  h('publish:generate', async (jobId: unknown, clipId: unknown) => {
+    const { job, clip } = pubClip(jobId, clipId);
+    if (generating) throw new UserFacingError('Ya se están generando metadatos; espera a que termine.');
+    generating = true;
+    try {
+      const s = ctx.settings.get();
+      const words = transcriptWords(ctx, job.id).filter((w) => w.end > clip.start && w.start < clip.end);
+      const user = publishUserPrompt(clip, words.map((w) => w.text).join(' ').replace(/\s+/g, ' ').trim(), job.sourceTitle);
+      const raw = await chatJson(s.ollamaHost, s.ollamaModel, PUBLISH_SYSTEM_PROMPT, user, new AbortController().signal, { schema: publishSchema(), numPredict: 1200, temperature: 0.6, timeoutMs: 3 * 60 * 1000 });
+      // El trabajo o el clip pudieron borrarse mientras Ollama respondía: no se recrean sus datos.
+      if (!ctx.jobs.get(job.id)?.clips.some((c) => c.id === clip.id)) throw new UserFacingError('El trabajo o el clip se eliminó mientras se generaban los textos.');
+      const latest = ctx.jobs.get(job.id)!.clips.find((c) => c.id === clip.id)!;
+      if (latest.start !== clip.start || latest.end !== clip.end) throw new UserFacingError('El tramo del clip cambió mientras se generaban los textos. Vuelve a generarlos.');
+      const metas = parseAiMeta(raw);
+      const got = PLATFORMS.filter((p) => metas[p]);
+      if (!got.length) throw new UserFacingError('La IA no devolvió metadatos válidos. Prueba de nuevo o escríbelos a mano.', raw.slice(0, 500));
+      const now = new Date().toISOString();
+      for (const p of got) ctx.publish.put(job.id, clip.id, p, applyMeta(ctx.publish.get(job.id, clip.id, p), metas[p]!, 'ia', now, s.ollamaModel));
+      event('publish_generate', { job: job.id, clip: clip.index, platforms: got, model: s.ollamaModel });
+      return ctx.publish.forJob(job.id);
+    } finally {
+      generating = false;
+    }
+  });
+  h('publish:save', (jobId: unknown, clipId: unknown, platform: unknown, meta: unknown) => {
+    const { job, clip } = pubClip(jobId, clipId);
+    const p = platformSchema.parse(platform) as Platform;
+    const m = publishMetaSchema.parse(meta);
+    ctx.publish.put(job.id, clip.id, p, applyMeta(ctx.publish.get(job.id, clip.id, p), m, 'manual', new Date().toISOString()));
+    return ctx.publish.forJob(job.id);
+  });
+  h('publish:restore', (jobId: unknown, clipId: unknown, platform: unknown, index: unknown) => {
+    const { job, clip } = pubClip(jobId, clipId);
+    const p = platformSchema.parse(platform) as Platform;
+    const e = ctx.publish.get(job.id, clip.id, p);
+    if (!e) throw new UserFacingError('No hay versiones para esta plataforma.');
+    try {
+      ctx.publish.put(job.id, clip.id, p, restoreVersion(e, z.number().int().min(0).max(100).parse(index), new Date().toISOString()));
+    } catch (err) {
+      throw new UserFacingError((err as Error).message);
+    }
+    return ctx.publish.forJob(job.id);
+  });
+  h('publish:setStatus', async (jobId: unknown, clipId: unknown, platform: unknown, status: unknown, url: unknown) => {
+    const { job, clip } = pubClip(jobId, clipId);
+    const p = platformSchema.parse(platform) as Platform;
+    const st = publishStatusSchema.parse(status);
+    const link = publishUrlSchema.parse(url) ?? undefined;
+    const e = ctx.publish.get(job.id, clip.id, p);
+    if (!e) throw new UserFacingError('Primero genera o escribe el texto para esta plataforma.');
+    let confirmedByUser = false;
+    if (st === 'publicado') {
+      // Confirmación nativa en el proceso principal: el renderer no puede marcar «publicado» por su cuenta.
+      const win = BrowserWindow.getFocusedWindow();
+      const opts = {
+        type: 'question' as const,
+        buttons: ['Cancelar', 'Sí, ya lo publiqué'],
+        defaultId: 0,
+        cancelId: 0,
+        title: 'Marcar como publicado',
+        message: `¿Ya publicaste «${clip.title}» en ${PLATFORM_LABELS[p]}?`,
+        detail: 'Clip Clip no sube vídeos: sólo guarda que tú lo publicaste manualmente.',
+      };
+      const r = win ? await dialog.showMessageBox(win, opts) : await dialog.showMessageBox(opts);
+      if (r.response !== 1) return ctx.publish.forJob(job.id);
+      confirmedByUser = true;
+    }
+    try {
+      // Se re-lee tras el diálogo: si el texto cambió mientras tanto (p. ej. terminó una generación), no se marca el texto viejo.
+      const cur = ctx.publish.get(job.id, clip.id, p) ?? e;
+      if (cur.updatedAt !== e.updatedAt && JSON.stringify(cur.meta) !== JSON.stringify(e.meta)) throw new UserFacingError('El texto cambió mientras confirmabas. Revísalo y vuelve a marcarlo.');
+      ctx.publish.put(job.id, clip.id, p, applyStatus(cur, st, new Date().toISOString(), { confirmedByUser, url: link }));
+    } catch (err) {
+      throw new UserFacingError((err as Error).message);
+    }
+    event('publish_status', { job: job.id, clip: clip.index, platform: p, status: st });
+    return ctx.publish.forJob(job.id);
+  });
+  h('publish:copy', (jobId: unknown, clipId: unknown, platform: unknown) => {
+    const { job, clip } = pubClip(jobId, clipId);
+    const p = platformSchema.parse(platform) as Platform;
+    const e = ctx.publish.get(job.id, clip.id, p);
+    if (!e) throw new UserFacingError('No hay texto para copiar.');
+    clipboard.writeText(copyText(p, e.meta));
+    return true;
+  });
+  h('publish:revealVideo', (jobId: unknown, clipId: unknown) => {
+    const { job, clip } = pubClip(jobId, clipId);
+    if (clip.dirty) throw new UserFacingError('Este clip tiene cambios sin renderizar: vuelve a renderizarlo (y exportarlo) antes de publicarlo.');
+    // Se prefiere el export (es el archivo que se sube); si no, el clip interno.
+    const internal = clip.file ? path.join(jobDir(ctx.jobsDir, job.id), 'clips', clip.file) : '';
+    const target = clip.exportedPath && fs.existsSync(clip.exportedPath) ? clip.exportedPath : internal && fs.existsSync(internal) ? internal : '';
+    if (!target) throw new UserFacingError('No se encuentra el vídeo de este clip. Expórtalo primero.');
+    shell.showItemInFolder(target);
+    return true;
+  });
+
   h('shell:openExportFolder', async () => {
     const dir = ctx.settings.get().exportDir;
     fs.mkdirSync(dir, { recursive: true });

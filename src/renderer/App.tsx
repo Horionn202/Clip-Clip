@@ -7,8 +7,9 @@ import { JobsPage } from './pages/Jobs';
 import { ResultsPage } from './pages/Results';
 import { SettingsPage } from './pages/Settings';
 import { PolicyPage } from './pages/Policy';
+import { ConnectionsPage } from './pages/Publish';
 
-export type Page = 'home' | 'jobs' | 'results' | 'settings' | 'policy';
+export type Page = 'home' | 'jobs' | 'results' | 'connections' | 'settings' | 'policy';
 
 export function App() {
   const [page, setPage] = useState<Page>('home');
@@ -57,6 +58,7 @@ export function App() {
     ['home', 'Inicio'],
     ['jobs', active ? `Trabajos (${active})` : 'Trabajos'],
     ['results', 'Resultados'],
+    ['connections', 'Conexiones'],
     ['settings', 'Configuración'],
     ['policy', 'Uso responsable'],
   ];
@@ -101,6 +103,7 @@ export function App() {
           <SettingsPage settings={settings} onChange={setSettings} diag={diag} refreshDiag={refreshDiag} jobs={jobs} />
         )}
         {page === 'policy' && <PolicyPage />}
+        {page === 'connections' && <ConnectionsPage />}
       </main>
     </div>
   );

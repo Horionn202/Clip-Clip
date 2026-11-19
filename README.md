@@ -202,6 +202,19 @@ Los clips exportados se copian (sin sobrescribir) a la carpeta de exportación, 
 - Límites configurables: duración máx. del vídeo, tamaño de descarga, espacio libre mínimo, trabajos simultáneos (1–2), cola máx. 10.
 - Sólo contenido público: no se usan cookies ni credenciales y se rechazan directos y vídeos con `needs_auth`/`premium_only`/`subscriber_only`.
 
+## Publicar (preparación local)
+
+En **Resultados → Publicar** cada clip tiene textos para **TikTok, YouTube Shorts e Instagram Reels**:
+
+- **Generar con IA**: Ollama (local) crea título, descripción y hashtags a partir de la transcripción del clip. Nada sale del equipo.
+- Edición manual con avisos de límites (título de Shorts ≤ 100, hashtags recomendados, longitud total).
+- **Copiar texto** (listo para pegar) y **Mostrar vídeo en la carpeta** (el export si existe).
+- **Estados** por plataforma: borrador, listo, programado (manual), publicado, descartado. «Publicado» sólo se marca tras una confirmación nativa del usuario; nunca automáticamente. Se puede guardar el enlace (https).
+- **Historial de versiones** (hasta 20 por plataforma) con restaurar.
+- Se guarda en `data\publish.json` (no modifica `jobs.json`); se borra al eliminar el trabajo.
+
+**Conexiones**: hoy todo es manual. Hay una interfaz `PublisherAdapter` (`src/main/publishers.ts`) para futuras conexiones; no hay subida real, ni claves ni tokens en el repositorio. Si se añaden, las credenciales irían cifradas con el almacén seguro del sistema (Electron `safeStorage`) y cada subida pediría confirmación explícita por clip.
+
 ## Marca e iconos
 - Logo oficial: `resources/brand/clip-clip-logo.png` (PNG con transparencia; no se modifica).
 - `npm run icons` (también se ejecuta en `npm run build`) recorta un cuadrado centrado en el símbolo y lo escala, sin efectos: genera `build/icon.ico` (16, 24, 32, 48, 64, 128 y 256 px) para la app, el instalador, el desinstalador y los accesos directos, `build/icons/logo-*.png` para la ventana y `src/renderer/assets/logo-128.png` para la barra lateral y la pantalla de carga. Son archivos generados y no se versionan.
