@@ -129,6 +129,12 @@ describe('ejecución de la limpieza', () => {
     expect(j).toMatchObject({ sourceCleaned: true, tempCleaned: true, internalClipsCleaned: true, archivedExportsOnly: true, bytesFreed: res.freedBytes });
     expect(j.clips[0]).toMatchObject({ archived: true, exportVerified: true, title: 't' });
   });
+  it('un clip archivado con ediciones pendientes sigue archivado', () => {
+    makeJob('job-a', 0);
+    w(path.join(exportDir, '01_t.mp4'), 100);
+    const j = refreshJobFlags(job('job-a', 'completed', [clip(1, { archived: true, dirty: true, exportedPath: path.join(exportDir, '01_t.mp4') })]), jobsDir, 0);
+    expect(j.clips[0]).toMatchObject({ archived: true, exportVerified: false });
+  });
   it('rechaza rutas fuera de la carpeta administrada', async () => {
     makeJob('job-a');
     w(path.join(root, 'fuera.txt'), 10);

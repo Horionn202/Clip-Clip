@@ -185,7 +185,9 @@ export function refreshJobFlags(job: Job, jobsDir: string, freedBytes: number, d
   const clips = job.clips.map((c) => {
     const exportVerified = verifyExport(jobsDir, job.id, c, deps);
     const internalPresent = !!c.file && files.has(`clips/${c.file}`);
-    return { ...c, exportVerified, archived: !!c.file && !internalPresent && exportVerified };
+    // Archivado = no hay clip interno pero sí su export (para reproducirlo), aunque tenga ediciones pendientes.
+    const exportExists = !!c.exportedPath && (exportVerified || c.archived === true) && fs.existsSync(c.exportedPath);
+    return { ...c, exportVerified, archived: !!c.file && !internalPresent && exportExists };
   });
   const internalClipsCleaned = clips.some((c) => c.archived);
   return {
