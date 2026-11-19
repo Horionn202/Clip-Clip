@@ -700,7 +700,10 @@ export function registerIpc(ctx: IpcContext): void {
       confirmedByUser = true;
     }
     try {
-      ctx.publish.put(job.id, clip.id, p, applyStatus(e, st, new Date().toISOString(), { confirmedByUser, url: link }));
+      // Se re-lee tras el diálogo: si el texto cambió mientras tanto (p. ej. terminó una generación), no se marca el texto viejo.
+      const cur = ctx.publish.get(job.id, clip.id, p) ?? e;
+      if (cur.updatedAt !== e.updatedAt && JSON.stringify(cur.meta) !== JSON.stringify(e.meta)) throw new UserFacingError('El texto cambió mientras confirmabas. Revísalo y vuelve a marcarlo.');
+      ctx.publish.put(job.id, clip.id, p, applyStatus(cur, st, new Date().toISOString(), { confirmedByUser, url: link }));
     } catch (err) {
       throw new UserFacingError((err as Error).message);
     }
