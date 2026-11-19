@@ -52,6 +52,7 @@ export const settingsPatchSchema = z
     keepSource: z.enum(['siempre', 'hasta-exportar', 'confirmar']),
     keepTemp: z.enum(['siempre', 'tras-completar', 'tras-exportar']),
     keepTranscript: z.boolean(),
+    deleteExportsAfterPublish: z.boolean(),
     autoCleanupDays: z.number().int().min(0).max(365),
     maxConcurrentJobs: z.number().int().min(1).max(2),
     maxSourceMinutes: z.number().int().min(1).max(600),
@@ -112,6 +113,7 @@ export const publishMetaSchema = z
     title: z.string().max(300),
     description: z.string().max(6000),
     hashtags: z.array(z.string().max(100)).max(40),
+    cta: z.string().max(300).optional(),
   })
   .strict();
 export const publishUrlSchema = z.string().trim().max(500).optional().nullable();

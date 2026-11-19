@@ -94,6 +94,18 @@ export function migrateLegacyData(oldDir: string, newDir: string, io: MigrationF
           report.mergedJobs += added;
           continue;
         }
+        if (relPath === path.join('data', 'publish.json') && fs.existsSync(dst)) {
+          // Metadatos de publicación en ambos sitios: se fusionan por trabajo (gana el directorio nuevo).
+          const a = JSON.parse(fs.readFileSync(dst, 'utf8')) as Record<string, unknown>;
+          const b = JSON.parse(fs.readFileSync(src, 'utf8')) as Record<string, unknown>;
+          const extra = Object.keys(b ?? {}).filter((k) => !(k in (a ?? {})));
+          if (extra.length) {
+            const tmp = `${dst}.migr.tmp`;
+            fs.writeFileSync(tmp, JSON.stringify({ ...b, ...a }, null, 2), 'utf8');
+            fs.renameSync(tmp, dst);
+          }
+          continue;
+        }
         if (fs.existsSync(dst)) {
           report.skippedExisting++;
           continue;

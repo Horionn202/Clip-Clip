@@ -8,6 +8,7 @@ import { ResultsPage } from './pages/Results';
 import { SettingsPage } from './pages/Settings';
 import { PolicyPage } from './pages/Policy';
 import { ConnectionsPage } from './pages/Publish';
+import { LegacyModal, useLegacyPrompt } from './pages/Legacy';
 
 export type Page = 'home' | 'jobs' | 'results' | 'connections' | 'settings' | 'policy';
 
@@ -19,6 +20,8 @@ export function App() {
   const [selected, setSelected] = useState<string | null>(null);
   const [notice, setNotice] = useState<{ kind: 'info' | 'error'; text: string } | null>(null);
 
+  const [legacyOpen, setLegacyOpen] = useLegacyPrompt();
+  const [version, setVersion] = useState('');
   const refreshDiag = useCallback(async () => setDiag(await api().checkDeps()), []);
 
   useEffect(() => {
@@ -30,6 +33,7 @@ export function App() {
         if (!s.onboardingDone) setPage('settings');
       });
     void refreshDiag();
+    void api().appVersion().then((v) => setVersion(v.version)).catch(() => undefined);
     // Aviso de una sola vez (p. ej. datos trasladados desde ClipsVirales).
     void api()
       .startupNotice()
@@ -81,6 +85,7 @@ export function App() {
           {diag ? (diag.ok ? '● Dependencias OK' : '● Faltan dependencias') : '○ Comprobando…'}
         </div>
         <p className="local-note">Todo se procesa en este equipo.</p>
+        {version && <p className="local-note small">Versión {version}</p>}
       </aside>
       <main className="content">
         {notice && (
@@ -105,6 +110,16 @@ export function App() {
         {page === 'policy' && <PolicyPage />}
         {page === 'connections' && <ConnectionsPage />}
       </main>
+      <LegacyModal
+        open={legacyOpen}
+        onClose={() => setLegacyOpen(false)}
+        onDone={() => {
+          // Tras migrar, se recargan historial y ajustes.
+          void api().listJobs().then(setJobs);
+          void api().getSettings().then(setSettings);
+          void refreshDiag();
+        }}
+      />
     </div>
   );
 }

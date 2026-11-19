@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { CATEGORY_LABELS, FREE_SPACE_DEFAULTS, confirmText, humanSize, type CleanupOptions, type CleanupResult, type StorageCategory, type StorageReport } from '../../shared/storage';
 import { api, errMsg } from '../api';
+import { Modal } from '../components/Modal';
 
 const OPTION_ROWS: { key: keyof CleanupOptions; cat: StorageCategory; label: string; note?: string }[] = [
   { key: 'source', cat: 'source', label: 'Vídeo original descargado', note: 'Sin él no se puede volver a renderizar un clip.' },
@@ -13,7 +14,6 @@ const OPTION_ROWS: { key: keyof CleanupOptions; cat: StorageCategory; label: str
 
 /** Diálogo «Liberar espacio»: análisis, selección, confirmación explícita y resumen final. */
 export function FreeSpaceDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
-  const ref = useRef<HTMLDialogElement>(null);
   const [opts, setOpts] = useState<CleanupOptions>(FREE_SPACE_DEFAULTS);
   const [report, setReport] = useState<StorageReport | null>(null);
   const [step, setStep] = useState<'review' | 'confirm' | 'cleaning' | 'done'>('review');
@@ -21,15 +21,10 @@ export function FreeSpaceDialog({ open, onClose }: { open: boolean; onClose: () 
   const [err, setErr] = useState('');
 
   useEffect(() => {
-    const d = ref.current;
-    if (!d) return;
-    if (open && !d.open) {
-      setStep('review');
-      setResult(null);
-      setErr('');
-      d.showModal();
-    }
-    if (!open && d.open) d.close();
+    if (!open) return;
+    setStep('review');
+    setResult(null);
+    setErr('');
   }, [open]);
   useEffect(() => {
     if (!open || step !== 'review') return;
@@ -54,8 +49,8 @@ export function FreeSpaceDialog({ open, onClose }: { open: boolean; onClose: () 
   const sizeOf = (c: StorageCategory) => r?.files.filter((f) => f.category === c).reduce((a, f) => a + f.bytes, 0) ?? 0;
 
   return (
-    <dialog ref={ref} className="modal wide" onClose={onClose} aria-labelledby="fs-title">
-      <h3 id="fs-title">Liberar espacio</h3>
+    // Durante la limpieza no se puede cerrar a medias.
+    <Modal open={open} onClose={() => step !== 'cleaning' && onClose()} title="Liberar espacio" size="md">
       {err && (
         <div className="banner error small" role="alert">
           {err}
@@ -147,6 +142,6 @@ export function FreeSpaceDialog({ open, onClose }: { open: boolean; onClose: () 
           </button>
         </div>
       )}
-    </dialog>
+    </Modal>
   );
 }

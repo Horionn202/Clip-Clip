@@ -18,7 +18,8 @@
     "start": "electron .",
     "package": "npm run build && electron-builder --win nsis",
     "package:dir": "npm run build && electron-builder --win dir",
-    "icons": "node scripts/make-icons.mjs"
+    "icons": "node scripts/make-icons.mjs",
+    "clean:release": "node scripts/clean-release.mjs"
   },
   "dependencies": {
     "zod": "^4.6.7"

@@ -1,10 +1,12 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { Clip, ClipPatch, Job } from '../../shared/types';
 import { formatTime } from '../../shared/validation';
 import { LAYOUT_IDS, LAYOUT_LABELS, NEEDS_CAM, VISUAL_LABELS, type LayoutId, type NormRect } from '../../shared/layouts';
 import { readyCount } from '../../shared/clipEdit';
 import { api, errMsg } from '../api';
-import { PublishBadges, PublishPanel, usePublish } from './Publish';
+import { PublishBadges, PublishModal, usePublish } from './Publish';
+import { PublishedExportAction } from './PublishedExport';
+import { Modal } from '../components/Modal';
 import type { ClipPublish } from '../../shared/publish';
 
 const DEFAULT_CAM: NormRect = { x: 0.7, y: 0.6, w: 0.28, h: 0.36 };
@@ -51,9 +53,53 @@ function CamEditor({ job, clip, value, onChange }: { job: Job; clip: Clip; value
   );
 }
 
-function ClipCard({ job, clip, pub, onPub, onError, onInfo }: { job: Job; clip: Clip; pub?: ClipPublish; onPub: (d: Record<string, ClipPublish>) => void; onError: (m: string) => void; onInfo: (m: string) => void }) {
-  const [editing, setEditing] = useState(false);
-  const [publishing, setPublishing] = useState(false);
+/** Confirmación de exportación (un clip o todos): muestra qué se exporta y a dónde. */
+function ExportConfirm({ open, onClose, what, onConfirm }: { open: boolean; onClose: () => void; what: string; onConfirm: () => Promise<void> }) {
+  const [dir, setDir] = useState('');
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    if (open) void api().getSettings().then((s) => setDir(s.exportDir)).catch(() => undefined);
+  }, [open]);
+  return (
+    <Modal
+      open={open}
+      onClose={onClose}
+      size="sm"
+      title="Confirmar exportación"
+      footer={
+        <>
+          <button className="ghost" onClick={onClose}>
+            Cancelar
+          </button>
+          <button
+            className="primary"
+            disabled={busy}
+            onClick={async () => {
+              setBusy(true);
+              try {
+                await onConfirm();
+              } finally {
+                setBusy(false);
+                onClose();
+              }
+            }}
+          >
+            {busy ? 'Exportando…' : 'Exportar'}
+          </button>
+        </>
+      }
+    >
+      <p>
+        Se exportará <b>{what}</b> a la carpeta de exportación{dir ? ':' : '.'}
+      </p>
+      {dir && <p className="small muted path">{dir}</p>}
+      <p className="small muted">Si ya existe un export de un clip, se sustituye por la versión actual.</p>
+    </Modal>
+  );
+}
+
+/** Editar clip (título, hook, tramo y layout gameplay/facecam). Sólo se guarda con «Guardar» o «Guardar y volver a renderizar». */
+function EditClipModal({ open, onClose, job, clip, onError, onInfo }: { open: boolean; onClose: () => void; job: Job; clip: Clip; onError: (m: string) => void; onInfo: (m: string) => void }) {
   const [title, setTitle] = useState(clip.title);
   const [hook, setHook] = useState(clip.hook);
   const [start, setStart] = useState(clip.start.toFixed(2));
@@ -62,93 +108,89 @@ function ClipCard({ job, clip, pub, onPub, onError, onInfo }: { job: Job; clip: 
   const [cam, setCam] = useState<NormRect | null>(clip.camRect ?? null);
   const [preview, setPreview] = useState<string | null>(null);
   const [busy, setBusy] = useState<'' | 'preview' | 'save' | 'render'>('');
+  const [err, setErr] = useState('');
+
+  // Al abrir, los borradores parten del clip guardado actual.
+  useEffect(() => {
+    if (!open) return;
+    setTitle(clip.title);
+    setHook(clip.hook);
+    setStart(clip.start.toFixed(2));
+    setEnd(clip.end.toFixed(2));
+    setLayout(clip.layout ?? 'gameplay_full');
+    setCam(clip.camRect ?? null);
+    setPreview(null);
+    setErr('');
+  }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const needsCam = NEEDS_CAM.includes(layout);
   const patch = (): ClipPatch => ({ title: title.trim(), hook: hook.trim(), start: Number(start), end: Number(end), layout, camRect: cam });
-  const run = async (kind: 'preview' | 'save' | 'render', fn: () => Promise<void>) => {
+  const dirty =
+    title.trim() !== clip.title ||
+    hook.trim() !== clip.hook ||
+    Number(start) !== Number(clip.start.toFixed(2)) ||
+    Number(end) !== Number(clip.end.toFixed(2)) ||
+    layout !== (clip.layout ?? 'gameplay_full') ||
+    JSON.stringify(cam) !== JSON.stringify(clip.camRect ?? null);
+  const run = async (kind: 'preview' | 'save' | 'render', fn: () => Promise<void>, close = false) => {
     setBusy(kind);
+    setErr('');
     try {
       await fn();
+      if (close) onClose();
     } catch (e) {
-      onError(errMsg(e));
+      setErr(errMsg(e));
     } finally {
       setBusy('');
     }
   };
 
-  // Clip archivado (interno borrado al liberar espacio): se reproduce su export verificado.
-  const videoSrc = clip.archived
-    ? clip.exportedPath
-      ? `clip://export/${job.id}/${clip.id}`
-      : null
-    : clip.file
-      ? `clip://job/${job.id}/${encodeURIComponent(clip.file)}?v=${encodeURIComponent(job.updatedAt)}`
-      : null;
   return (
-    <article className="clip" aria-label={`Clip ${clip.index}`}>
-      {videoSrc ? <video src={videoSrc} controls preload="metadata" /> : <div className="video-ph">Sin renderizar</div>}
-      <div className="row">
-        <b className="grow clip-title">{clip.title}</b>
-        {clip.dirty && <span className="badge partial">Cambios sin renderizar</span>}
-        {clip.archived && <span className="badge">Archivado · se muestra el export</span>}
-      </div>
-      <PublishBadges pub={pub} />
-      {clip.hook && <p className="hook">«{clip.hook}»</p>}
-      <div className="muted small">
-        {formatTime(clip.start)} → {formatTime(clip.end)} · {(clip.end - clip.start).toFixed(1)} s · {LAYOUT_LABELS[clip.layout ?? 'gameplay_full']}
-      </div>
-      {clip.visual && (
-        <div className="small muted">
-          Análisis visual (experimental): {VISUAL_LABELS[clip.visual.cls]} · confianza {Math.round(clip.visual.confidence * 100)} %
+    <Modal
+      open={open}
+      onClose={onClose}
+      dirty={dirty}
+      size="lg"
+      title={`Editar clip ${clip.index}`}
+      footer={
+        <>
+          <button disabled={!!busy} onClick={() => run('preview', async () => setPreview(await api().previewLayout(job.id, clip.id, layout, needsCam ? cam : null, { start: Number(start), end: Number(end) })))}>
+            {busy === 'preview' ? 'Generando…' : 'Vista previa'}
+          </button>
+          <span className="grow" />
+          <button className="ghost" onClick={onClose}>
+            Cancelar
+          </button>
+          <button disabled={!!busy || !dirty} onClick={() => run('save', async () => (await api().updateClip(job.id, clip.id, patch()), onInfo(`Clip ${clip.index} actualizado.`)), true)}>
+            {busy === 'save' ? 'Guardando…' : 'Guardar'}
+          </button>
+          <button
+            className="primary"
+            disabled={!!busy}
+            onClick={() =>
+              run(
+                'render',
+                async () => {
+                  await api().updateClip(job.id, clip.id, patch());
+                  await api().rerenderClip(job.id, clip.id);
+                  onInfo(`Clip ${clip.index} re-renderizado.`);
+                },
+                true,
+              )
+            }
+          >
+            {busy === 'render' ? 'Renderizando…' : 'Guardar y volver a renderizar'}
+          </button>
+        </>
+      }
+    >
+      {err && (
+        <div className="banner error small" role="alert">
+          {err}
         </div>
       )}
-      {clip.layoutSuggestion && clip.layoutSuggestion !== (clip.layout ?? 'gameplay_full') && (
-        <div className="banner warn small">
-          Sugerencia: {LAYOUT_LABELS[clip.layoutSuggestion]}. {clip.layoutReason}
-        </div>
-      )}
-      <div className="row">
-        <button
-          disabled={!clip.file || clip.dirty}
-          title={clip.dirty ? 'Vuelve a renderizar el clip antes de exportarlo' : undefined}
-          onClick={async () => {
-            try {
-              onInfo(`Exportado a ${await api().exportClip(job.id, clip.id)}`);
-            } catch (e) {
-              onError(errMsg(e));
-            }
-          }}
-        >
-          Exportar
-        </button>
-        <button
-          className="ghost"
-          aria-expanded={editing}
-          onClick={() => {
-            // Al abrir el editor, los borradores parten del clip guardado actual.
-            if (!editing) {
-              setTitle(clip.title);
-              setHook(clip.hook);
-              setStart(clip.start.toFixed(2));
-              setEnd(clip.end.toFixed(2));
-              setLayout(clip.layout ?? 'gameplay_full');
-              setCam(clip.camRect ?? null);
-              setPreview(null);
-            }
-            setEditing(!editing);
-          }}
-        >
-          {editing ? 'Cerrar edición' : 'Editar clip'}
-        </button>
-        <button className="ghost" aria-expanded={publishing} onClick={() => setPublishing(!publishing)}>
-          {publishing ? 'Cerrar publicar' : 'Publicar'}
-        </button>
-        {clip.exportedPath && <span className="small ok">✓ exportado</span>}
-      </div>
-
-      {publishing && <PublishPanel job={job} clip={clip} pub={pub} onData={onPub} onError={onError} onInfo={onInfo} />}
-      {editing && (
-        <div className="editor">
+      <div className="pub-cols">
+        <div>
           <label className="field">
             <span>Título</span>
             <input value={title} maxLength={100} onChange={(e) => setTitle(e.target.value)} />
@@ -168,7 +210,7 @@ function ClipCard({ job, clip, pub, onPub, onError, onInfo }: { job: Job; clip: 
             </label>
           </div>
           <label className="field">
-            <span>Plantilla vertical</span>
+            <span>Plantilla vertical (gameplay / facecam)</span>
             <select
               value={layout}
               onChange={(e) => {
@@ -185,6 +227,21 @@ function ClipCard({ job, clip, pub, onPub, onError, onInfo }: { job: Job; clip: 
               ))}
             </select>
           </label>
+          {clip.layoutSuggestion && clip.layoutSuggestion !== layout && (
+            <p className="small muted">
+              Sugerencia: {LAYOUT_LABELS[clip.layoutSuggestion]}. {clip.layoutReason}
+            </p>
+          )}
+          {clip.visual && (
+            <details className="diagnostic">
+              <summary className="small">Diagnóstico</summary>
+              <p className="small muted">
+                Análisis visual (experimental): {VISUAL_LABELS[clip.visual.cls]} · confianza {Math.round(clip.visual.confidence * 100)} %
+              </p>
+            </details>
+          )}
+        </div>
+        <div>
           {needsCam && cam && (
             <>
               <p className="small muted">Ajusta el recuadro a la cámara si la detección falló.</p>
@@ -200,37 +257,67 @@ function ClipCard({ job, clip, pub, onPub, onError, onInfo }: { job: Job; clip: 
             </>
           )}
           {preview && <img className="layout-preview" src={`clip://frame/${job.id}/${preview}?t=${Date.now()}`} alt="Vista previa del layout" />}
-          <div className="row">
-            <button disabled={!!busy} onClick={() => run('preview', async () => setPreview(await api().previewLayout(job.id, clip.id, layout, needsCam ? cam : null, { start: Number(start), end: Number(end) })))}>
-              {busy === 'preview' ? 'Generando…' : 'Vista previa'}
-            </button>
-            <button
-              disabled={!!busy}
-              onClick={() =>
-                run('save', async () => {
-                  await api().updateClip(job.id, clip.id, patch());
-                  onInfo(`Clip ${clip.index} actualizado.`);
-                })
-              }
-            >
-              {busy === 'save' ? 'Guardando…' : 'Guardar cambios'}
-            </button>
-            <button
-              className="primary"
-              disabled={!!busy}
-              onClick={() =>
-                run('render', async () => {
-                  await api().updateClip(job.id, clip.id, patch());
-                  await api().rerenderClip(job.id, clip.id);
-                  onInfo(`Clip ${clip.index} re-renderizado.`);
-                })
-              }
-            >
-              {busy === 'render' ? 'Renderizando…' : 'Guardar y volver a renderizar'}
-            </button>
-          </div>
         </div>
-      )}
+      </div>
+    </Modal>
+  );
+}
+
+function ClipCard({ job, clip, pub, onPub, onError, onInfo }: { job: Job; clip: Clip; pub?: ClipPublish; onPub: (d: Record<string, ClipPublish>) => void; onError: (m: string) => void; onInfo: (m: string) => void }) {
+  const [modal, setModal] = useState<'' | 'edit' | 'publish' | 'export'>('');
+  const close = () => setModal('');
+
+  // Clip archivado (interno borrado al liberar espacio): se reproduce su export verificado.
+  const videoSrc = clip.archived
+    ? clip.exportedPath
+      ? `clip://export/${job.id}/${clip.id}`
+      : null
+    : clip.file
+      ? `clip://job/${job.id}/${encodeURIComponent(clip.file)}?v=${encodeURIComponent(job.updatedAt)}`
+      : null;
+  return (
+    <article className="clip" aria-label={`Clip ${clip.index}`}>
+      {videoSrc ? <video src={videoSrc} controls preload="metadata" /> : <div className="video-ph">{clip.exportDeletedAfterPublish ? 'Export eliminado tras publicación' : 'Sin renderizar'}</div>}
+      <div className="row">
+        <b className="grow clip-title">{clip.title}</b>
+        {clip.dirty && <span className="badge partial">Cambios sin renderizar</span>}
+        {clip.archived && <span className="badge">Archivado · se muestra el export</span>}
+        {clip.exportDeletedAfterPublish && <span className="badge">Export eliminado tras publicación</span>}
+      </div>
+      <PublishBadges pub={pub} />
+      {clip.hook && <p className="hook">«{clip.hook}»</p>}
+      <div className="muted small">
+        {formatTime(clip.start)} → {formatTime(clip.end)} · {(clip.end - clip.start).toFixed(1)} s · {LAYOUT_LABELS[clip.layout ?? 'gameplay_full']}
+      </div>
+      {clip.layoutSuggestion && clip.layoutSuggestion !== (clip.layout ?? 'gameplay_full') && <div className="small muted">Hay una sugerencia de plantilla: ábrela en «Editar clip».</div>}
+      <div className="row">
+        <button disabled={!clip.file || clip.dirty} title={clip.dirty ? 'Vuelve a renderizar el clip antes de exportarlo' : undefined} aria-haspopup="dialog" onClick={() => setModal('export')}>
+          Exportar
+        </button>
+        <button className="ghost" aria-haspopup="dialog" onClick={() => setModal('edit')}>
+          Editar clip
+        </button>
+        <button className="ghost" aria-haspopup="dialog" onClick={() => setModal('publish')}>
+          Preparar publicación
+        </button>
+        {clip.exportedPath && <span className="small ok">✓ exportado</span>}
+      </div>
+      <PublishedExportAction job={job} clip={clip} pub={pub} onError={onError} onInfo={onInfo} />
+
+      <PublishModal open={modal === 'publish'} onClose={close} job={job} clip={clip} pub={pub} onData={onPub} onInfo={onInfo} />
+      <EditClipModal open={modal === 'edit'} onClose={close} job={job} clip={clip} onError={onError} onInfo={onInfo} />
+      <ExportConfirm
+        open={modal === 'export'}
+        onClose={close}
+        what={`el clip ${clip.index} («${clip.title}»)`}
+        onConfirm={async () => {
+          try {
+            onInfo(`Exportado a ${await api().exportClip(job.id, clip.id)}`);
+          } catch (e) {
+            onError(errMsg(e));
+          }
+        }}
+      />
     </article>
   );
 }
@@ -240,6 +327,7 @@ export function ResultsPage(props: { jobs: Job[]; selected: string | null; onSel
   const job = done.find((j) => j.id === props.selected) ?? done[0];
   const [msg, setMsg] = useState<{ kind: 'error' | 'info'; text: string } | null>(null);
   const [pub, setPub] = usePublish(job?.id);
+  const [exportAllOpen, setExportAllOpen] = useState(false);
 
   if (!job)
     return (
@@ -270,8 +358,14 @@ export function ResultsPage(props: { jobs: Job[]; selected: string | null; onSel
       </p>
       <div className="row toolbar">
         <button onClick={() => api().openJobFolder(job.id).catch((e) => setMsg({ kind: 'error', text: errMsg(e) }))}>Abrir carpeta de resultados</button>
-        <button
-          onClick={async () => {
+        <button aria-haspopup="dialog" onClick={() => setExportAllOpen(true)}>
+          Exportar todos
+        </button>
+        <ExportConfirm
+          open={exportAllOpen}
+          onClose={() => setExportAllOpen(false)}
+          what={`los ${job.clips.length} clips de este trabajo`}
+          onConfirm={async () => {
             try {
               const n = await api().exportAll(job.id);
               setMsg({ kind: 'info', text: `${n} clips exportados.` });
@@ -279,9 +373,7 @@ export function ResultsPage(props: { jobs: Job[]; selected: string | null; onSel
               setMsg({ kind: 'error', text: errMsg(e) });
             }
           }}
-        >
-          Exportar todos
-        </button>
+        />
         <button className="ghost" onClick={() => api().openExportFolder()}>
           Abrir carpeta de exportación
         </button>

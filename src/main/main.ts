@@ -4,7 +4,7 @@ import { pathToFileURL } from 'node:url';
 import { app, BrowserWindow, net, protocol, shell } from 'electron';
 import { buildAppPaths, isInside } from './paths';
 import { event, initLogger, log } from './logger';
-import { LEGACY_DIR_NAME, migrateLegacyData, migrationNotice, type MigrationReport } from './migration';
+import { legacyPaths } from './legacy';
 import { JobStore, SettingsStore, defaultSettings } from './store';
 import { JobQueue } from './queue';
 import { PublishStore } from './publishStore';
@@ -23,25 +23,14 @@ protocol.registerSchemesAsPrivileged([
 if (!app.requestSingleInstanceLock()) app.quit();
 
 const paths = buildAppPaths(app.getPath('userData'));
-// Migración desde «ClipsVirales» (%APPDATA%\ClipsVirales) antes de abrir ajustes e historial.
-// Nunca borra ni sobrescribe; si falla, se conservan ambas carpetas y se reintenta en el siguiente inicio.
-let migration: MigrationReport | null = null;
-try {
-  migration = migrateLegacyData(path.join(app.getPath('appData'), LEGACY_DIR_NAME), paths.userData);
-} catch (e) {
-  migration = { status: 'failed', from: LEGACY_DIR_NAME, to: paths.userData, linked: 0, copied: 0, skippedExisting: 0, mergedJobs: 0, errors: [String(e)], at: new Date().toISOString() };
-}
+// Los datos de «ClipsVirales» ya no se migran en silencio: al abrir, el renderer pregunta (modal) qué hacer.
 for (const d of [paths.jobsDir, paths.dataDir, paths.logsDir]) fs.mkdirSync(d, { recursive: true });
 initLogger(paths.logsDir);
-if (migration && migration.status !== 'none' && migration.status !== 'already') {
-  const { errors, ...summary } = migration;
-  log.info('Migración de datos desde ClipsVirales', { ...summary, errores: errors.length });
-  for (const e of errors.slice(0, 20)) log.error(`Migración: ${e}`);
-  event('migration', { ...summary, errors: errors.length });
-}
-let startupNotice = migration ? migrationNotice(migration) : null;
+let startupNotice: { kind: 'info' | 'error'; text: string } | null = null;
+const legacy = legacyPaths(app.getPath('appData'), process.env.LOCALAPPDATA || path.join(app.getPath('home'), 'AppData', 'Local'), app.getPath('videos'));
 
-const settings = new SettingsStore(paths.dataDir, defaultSettings(path.join(app.getPath('videos'), 'Clip Clip')));
+const defaults = () => defaultSettings(path.join(app.getPath('videos'), 'Clip Clip'));
+const settings = new SettingsStore(paths.dataDir, defaults());
 const jobs = new JobStore(paths.dataDir);
 const publish = new PublishStore(paths.dataDir);
 jobs.recoverInterrupted();
@@ -162,6 +151,18 @@ app.whenReady().then(() => {
     logsDir: paths.logsDir,
     probeScript,
     publish,
+    legacy,
+    installDir: path.dirname(app.getPath('exe')),
+    appVersion: app.getVersion(),
+    // Tras migrar datos antiguos se recargan historial y ajustes desde disco (sin reiniciar la app).
+    reloadStores: () => {
+      jobs.reload();
+      // Trabajos importados a medias (cola o proceso) pasan a «fallido» para poder reintentarlos o borrarlos.
+      jobs.recoverInterrupted();
+      publish.reload();
+      settings.reload(defaults());
+      tools = resolveTools(settings.get(), bundledBin);
+    },
     // Aviso de una sola vez (p. ej. datos migrados): el renderer lo pide al arrancar.
     takeStartupNotice: () => {
       const n = startupNotice;
@@ -174,7 +175,7 @@ app.whenReady().then(() => {
     },
   });
   createWindow();
-  log.info(`Clip Clip iniciado. Datos en ${paths.userData}`);
+  log.info(`Clip Clip ${app.getVersion()} iniciado. Datos en ${paths.userData}`);
 });
 
 app.on('second-instance', () => {

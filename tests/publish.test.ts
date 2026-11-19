@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { MAX_VERSIONS, applyMeta, applyStatus, copyText, metaWarnings, normalizeHashtags, parseAiMeta, publishSchema, publishSummary, restoreVersion } from '../src/shared/publish';
+import { MAX_VERSIONS, applyMeta, applyStatus, copyText, metaWarnings, normalizeHashtags, parseAiMeta, publishSummary, restoreVersion } from '../src/shared/publish';
 import { PublishStore } from '../src/main/publishStore';
 import { ADAPTERS, listConnections } from '../src/main/publishers';
 
@@ -37,9 +37,6 @@ describe('respuesta de la IA', () => {
     expect(parseAiMeta('Aquí tienes: {"reels":{"title":"","description":"d","hashtags":[]}} ¡listo!').reels?.description).toBe('d');
     expect(parseAiMeta('no es json')).toEqual({});
     expect(parseAiMeta('[1,2]')).toEqual({});
-  });
-  it('el esquema exige las 3 plataformas', () => {
-    expect((publishSchema() as { required: string[] }).required).toEqual(['tiktok', 'shorts', 'reels']);
   });
 });
 

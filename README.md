@@ -134,6 +134,7 @@ npm run dev
 | `npm run build` | Typecheck + build de producción en `dist/` y `dist-electron/` |
 | `npm run package` | Genera el instalador `release/Clip-Clip-Setup-<versión>.exe` (NSIS) |
 | `npm run package:dir` | App desempaquetada en `release/win-unpacked` (prueba rápida) |
+| `npm run clean:release` | Limpia instaladores antiguos de `release/` (sólo desarrollo; simulación salvo `--yes`) |
 
 > npm ≥ 11 bloquea scripts de instalación: `package.json` aprueba explícitamente `electron` y `electron-winstaller` (`allowScripts`). Si el binario de Electron no aparece, ejecuta `node node_modules/electron/install.js`.
 
@@ -204,31 +205,89 @@ Los clips exportados se copian (sin sobrescribir) a la carpeta de exportación, 
 
 ## Publicar (preparación local)
 
-En **Resultados → Publicar** cada clip tiene textos para **TikTok, YouTube Shorts e Instagram Reels**:
+En **Resultados → Preparar publicación** se abre una ventana (modal) con los textos del clip para **TikTok, YouTube Shorts e Instagram Reels**. La página de fondo no se alarga: la ventana tiene cabecera y pie fijos, scroll interno, Escape para cerrar, foco atrapado y pantalla completa en ventanas estrechas. Si hay cambios sin guardar, cerrar pide confirmación.
 
-- **Generar con IA**: Ollama (local) crea título, descripción y hashtags a partir de la transcripción del clip. Nada sale del equipo.
-- Edición manual con avisos de límites (título de Shorts ≤ 100, hashtags recomendados, longitud total).
-- **Copiar texto** (listo para pegar) y **Mostrar vídeo en la carpeta** (el export si existe).
-- **Estados** por plataforma: borrador, listo, programado (manual), publicado, descartado. «Publicado» sólo se marca tras una confirmación nativa del usuario; nunca automáticamente. Se puede guardar el enlace (https).
-- **Historial de versiones** (hasta 20 por plataforma) con restaurar.
-- Se guarda en `data\publish.json` (no modifica `jobs.json`); se borra al eliminar el trabajo.
+- **Cabecera**: miniatura, título editable, duración y estado. **Cuerpo**: vista previa del clip a la izquierda; a la derecha tono, nicho, variantes de título, descripción (con contador), CTA opcional y hashtags como chips editables. **Pie**: Guardar borrador, Regenerar, Copiar título / descripción / hashtags y **Copiar publicación completa**.
+- **Generar con IA** (Ollama local): 3 variantes de título con una razón breve, una descripción por plataforma, CTA opcional y 3–6 hashtags. Nada sale del equipo.
+- **Estados** por plataforma (borrador, listo, programado, publicado, descartado). «Publicado» sólo se marca tras una confirmación nativa; nunca automáticamente. **Historial** de hasta 20 versiones con restaurar. Todo en `data\publish.json`.
+- Los detalles técnicos (modelo, motivos de un rechazo, tramo) sólo están en la sección plegable **Diagnóstico**.
+
+### Generador editorial: qué ve la IA
+`src/shared/editorial.ts` construye un `EditorialContext` separado de los datos de render, análisis visual y almacenamiento. Sólo contiene: transcripción del clip, resumen y tema (del análisis), gancho, idioma, tono, nicho, entidades repetidas en la transcripción y etiquetas visuales semánticas con confianza suficiente (`gameplay`, `facecam`, `persona hablando`…).
+
+**Nunca** recibe: URL, rutas, nombres de archivo (`source.mp4`, `clip_01`…), nombres de frame, IDs, timestamps, carpetas, logs ni metadata de render. Ni siquiera el título del vídeo de origen. Antes de enviarlo se pasa por `stripTechnical()`, y un campo del análisis que contenga texto técnico se descarta entero.
+
+### Validación local (nunca se guarda basura)
+Cada respuesta se valida antes de guardarse:
+- **URL o ruta**: `http`, `www`, `.com`, `C:\`, `/jobs/`, `.mp4`, `.png`, `.jpg`…
+- **Palabras técnicas**: imagen, URL, frame, archivo, `clip_`, source… (si las escribes tú a mano sólo se avisa).
+- **Placeholders o genericidad**: «momento emotivo», «¿por qué funciona?», «sin título», «capítulo 1», `[TÍTULO]`…
+- **Descripciones** que copian la transcripción literalmente, repiten el título, van entre comillas o superan la longitud recomendada (TikTok 220, Shorts 300, Reels 400; configurable en `DESCRIPTION_TARGET`).
+- **Hashtags**: entre 3 y 6, sin repetir, sintaxis válida, sin #fyp/#foryou/#viral/#trending, relacionados con lo que se dice o se ve, y como mucho uno amplio de nicho o plataforma.
+
+Si la respuesta falla, se **regenera una vez con los motivos concretos**. Si vuelve a fallar se quitan los hashtags inservibles; si aun así no es válida, **no se guarda nada** y el editor queda como estaba con el aviso «La IA necesita más contexto; edita manualmente». Sin contexto suficiente (transcripción casi vacía) no se llama a la IA.
+
+Ejemplo con el fixture de `tests/editorial.test.ts` (clip de un taller con un Porsche; la prueba real con `llama3.2:3b` está en `tests/ollamaEditorial.integration.test.ts`):
+
+| | Antes | Después (salida real de `llama3.2:3b`, ya validada) |
+|---|---|---|
+| Título | ¡La abuela de la imagen! | El Porsche más caro de mi vida |
+| Descripción | «La abuela de la imagen» | ¿Qué pasa cuando un mecánico te cobra cinco mil dólares…? (Reels) |
+| Hashtags | #Capitulo1 #GT6 #URLDeLaImagen #MomentoEmotivo | #porsche #mecanico |
+
+La salida de un modelo de 3B puede exagerar un poco; por eso los textos siempre se revisan antes de publicar.
+
+### Reglas de plataforma (recomendaciones, no garantías)
+Están en `PLATFORM_GUIDES` (fáciles de actualizar) y se muestran en el modal y en **Conexiones**:
+- **TikTok**: pocos hashtags relacionados con el contenido; no hace falta #FYP; texto corto con contexto.
+- **YouTube Shorts**: título preciso y breve; hashtags relacionados; los metadatos engañosos o el exceso de hashtags se consideran spam.
+- **Instagram Reels**: caption natural con contexto, CTA opcional y hashtags relevantes.
+
+Ningún consejo promete alcance, viralidad ni resultados. No se consultan tendencias en línea.
 
 **Conexiones**: hoy todo es manual. Hay una interfaz `PublisherAdapter` (`src/main/publishers.ts`) para futuras conexiones; no hay subida real, ni claves ni tokens en el repositorio. Si se añaden, las credenciales irían cifradas con el almacén seguro del sistema (Electron `safeStorage`) y cada subida pediría confirmación explícita por clip.
+
+### Ventanas modales en toda la app
+Las acciones secundarias se abren en una ventana (`src/renderer/components/Modal.tsx`), no despliegan contenido en la página: preparar publicación, editar clip (incluida la plantilla gameplay/facecam), elegir variante, confirmar exportación, Liberar espacio, limpiar temporales, cancelar trabajo, ver errores y diagnóstico, y eliminar exports publicados. Sólo se guarda al pulsar «Guardar» o «Aplicar».
+
+### Exports ya publicados
+- **Configuración → Almacenamiento → «Eliminar exports después de marcarlos como publicados»** (desactivado por defecto): al confirmar «publicado», el MP4 **exportado** de ese clip va a la Papelera de reciclaje (no sólo temporales).
+- En un clip publicado: **«Eliminar export ya publicado»** muestra nombre, tamaño y ruta, y pide confirmación.
+- **«Limpiar exports publicados…»** (lote): eliges plataformas, ves cuántos clips y cuánto espacio, y confirmas.
+- Nunca se incluyen clips en borrador, listos, programados o sin publicar, ni archivos fuera de la carpeta de exportación. Siempre va a la Papelera; si falla, el archivo se conserva. El clip queda como «export eliminado tras publicación» y conserva título, textos, hashtags e historial. Cada paso se registra en `logs/events.jsonl`.
 
 ## Marca e iconos
 - Logo oficial: `resources/brand/clip-clip-logo.png` (PNG con transparencia; no se modifica).
 - `npm run icons` (también se ejecuta en `npm run build`) recorta un cuadrado centrado en el símbolo y lo escala, sin efectos: genera `build/icon.ico` (16, 24, 32, 48, 64, 128 y 256 px) para la app, el instalador, el desinstalador y los accesos directos, `build/icons/logo-*.png` para la ventana y `src/renderer/assets/logo-128.png` para la barra lateral y la pantalla de carga. Son archivos generados y no se versionan.
 
-## Migración desde ClipsVirales
-Al abrir Clip Clip por primera vez, si existe `%APPDATA%\ClipsVirales`, se trasladan sus datos a `%APPDATA%\Clip Clip`:
-- **Se trasladan** `data` (ajustes e historial), `jobs` (clips, transcripciones, fotogramas) y `logs`.
-- **Nunca se borra el origen ni se sobrescribe** nada que ya exista en la carpeta nueva; si ambas tienen historial, se fusiona por trabajo.
-- Los vídeos y audios de los trabajos se enlazan (enlace duro, sin ocupar más disco); el resto se copia. La app nunca modifica esos vídeos en sitio, así la carpeta antigua no cambia.
-- El entorno Python de la aceleración GPU (`python-env`, varios GB) no se copia: se sigue usando desde su ruta anterior.
-- La carpeta de exportación configurada se mantiene (tus clips exportados no se mueven).
-- Se registra en `logs/app.log` y `logs/events.jsonl`, y queda un marcador `data/migration-clipsvirales.json`. La app muestra un aviso breve.
-- Si algo falla, se conservan ambas carpetas, se avisa con enlace al diagnóstico y se reintenta en el siguiente inicio sin repetir lo ya trasladado.
-- El instalador nuevo usa otro identificador (`com.clipclip.desktop`): la app antigua «ClipsVirales» puede desinstalarse desde Windows cuando quieras; su carpeta de datos no se borra.
+## Actualizaciones y migración desde ClipsVirales
+
+### Actualizar Clip Clip
+- El instalador mantiene fijos `appId: com.clipclip.desktop`, `productName`, `shortcutName` y `uninstallDisplayName` («Clip Clip»). Con el mismo `appId`, una versión nueva **sustituye** la instalación anterior en `%LOCALAPPDATA%\Programs\Clip Clip`: no se crean carpetas por versión. Si la app está abierta, el instalador pide cerrarla.
+- **Se reemplaza automáticamente**: sólo los binarios de la instalación (`%LOCALAPPDATA%\Programs\Clip Clip`).
+- **Se conserva siempre**: `%APPDATA%\Clip Clip` (ajustes, historial, trabajos, metadata de publicación y logs) y tus exports. Desinstalar tampoco los borra (`deleteAppDataOnUninstall: false`).
+- La versión se ve en la barra lateral, en **Configuración → Acerca de**, en el nombre del instalador y en `logs/app.log` («Clip Clip X.Y.Z iniciado»).
+
+### Datos de ClipsVirales (nombre anterior)
+Windows trata «ClipsVirales» como otra aplicación, así que su instalación y sus datos quedan aparte. Al abrir Clip Clip, si encuentra `%APPDATA%\ClipsVirales` o `%LOCALAPPDATA%\Programs\ClipsVirales`, muestra **«Encontramos datos de ClipsVirales que ocupan X GB»** con tres opciones. **Nada se migra ni se borra sin elegir una**:
+- **Migrar y conservar copia antigua**: traslada `data` (ajustes e historial), `jobs` y `logs` a `%APPDATA%\Clip Clip` sin sobrescribir nada existente (el historial se fusiona por trabajo; vídeos y audio se enlazan sin ocupar más disco). ClipsVirales no se toca.
+- **Migrar y liberar espacio**: igual, luego **verifica** que todo está en Clip Clip y, sólo si la verificación pasa, envía la carpeta de datos y la instalación antiguas a la **Papelera de reciclaje** (no es un borrado irreversible). Muestra el resumen y el espacio liberado. Si Clip Clip usa algo de la carpeta antigua (p. ej. el Python con CUDA de `python-env`), esa parte se conserva.
+- **Ignorar por ahora**: no vuelve a preguntar; se puede retomar en **Configuración → Almacenamiento → Datos de ClipsVirales**.
+
+Los exports antiguos (`Vídeos\ClipsVirales`) sólo se muestran con su tamaño: no se migran ni se borran. Si la migración falla, se conservan ambas carpetas y no se envía nada a la Papelera. Todo queda en `logs/app.log` y `logs/events.jsonl`. Tras enviar la instalación antigua a la Papelera puede quedar una entrada «ClipsVirales» en Aplicaciones de Windows; se puede quitar desde ahí.
+
+**Qué requiere confirmación**: migrar datos antiguos, enviar ClipsVirales a la Papelera, eliminar exports publicados y Liberar espacio. Sólo las rutas conocidas (`%APPDATA%\ClipsVirales`, `%LOCALAPPDATA%\Programs\ClipsVirales`) pueden ir a la Papelera, nunca la carpeta actual de datos, instalación o exportación.
+
+### Builds locales (sólo desarrollo)
+`release/` contiene artefactos de compilación (instaladores, `win-unpacked`), no datos de usuario. Para limpiarlos:
+
+```bash
+npm run clean:release            # simulación: muestra qué se borraría
+npm run clean:release -- --yes   # borra lo antiguo y conserva el instalador de la versión actual
+npm run clean:release -- --yes --all
+```
+
+Sólo actúa dentro de `<repo>/release`: no toca código fuente, `node_modules`, datos de usuario ni exports. No se ejecuta nunca automáticamente ni forma parte de la app instalada.
 
 ## Solución de problemas
 
