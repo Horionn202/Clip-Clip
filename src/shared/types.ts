@@ -1,4 +1,5 @@
 import type { BenchmarkResult, Placement } from './aiProfiles';
+import type { CleanupOptions, CleanupResult, KeepSource, KeepTemp, StorageReport } from './storage';
 import type { AccelStatus, SetupPlan, SetupState } from './gpuSetup';
 
 export interface GpuSetupInfo {
@@ -72,6 +73,10 @@ export interface Clip {
   dirty?: boolean;
   /** Parámetros con los que se renderizó el MP4 actual (para saber si hay cambios pendientes de verdad). */
   rendered?: RenderedState;
+  /** El export existe fuera de la carpeta de trabajos y coincide con el clip (requisito para borrar el interno). */
+  exportVerified?: boolean;
+  /** El clip interno se borró al liberar espacio; se usa el export. */
+  archived?: boolean;
 }
 
 export interface RenderedState {
@@ -186,6 +191,14 @@ export interface Job {
   allowModelDownload?: boolean;
   /** Dimensiones del vídeo de origen (para re-render y vista previa). */
   sourceVideo?: { width: number; height: number };
+  /** Estado de limpieza de almacenamiento (todo opcional: los trabajos antiguos no lo tienen). */
+  sourceCleaned?: boolean;
+  tempCleaned?: boolean;
+  internalClipsCleaned?: boolean;
+  /** Archivado: sólo quedan los clips exportados. */
+  archivedExportsOnly?: boolean;
+  lastCleanupAt?: string;
+  bytesFreed?: number;
   metrics?: JobMetrics;
   analysis?: AnalysisReport;
   engine?: EnginePlan;
@@ -261,8 +274,17 @@ export interface Settings {
   pythonPath: string; // '' = autodetectar (junto a whisper.exe o en PATH)
   transcriptionEngine: EngineChoice;
   whisperPrecision: Precision;
-  deleteSourceAfterCompletion: boolean;
-  deleteTempAfterCompletion: boolean;
+  /** @deprecated sustituido por keepSource/keepTemp; se conserva sólo para migrar ajustes antiguos. */
+  deleteSourceAfterCompletion?: boolean;
+  /** @deprecated sustituido por keepTemp. */
+  deleteTempAfterCompletion?: boolean;
+  /** Vídeo original: siempre / hasta exportar (se borra al verificar todos los exports) / sólo con confirmación. */
+  keepSource: KeepSource;
+  /** Temporales (audio WAV, subtítulos, fotogramas): siempre / tras completar / tras exportar. */
+  keepTemp: KeepTemp;
+  keepTranscript: boolean;
+  /** Limpieza automática de trabajos completados tras N días (0 = desactivada). */
+  autoCleanupDays: number;
   maxConcurrentJobs: number;
   maxSourceMinutes: number;
   maxDownloadMB: number;
@@ -336,6 +358,8 @@ export interface PullProgress {
 /** API expuesta por el preload en window.clipsApi. */
 export interface ClipsApi {
   checkDeps(): Promise<Diagnostics>;
+  analyzeStorage(opts?: CleanupOptions, jobId?: string): Promise<StorageReport>;
+  cleanStorage(opts: CleanupOptions, jobId?: string): Promise<CleanupResult>;
   startupNotice(): Promise<{ kind: 'info' | 'error'; text: string } | null>;
   probeUrl(url: string): Promise<UrlProbe>;
   getSettings(): Promise<Settings>;

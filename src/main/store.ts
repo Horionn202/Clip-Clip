@@ -33,8 +33,10 @@ export function defaultSettings(exportDir: string): Settings {
     pythonPath: '',
     transcriptionEngine: 'auto',
     whisperPrecision: 'auto',
-    deleteSourceAfterCompletion: false,
-    deleteTempAfterCompletion: true,
+    keepSource: 'confirmar',
+    keepTemp: 'tras-completar',
+    keepTranscript: true,
+    autoCleanupDays: 0,
     maxConcurrentJobs: 1,
     maxSourceMinutes: 180,
     maxDownloadMB: 4096,
@@ -46,12 +48,27 @@ export function defaultSettings(exportDir: string): Settings {
   };
 }
 
+/**
+ * Combina ajustes guardados con los valores por defecto y traduce los antiguos (no destructivo):
+ * deleteTempAfterCompletion → keepTemp, deleteSourceAfterCompletion → keepSource.
+ */
+export function migrateSettings(defaults: Settings, saved: Partial<Settings>): Settings {
+  const out: Settings = { ...defaults, ...saved };
+  if (saved.keepTemp === undefined && saved.deleteTempAfterCompletion !== undefined) {
+    out.keepTemp = saved.deleteTempAfterCompletion ? 'tras-completar' : 'siempre';
+  }
+  if (saved.keepSource === undefined && saved.deleteSourceAfterCompletion !== undefined) {
+    out.keepSource = saved.deleteSourceAfterCompletion ? 'hasta-exportar' : 'confirmar';
+  }
+  return out;
+}
+
 export class SettingsStore {
   private file: string;
   private value: Settings;
   constructor(dataDir: string, defaults: Settings) {
     this.file = path.join(dataDir, 'settings.json');
-    this.value = { ...defaults, ...readJson<Partial<Settings>>(this.file, {}) };
+    this.value = migrateSettings(defaults, readJson<Partial<Settings>>(this.file, {}));
   }
   get(): Settings {
     return { ...this.value };

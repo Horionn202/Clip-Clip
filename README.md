@@ -172,14 +172,28 @@ Todo vive en `app.getPath('userData')` = `%APPDATA%\Clip Clip`:
 |---|---|
 | `data\settings.json` | Preferencias |
 | `data\jobs.json` | Historial y estado de trabajos |
-| `jobs\<id>\source.mp4` | Vídeo descargado (borrable al completar) |
-| `jobs\<id>\audio.wav` | Audio temporal (borrado por defecto) |
+| `jobs\<id>\source.mp4` | Vídeo original descargado |
+| `jobs\<id>\audio.wav` | Audio temporal para la transcripción |
+| `jobs\<id>\frames\` | Fotogramas de análisis visual y vistas previas |
+| `jobs\<id>\clips\*.ass` | Subtítulos temporales del render |
 | `jobs\<id>\transcript.json` | Transcripción con marcas por palabra |
-| `jobs\<id>\clips\*.mp4` | Clips renderizados |
+| `jobs\<id>\clips\*.mp4` | Clips internos renderizados |
 | `logs\app.log` | Logs técnicos (rotan a 5 MB; tokens/cookies redactados) |
 | `logs\events.jsonl` | Eventos estructurados por trabajo (sólo dominio de la URL, métricas, rondas de análisis) |
 
 Los clips exportados se copian (sin sobrescribir) a la carpeta de exportación, por defecto `Vídeos\Clip Clip` (si vienes de ClipsVirales se mantiene tu carpeta anterior). Borrar un trabajo pide confirmación y nunca toca los clips exportados. Desinstalar no borra los datos.
+
+### Liberar espacio
+
+**Trabajos → Liberar espacio** analiza el uso por categoría y muestra cuánto se puede recuperar antes de confirmar («Se liberarán X. Tus clips exportados se conservarán.»).
+
+- **Se puede borrar** (de trabajos completados, fallidos o cancelados): vídeo original, audio WAV, fotogramas, subtítulos/temporales y, opcionalmente, la transcripción.
+- **Clips internos**: sólo si tienen un export verificado (existe, tamaño > 0, igual al interno y fuera de la carpeta de trabajos). El clip queda «archivado» y Resultados reproduce el export.
+- **Nunca se borra**: clips exportados, trabajos en curso ni nada fuera de `jobs\<id>`.
+- Los archivos van a la **Papelera de reciclaje**; si alguno no puede, se pide una confirmación reforzada antes de borrarlo definitivamente. Los errores no detienen la limpieza y se resumen al final; todo queda en `logs\events.jsonl` (`storage_cleanup`).
+- Cada tarjeta de trabajo tiene **Limpiar temporales** (sólo audio, fotogramas y subtítulos).
+
+**Configuración → Almacenamiento**: conservar originales (siempre / hasta exportar / borrar tras confirmación), temporales (siempre / tras completar / tras exportar), conservar transcripción y limpieza automática tras X días (desactivada por defecto). Hay aviso de poco espacio según el mínimo de disco configurado. Los ajustes antiguos se migran sin borrar nada.
 
 ## Reglas de negocio implementadas
 - Máximo absoluto de 20 clips en UI (slider), IPC (zod), prompt, parseo, normalización y comprobación final antes de render.

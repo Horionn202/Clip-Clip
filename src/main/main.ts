@@ -68,7 +68,7 @@ const queue = new JobQueue({
   emit: emitJob,
   concurrency: () => settings.get().maxConcurrentJobs,
   // Cada trabajo re-evalúa la GPU (por si se instaló Torch CUDA mientras la app estaba abierta).
-  runner: createPipeline({ jobsDir: paths.jobsDir, settings: () => settings.get(), tools: () => tools, gpuInfo: () => gpuInfo(true), fasterScript }),
+  runner: createPipeline({ jobsDir: paths.jobsDir, settings: () => settings.get(), tools: () => tools, gpuInfo: () => gpuInfo(true), fasterScript, trash: (p) => shell.trashItem(p) }),
   logError: (m, e) => log.error(m, e),
 });
 
@@ -124,6 +124,15 @@ app.whenReady().then(() => {
     try {
       const u = new URL(req.url);
       const [jobId, file] = u.pathname.split('/').filter(Boolean).map(decodeURIComponent);
+      // clip://export/<jobId>/<clipId>: clip archivado (interno borrado al liberar espacio) → su export verificado.
+      // La ruta sale de los datos guardados del trabajo, nunca de la URL.
+      if (u.hostname === 'export') {
+        const j = /^[a-z0-9-]{8,64}$/.test(jobId ?? '') ? jobs.get(jobId) : undefined;
+        const c = j?.clips.find((x) => x.id === file);
+        const exp = c?.exportedPath;
+        if (!c || !exp || !/\.mp4$/i.test(exp) || !fs.existsSync(exp)) return new Response('Not found', { status: 404 });
+        return net.fetch(pathToFileURL(exp).toString(), { headers: req.headers });
+      }
       // clip://job/<id>/<clip.mp4>  ·  clip://frame/<id>/<fotograma.jpg> (vistas previas y referencia de facecam)
       const isFrame = u.hostname === 'frame';
       const okName = isFrame ? /^[\w.-]+\.jpg$/.test(file ?? '') : /^[\w.() -]+\.mp4$/.test(file ?? '');

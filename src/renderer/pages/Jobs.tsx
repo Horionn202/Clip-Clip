@@ -4,6 +4,8 @@ import { JOB_FILTERS, countByFilter, currentEta, filterJobs, fmtMs, renderCounte
 import { humanDuration } from '../../shared/estimates';
 import { api, errMsg } from '../api';
 import { JobReport } from './Performance';
+import { FreeSpaceDialog } from './Storage';
+import { TEMP_ONLY, humanSize } from '../../shared/storage';
 
 export function DeviceBadge({ job }: { job: Job }) {
   const dev = job.metrics?.device ?? job.engine?.device;
@@ -110,12 +112,14 @@ function HistoryCard(props: { job: Job; onOpen: (id: string) => void; onDeleted:
         <Thumb job={j} />
         <div className="grow">
           <div className="title">
-            <span className={`badge ${j.status}`}>{STATUS_LABELS[j.status]}</span> <DeviceBadge job={j} /> <ResultBadge job={j} /> {j.sourceTitle || j.url}
+            <span className={`badge ${j.status}`}>{STATUS_LABELS[j.status]}</span> <DeviceBadge job={j} /> <ResultBadge job={j} />{' '}
+            {j.archivedExportsOnly && <span className="badge">Archivado: sólo exports</span>} {j.sourceTitle || j.url}
           </div>
           <div className="muted small">
             {new Date(j.createdAt).toLocaleString('es-ES')}
             {j.sourceDuration ? ` · vídeo de ${humanDuration(j.sourceDuration)}` : ''} · clips de {j.preset} s · {got}/{j.analysis?.effectiveTarget ?? j.maxClips} clips
             {j.metrics?.totalMs !== undefined && ` · ${fmtMs(j.metrics.totalMs)} en total`}
+            {j.bytesFreed ? ` · ${humanSize(j.bytesFreed)} liberados${j.lastCleanupAt ? ` el ${new Date(j.lastCleanupAt).toLocaleDateString('es-ES')}` : ''}` : ''}
           </div>
           {j.status === 'completed' && j.resultSummary && <div className="small">{j.resultSummary}</div>}
           {j.status === 'failed' && (
@@ -135,6 +139,20 @@ function HistoryCard(props: { job: Job; onOpen: (id: string) => void; onDeleted:
           </button>
         )}
         {j.status === 'completed' && <button onClick={() => act(() => api().openJobFolder(j.id))}>Abrir carpeta</button>}
+        <button
+          className="ghost"
+          onClick={() =>
+            act(async () => {
+              const r = await api().analyzeStorage(TEMP_ONLY, j.id);
+              if (r.recoverableBytes === 0) return props.onError('Este trabajo no tiene temporales que limpiar.');
+              if (!window.confirm(`Limpiar temporales de este trabajo: se liberarán ${humanSize(r.recoverableBytes)} (audio, subtítulos y fotogramas). No se tocan el vídeo original, los clips ni los exports.`)) return;
+              const res = await api().cleanStorage(TEMP_ONLY, j.id);
+              props.onError(res.errors.length ? `Se liberaron ${humanSize(res.freedBytes)}; ${res.errors.length} archivo(s) no se pudieron borrar.` : '');
+            })
+          }
+        >
+          Limpiar temporales
+        </button>
         {(j.status === 'failed' || j.status === 'cancelled') && (
           <button className="primary" onClick={() => act(async () => (await api().retryJob(j.id), props.onRetry()))}>
             Reintentar
@@ -167,10 +185,34 @@ export function JobsPage(props: { jobs: Job[]; onOpen: (id: string) => void; onD
   const active = filterJobs(props.jobs, 'activos');
   const now = useNow(active.length > 0);
   const shown = filterJobs(props.jobs, filter);
+  const [freeOpen, setFreeOpen] = useState(false);
+  const [disk, setDisk] = useState<{ free?: number; recoverable: number; min: number } | null>(null);
+
+  // Aviso de poco espacio: se compara el libre con el mínimo de Configuración y se sugiere limpiar.
+  useEffect(() => {
+    void Promise.all([api().analyzeStorage(), api().getSettings()])
+      .then(([r, s]) => setDisk({ free: r.freeDiskBytes, recoverable: r.recoverableBytes, min: s.minFreeDiskMB * 1024 * 1024 }))
+      .catch(() => undefined);
+  }, [props.jobs.length, freeOpen]);
+  const lowDisk = disk?.free !== undefined && disk.free < disk.min;
 
   return (
     <section className="page">
-      <h1>Trabajos</h1>
+      <div className="row">
+        <h1 className="grow">Trabajos</h1>
+        <button onClick={() => setFreeOpen(true)}>Liberar espacio{disk && disk.recoverable > 0 ? ` (${humanSize(disk.recoverable)})` : ''}</button>
+      </div>
+      {lowDisk && (
+        <div className="banner warn" role="alert">
+          Queda poco espacio en disco ({humanSize(disk!.free!)} libres; mínimo configurado {humanSize(disk!.min)}).{' '}
+          {disk!.recoverable > 0 && (
+            <button className="link" onClick={() => setFreeOpen(true)}>
+              Liberar {humanSize(disk!.recoverable)}
+            </button>
+          )}
+        </div>
+      )}
+      <FreeSpaceDialog open={freeOpen} onClose={() => setFreeOpen(false)} />
       {err && (
         <div className="banner error" role="alert">
           {err}

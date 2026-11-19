@@ -73,13 +73,21 @@ function ClipCard({ job, clip, onError, onInfo }: { job: Job; clip: Clip; onErro
     }
   };
 
-  const videoSrc = clip.file ? `clip://job/${job.id}/${encodeURIComponent(clip.file)}?v=${encodeURIComponent(job.updatedAt)}` : null;
+  // Clip archivado (interno borrado al liberar espacio): se reproduce su export verificado.
+  const videoSrc = clip.archived
+    ? clip.exportedPath
+      ? `clip://export/${job.id}/${clip.id}`
+      : null
+    : clip.file
+      ? `clip://job/${job.id}/${encodeURIComponent(clip.file)}?v=${encodeURIComponent(job.updatedAt)}`
+      : null;
   return (
     <article className="clip" aria-label={`Clip ${clip.index}`}>
       {videoSrc ? <video src={videoSrc} controls preload="metadata" /> : <div className="video-ph">Sin renderizar</div>}
       <div className="row">
         <b className="grow clip-title">{clip.title}</b>
         {clip.dirty && <span className="badge partial">Cambios sin renderizar</span>}
+        {clip.archived && <span className="badge">Archivado · se muestra el export</span>}
       </div>
       {clip.hook && <p className="hook">«{clip.hook}»</p>}
       <div className="muted small">

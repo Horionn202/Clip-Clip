@@ -13,6 +13,8 @@ const subscribe = <T>(channel: 'job:update' | 'ollama:pullProgress' | 'gpu:setup
 
 const api: ClipsApi = {
   checkDeps: () => ipcRenderer.invoke('deps:check'),
+  analyzeStorage: (opts, jobId) => ipcRenderer.invoke('storage:analyze', opts ?? null, jobId ?? null),
+  cleanStorage: (opts, jobId) => ipcRenderer.invoke('storage:clean', opts, jobId ?? null),
   startupNotice: () => ipcRenderer.invoke('app:startupNotice'),
   probeUrl: (url) => ipcRenderer.invoke('source:probe', String(url)),
   getSettings: () => ipcRenderer.invoke('settings:get'),
