@@ -51,6 +51,8 @@ export interface VerifyDeps {
  */
 export function verifyExport(jobsDir: string, jobId: string, clip: Clip, deps: VerifyDeps = {}): boolean {
   const exp = clip.exportedPath;
+  // Cambios pendientes de render: el export ya no corresponde al clip y su origen hace falta para re-renderizar.
+  if (clip.dirty) return false;
   if (!exp || !path.isAbsolute(exp)) return false;
   if (isInside(jobsDir, exp)) return false;
   let st: fs.Stats;

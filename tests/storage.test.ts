@@ -94,6 +94,11 @@ describe('verificación de exports', () => {
     makeJob('job-a');
     expect(verifyExport(jobsDir, 'job-a', clip(1, { exportedPath: mk() }))).toBe(false);
   });
+  it('rechaza clips con cambios sin renderizar', () => {
+    makeJob('job-a');
+    w(path.join(exportDir, '01_t.mp4'), 100);
+    expect(verifyExport(jobsDir, 'job-a', clip(1, { dirty: true, exportedPath: path.join(exportDir, '01_t.mp4') }))).toBe(false);
+  });
   it('con ffprobe exige la duración del clip', () => {
     makeJob('job-a');
     w(path.join(exportDir, '01_t.mp4'), 100);
