@@ -61,3 +61,5 @@ button:focus-visible,select:focus-visible,summary:focus-visible{outline:2px soli
 .job-card{display:flex;flex-direction:column;gap:8px}.job-thumb{width:96px;height:54px;object-fit:cover;border-radius:6px;background:#000;flex-shrink:0}.job-thumb.ph{display:grid;place-items:center;font-size:22px}
 .stage-now{margin-top:4px}.actions-row{gap:8px}
 .timeline{display:flex;flex-wrap:wrap;gap:6px;list-style:none;padding:0;margin:0}.timeline li{font-size:12px;padding:3px 9px;border-radius:20px;background:var(--panel2);color:var(--muted)}.timeline li.tl-hecho{color:var(--ok)}.timeline li.tl-en-curso{background:var(--accent);color:#fff}
+
+.modal.wide{max-width:680px;width:92vw}.cleanup-options{border:1px solid var(--border);border-radius:8px;padding:8px 12px;margin:10px 0}.cleanup-options .check{margin:6px 0}

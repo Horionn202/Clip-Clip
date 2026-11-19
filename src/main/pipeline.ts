@@ -48,6 +48,8 @@ export interface PipelineContext {
   fasterScript: string;
   /** Ejecutor de procesos (inyectable en pruebas). */
   run?: typeof runProcess;
+  /** Envía un archivo a la Papelera de reciclaje (Electron shell.trashItem). */
+  trash?: (full: string) => Promise<void>;
 }
 
 export function jobDir(jobsDir: string, id: string): string {
@@ -334,12 +336,14 @@ export function createPipeline(ctx: PipelineContext): JobRunner {
         update({ clips: [...clips], metrics: { ...metrics } });
       }
 
-      // 8. Limpieza configurada (sólo archivos creados por la app dentro de la carpeta del trabajo)
-      if (s.deleteTempAfterCompletion) {
-        safeUnlink(audioPath);
-        for (const f of fs.readdirSync(clipsDir)) if (f.endsWith('.ass')) safeUnlink(path.join(clipsDir, f));
+      // 8. Política de temporales «tras completar»: audio WAV y subtítulos ASS (archivos creados por la app en
+      // la carpeta del trabajo). Van a la Papelera si es posible. Los fotogramas se conservan para el editor de
+      // facecam y el vídeo original nunca se borra al completar (sólo con «Liberar espacio» o «hasta exportar»).
+      if (s.keepTemp === 'tras-completar') {
+        const remove = ctx.trash ?? (async (p: string) => safeUnlink(p));
+        const temps = [audioPath, ...fs.readdirSync(clipsDir).filter((f) => f.endsWith('.ass')).map((f) => path.join(clipsDir, f))];
+        for (const p of temps) await remove(p).catch(() => safeUnlink(p));
       }
-      if (s.deleteSourceAfterCompletion) safeUnlink(sourcePath);
 
       metrics.clipsFinal = clips.length;
       flushMetrics();

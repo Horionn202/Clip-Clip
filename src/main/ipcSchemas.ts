@@ -49,8 +49,10 @@ export const settingsPatchSchema = z
     pythonPath: exe,
     transcriptionEngine: z.enum(['auto', ...ENGINE_IDS]),
     whisperPrecision: z.enum(['auto', 'fp16', 'fp32']),
-    deleteSourceAfterCompletion: z.boolean(),
-    deleteTempAfterCompletion: z.boolean(),
+    keepSource: z.enum(['siempre', 'hasta-exportar', 'confirmar']),
+    keepTemp: z.enum(['siempre', 'tras-completar', 'tras-exportar']),
+    keepTranscript: z.boolean(),
+    autoCleanupDays: z.number().int().min(0).max(365),
     maxConcurrentJobs: z.number().int().min(1).max(2),
     maxSourceMinutes: z.number().int().min(1).max(600),
     maxDownloadMB: z.number().int().min(10).max(20000),
@@ -92,6 +94,10 @@ export const clipPatchSchema = z
   .strict();
 
 export const layoutIdSchema = z.enum(LAYOUT_IDS);
+
+export const cleanupOptionsSchema = z
+  .object({ source: z.boolean(), audio: z.boolean(), frames: z.boolean(), temp: z.boolean(), transcript: z.boolean(), internalClips: z.boolean() })
+  .strict();
 
 export const previewRangeSchema = z.object({ start: z.number().finite().min(0), end: z.number().finite().min(0) }).strict();
 

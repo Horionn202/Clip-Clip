@@ -111,10 +111,38 @@ export function SettingsPage(props: { settings: Settings; onChange: (s: Settings
         <input type="range" min={30} max={140} value={s.subtitleFontSize} onChange={(e) => patch({ subtitleFontSize: Number(e.target.value) })} />
       </label>
 
-      <h2>Limpieza y límites</h2>
-      <label className="check"><input type="checkbox" checked={s.deleteTempAfterCompletion} onChange={(e) => patch({ deleteTempAfterCompletion: e.target.checked })} /><span>Borrar temporales (audio, subtítulos) al completar</span></label>
-      <label className="check"><input type="checkbox" checked={s.deleteSourceAfterCompletion} onChange={(e) => patch({ deleteSourceAfterCompletion: e.target.checked })} /><span>Borrar el vídeo original descargado al completar</span></label>
-      <p className="small muted">Sólo se borran archivos creados por la app en su carpeta interna. Los clips exportados nunca se borran.</p>
+      <h2>Almacenamiento</h2>
+      <p className="small muted">
+        Sólo se borran archivos creados por la app dentro de su carpeta de datos, y van a la Papelera de reciclaje. Los clips exportados nunca se borran.
+      </p>
+      <div className="grid2">
+        <label className="field">
+          <span>Conservar vídeos originales</span>
+          <select value={s.keepSource} onChange={(e) => patch({ keepSource: e.target.value as Settings['keepSource'] })}>
+            <option value="confirmar">Hasta que pulse «Liberar espacio» (recomendado)</option>
+            <option value="hasta-exportar">Hasta exportar todos los clips (se verifica cada export)</option>
+            <option value="siempre">Siempre (permite volver a renderizar)</option>
+          </select>
+        </label>
+        <label className="field">
+          <span>Conservar temporales (audio, subtítulos, fotogramas)</span>
+          <select value={s.keepTemp} onChange={(e) => patch({ keepTemp: e.target.value as Settings['keepTemp'] })}>
+            <option value="tras-completar">Borrar audio y subtítulos al completar</option>
+            <option value="tras-exportar">Borrar al exportar todos los clips</option>
+            <option value="siempre">Conservar siempre</option>
+          </select>
+        </label>
+      </div>
+      <label className="check">
+        <input type="checkbox" checked={s.keepTranscript} onChange={(e) => patch({ keepTranscript: e.target.checked })} />
+        <span>Conservar la transcripción (ocupa poco y permite rehacer subtítulos)</span>
+      </label>
+      <div className="grid2">
+        <NumField label="Limpieza automática tras N días (0 = desactivada)" value={s.autoCleanupDays} min={0} max={365} onSave={(v) => patch({ autoCleanupDays: v })} />
+        <p className="small muted">Sólo afecta a trabajos completados y sigue las opciones de arriba. Nunca toca exports ni trabajos en curso.</p>
+      </div>
+
+      <h2>Límites</h2>
       <div className="grid2">
         <NumField label="Duración máx. del vídeo (min)" value={s.maxSourceMinutes} min={1} max={600} onSave={(v) => patch({ maxSourceMinutes: v })} />
         <NumField label="Tamaño máx. de descarga (MB)" value={s.maxDownloadMB} min={10} max={20000} onSave={(v) => patch({ maxDownloadMB: v })} />

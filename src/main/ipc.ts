@@ -5,7 +5,7 @@ import { BrowserWindow, dialog, ipcMain, shell, type IpcMainInvokeEvent } from '
 import type { ClipPatch, GpuInfo, GpuSetupInfo, Job, Settings } from '../shared/types';
 import { MAX_CLIPS } from '../shared/types';
 import { UserFacingError } from '../shared/validation';
-import { clipPatchSchema, previewRangeSchema, createJobSchema, idSchema, layoutIdSchema, modelNameSchema, normRectSchema, probeUrlSchema, renameClipSchema, rendererSettingsPatchSchema } from './ipcSchemas';
+import { cleanupOptionsSchema, clipPatchSchema, previewRangeSchema, createJobSchema, idSchema, layoutIdSchema, modelNameSchema, normRectSchema, probeUrlSchema, renameClipSchema, rendererSettingsPatchSchema } from './ipcSchemas';
 import { readSourceInfo } from './source';
 import { isInside } from './paths';
 import { log } from './logger';
@@ -13,6 +13,8 @@ import { runDiagnostics, type ResolvedTools } from './deps';
 import { benchmarkModel, listModels, pullModel, unloadModel } from './ollama';
 import { renderClip, renderPreview, type RenderEnv } from './clipRender';
 import { applyClipPatch, renderedState } from '../shared/clipEdit';
+import { FREE_SPACE_DEFAULTS, humanSize, type CleanupOptions, type CleanupResult, type PlannedFile } from '../shared/storage';
+import { executeCleanup, planCleanup, refreshJobFlags, verifyExport } from './storageManager';
 import { NEEDS_CAM } from '../shared/layouts';
 import { parseWhisperJson, type Word } from './media';
 import { event } from './logger';
@@ -122,6 +124,7 @@ function uniquePath(dir: string, file: string): string {
 function exportOne(ctx: IpcContext, job: Job, clipId: string): string {
   const clip = job.clips.find((c) => c.id === clipId);
   if (!clip?.file) throw new UserFacingError('El clip no está renderizado.');
+  if (clip.archived) throw new UserFacingError('Este clip está archivado: ya está exportado en ' + (clip.exportedPath ?? 'tu carpeta de exportación') + '.');
   if (clip.dirty) throw new UserFacingError(`El clip ${clip.index} tiene cambios sin renderizar: vuelve a renderizarlo antes de exportarlo.`);
   const clipsDir = path.join(jobDir(ctx.jobsDir, job.id), 'clips');
   const src = path.join(clipsDir, clip.file);
@@ -131,12 +134,126 @@ function exportOne(ctx: IpcContext, job: Job, clipId: string): string {
   const dest = uniquePath(exportDir, clip.file);
   fs.copyFileSync(src, dest, fs.constants.COPYFILE_EXCL); // nunca sobrescribe archivos del usuario
   clip.exportedPath = dest;
+  clip.exportVerified = verifyExport(ctx.jobsDir, job.id, clip);
   ctx.jobs.put(job);
   return dest;
 }
 
+let cleaning = false;
+
+function freeDiskBytes(dir: string): number | undefined {
+  try {
+    const s = fs.statfsSync(dir);
+    return s.bavail * s.bsize;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Re-planifica en el proceso principal (nunca se fía de una lista de archivos del renderer), envía a la
+ * Papelera de reciclaje y, si la Papelera falla, pide una confirmación reforzada antes de borrar definitivamente.
+ */
+async function cleanWith(ctx: IpcContext, o: CleanupOptions, jobId?: string, interactive = true): Promise<CleanupResult> {
+  const jobs = ctx.jobs.list();
+  const plan = planCleanup(jobs, ctx.jobsDir, o, {}, jobId);
+  const trashFailed: PlannedFile[] = [];
+  const first = await executeCleanup(plan.files, jobs, ctx.jobsDir, {
+    usedTrash: true,
+    remove: async (full) => {
+      try {
+        await shell.trashItem(full);
+      } catch (e) {
+        trashFailed.push(plan.files.find((f) => path.resolve(ctx.jobsDir, f.jobId, f.rel) === path.resolve(full))!);
+        throw new Error(`papelera: ${(e as Error).message}`);
+      }
+    },
+    log: (m, x) => log.info(m, x),
+  });
+  let result = first;
+  if (trashFailed.length && interactive) {
+    const bytes = trashFailed.reduce((a, f) => a + f.bytes, 0);
+    const win = BrowserWindow.getFocusedWindow();
+    const opts = {
+      type: 'warning' as const,
+      buttons: ['Cancelar', 'Borrar definitivamente'],
+      defaultId: 0,
+      cancelId: 0,
+      title: 'No se pudo usar la Papelera',
+      message: `${trashFailed.length} archivos (${humanSize(bytes)}) no se pudieron enviar a la Papelera de reciclaje.`,
+      detail: 'Si continúas se borrarán definitivamente y no podrás recuperarlos. Tus clips exportados no se tocan.',
+    };
+    const r = win ? await dialog.showMessageBox(win, opts) : await dialog.showMessageBox(opts);
+    if (r.response === 1) {
+      const second = await executeCleanup(trashFailed, jobs, ctx.jobsDir, { usedTrash: false, remove: async (full) => fs.rmSync(full), log: (m, x) => log.info(m, x) });
+      result = {
+        freedBytes: first.freedBytes + second.freedBytes,
+        deleted: first.deleted + second.deleted,
+        errors: [...first.errors.filter((e) => !e.message.startsWith('papelera:')), ...second.errors],
+        jobs: [...new Set([...first.jobs, ...second.jobs])],
+        usedTrash: true,
+      };
+    }
+  }
+  // Indicadores del trabajo (metadatos, títulos y registro se conservan).
+  const freedByJob = new Map<string, number>();
+  for (const f of plan.files) if (!result.errors.some((e) => e.jobId === f.jobId && e.rel === f.rel)) freedByJob.set(f.jobId, (freedByJob.get(f.jobId) ?? 0) + f.bytes);
+  for (const id of result.jobs) {
+    const j = ctx.jobs.get(id);
+    if (!j) continue;
+    const next = refreshJobFlags(j, ctx.jobsDir, freedByJob.get(id) ?? 0);
+    Object.assign(j, next);
+    ctx.jobs.put(j);
+    emitJob(j);
+  }
+  event('storage_cleanup', { jobs: result.jobs.length, deleted: result.deleted, freedBytes: result.freedBytes, errors: result.errors.length, trash: result.usedTrash, options: o });
+  for (const e of result.errors.slice(0, 50)) log.error(`Limpieza: ${e.jobId}/${e.rel}: ${e.message}`);
+  return result;
+}
+
+/** Políticas «hasta exportar» / «tras exportar»: se aplican cuando TODOS los clips del trabajo tienen export verificado. */
+async function applyExportPolicies(ctx: IpcContext, job: Job): Promise<void> {
+  const s = ctx.settings.get();
+  const withFiles = job.clips.filter((c) => c.file);
+  if (!withFiles.length || !withFiles.every((c) => verifyExport(ctx.jobsDir, job.id, c))) return;
+  const o: CleanupOptions = { source: s.keepSource === 'hasta-exportar', audio: s.keepTemp === 'tras-exportar', frames: s.keepTemp === 'tras-exportar', temp: s.keepTemp === 'tras-exportar', transcript: false, internalClips: false };
+  if (!o.source && !o.audio) return;
+  await cleanWith(ctx, o, job.id, false);
+}
+
+/** Limpieza automática por antigüedad (desactivada por defecto). Sólo trabajos completados y según las políticas. */
+export async function autoCleanup(ctx: IpcContext): Promise<void> {
+  const s = ctx.settings.get();
+  if (!s.autoCleanupDays) return;
+  const limit = Date.now() - s.autoCleanupDays * 86400_000;
+  const o: CleanupOptions = { source: s.keepSource !== 'siempre', audio: s.keepTemp !== 'siempre', frames: s.keepTemp !== 'siempre', temp: s.keepTemp !== 'siempre', transcript: !s.keepTranscript, internalClips: true };
+  for (const j of ctx.jobs.list()) {
+    if (j.status === 'completed' && Date.parse(j.updatedAt) < limit && !j.archivedExportsOnly) await cleanWith(ctx, o, j.id, false);
+  }
+}
+
+
 export function registerIpc(ctx: IpcContext): void {
   const h = <A extends unknown[], R>(ch: string, fn: (...a: A) => Promise<R> | R) => ipcMain.handle(ch, wrap(ctx, ch, fn));
+
+  // ---- Almacenamiento: «Liberar espacio» y «Limpiar temporales» ----
+  h('storage:analyze', (opts: unknown, jobId: unknown) => {
+    const o = cleanupOptionsSchema.parse(opts ?? FREE_SPACE_DEFAULTS) as CleanupOptions;
+    const id = jobId == null ? undefined : idSchema.parse(jobId);
+    const r = planCleanup(ctx.jobs.list(), ctx.jobsDir, o, {}, id);
+    return { ...r, freeDiskBytes: freeDiskBytes(ctx.jobsDir) };
+  });
+  h('storage:clean', async (opts: unknown, jobId: unknown) => {
+    const o = cleanupOptionsSchema.parse(opts) as CleanupOptions;
+    const id = jobId == null ? undefined : idSchema.parse(jobId);
+    if (cleaning) throw new UserFacingError('Ya hay una limpieza en curso.');
+    cleaning = true;
+    try {
+      return await cleanWith(ctx, o, id);
+    } finally {
+      cleaning = false;
+    }
+  });
 
   h('app:startupNotice', () => ctx.takeStartupNotice());
   h('deps:check', async () => {
@@ -456,18 +573,20 @@ export function registerIpc(ctx: IpcContext): void {
     const name = `${String(clip.index).padStart(2, '0')}_preview_${l}.jpg`;
     return renderPreview(env, { ...clip, start: draft.start, end: draft.end, layout: l, camRect: cam }, path.join(jobDir(ctx.jobsDir, job.id), 'frames'), name);
   });
-  h('clips:export', (jobId: unknown, clipId: unknown) => {
+  h('clips:export', async (jobId: unknown, clipId: unknown) => {
     const job = requireJob(ctx, jobId);
     const p = exportOne(ctx, job, idSchema.parse(clipId));
     emitJob(job);
+    await applyExportPolicies(ctx, job).catch((e) => log.error('políticas tras exportar', e));
     return p;
   });
-  h('clips:exportAll', (jobId: unknown) => {
+  h('clips:exportAll', async (jobId: unknown) => {
     const job = requireJob(ctx, jobId);
     let n = 0;
     // Los clips con cambios sin renderizar no se exportan (serían una versión antigua).
-    for (const c of job.clips) if (c.file && !c.dirty) (exportOne(ctx, job, c.id), n++);
+    for (const c of job.clips) if (c.file && !c.dirty && !c.archived) (exportOne(ctx, job, c.id), n++);
     emitJob(job);
+    await applyExportPolicies(ctx, job).catch((e) => log.error('políticas tras exportar', e));
     return n;
   });
   h('shell:openJobFolder', async (jobId: unknown) => {
@@ -481,4 +600,7 @@ export function registerIpc(ctx: IpcContext): void {
     fs.mkdirSync(dir, { recursive: true });
     await shell.openPath(dir);
   });
+
+  // Limpieza automática por antigüedad (sólo si el usuario la activó), poco después de arrancar.
+  setTimeout(() => void autoCleanup(ctx).catch((e) => log.error('limpieza automática', e)), 30_000);
 }
