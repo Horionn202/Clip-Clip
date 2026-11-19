@@ -23,6 +23,11 @@ export class PublishStore {
     }
   }
 
+  /** Vuelve a leer publish.json (tras migrar datos antiguos). */
+  reload(): void {
+    this.data = PublishStore.read(this.file);
+  }
+
   forJob(jobId: string): Record<string, ClipPublish> {
     return this.data[jobId] ?? {};
   }

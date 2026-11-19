@@ -777,7 +777,10 @@ export function registerIpc(ctx: IpcContext): void {
     const now = new Date().toISOString();
     for (const d of r.deleted) {
       const job = ctx.jobs.get(d.jobId);
-      if (job) ctx.jobs.put({ ...job, clips: job.clips.map((c) => (c.id === d.clipId ? markExportDeleted(c, now) : c)), updatedAt: now });
+      if (!job) continue;
+      const updated = { ...job, clips: job.clips.map((c) => (c.id === d.clipId ? markExportDeleted(c, now) : c)), updatedAt: now };
+      ctx.jobs.put(updated);
+      emitJob(updated);
     }
     return r;
   };

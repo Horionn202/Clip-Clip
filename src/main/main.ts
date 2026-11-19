@@ -157,6 +157,9 @@ app.whenReady().then(() => {
     // Tras migrar datos antiguos se recargan historial y ajustes desde disco (sin reiniciar la app).
     reloadStores: () => {
       jobs.reload();
+      // Trabajos importados a medias (cola o proceso) pasan a «fallido» para poder reintentarlos o borrarlos.
+      jobs.recoverInterrupted();
+      publish.reload();
       settings.reload(defaults());
       tools = resolveTools(settings.get(), bundledBin);
     },

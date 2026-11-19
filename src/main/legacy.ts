@@ -147,6 +147,17 @@ export function trashPlan(lp: LegacyPaths, prot: Protected): { paths: string[]; 
   return { paths, kept };
 }
 
+/** Rutas en uso según un settings.json (ejecutables y carpeta de exportación). */
+export function settingsProtections(file: string): { inUse: string[]; exportDir?: string } {
+  try {
+    const s = JSON.parse(fs.readFileSync(file, 'utf8')) as Record<string, unknown>;
+    const keys = ['pythonPath', 'whisperPath', 'gpuVerifiedPython', 'ffmpegPath', 'ffprobePath', 'ytDlpPath'];
+    return { inUse: keys.map((k) => s[k]).filter((v): v is string => typeof v === 'string' && v.length > 0), exportDir: typeof s.exportDir === 'string' ? s.exportDir : undefined };
+  } catch {
+    return { inUse: [] };
+  }
+}
+
 export interface MigrateDeps {
   trash: (p: string) => Promise<void>;
   size?: (p: string) => number;
@@ -184,7 +195,12 @@ export async function runLegacyMigration(mode: 'keep' | 'free', lp: LegacyPaths,
     result.ok = false;
     return result;
   }
-  const plan = trashPlan(lp, prot);
+  // Las protecciones se calculan con los ajustes EFECTIVOS tras migrar (y los antiguos): si apuntan a python-env
+  // u otra ruta dentro de ClipsVirales, esa parte se conserva aunque los ajustes en memoria fueran los predeterminados.
+  const after = settingsProtections(path.join(prot.userData, 'data', 'settings.json'));
+  const old = settingsProtections(path.join(lp.data, 'data', 'settings.json'));
+  const extraExports = [after.exportDir, old.exportDir].filter((x): x is string => !!x);
+  const plan = trashPlan(lp, { ...prot, inUse: [...prot.inUse, ...after.inUse, ...old.inUse, ...extraExports] });
   for (const k of plan.kept) deps.log('legado: se conserva (en uso o protegido)', { ruta: k });
   for (const p of plan.paths) {
     const bytes = size(p);

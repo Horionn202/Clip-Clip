@@ -179,6 +179,29 @@ describe('migración desde ClipsVirales', () => {
     expect(fs.existsSync(path.join(lp.data, 'jobs', 'old-1', 'clips', '01.mp4'))).toBe(true);
   });
 
+  it('protege el python-env referenciado por los ajustes antiguos migrados aunque los actuales sean los predeterminados', async () => {
+    const { lp, prot } = setup();
+    const py = path.join(lp.data, 'python-env', 'Scripts', 'python.exe');
+    w(path.join(lp.data, 'data', 'settings.json'), JSON.stringify({ pythonPath: py }));
+    const trashed: string[] = [];
+    const r = await runLegacyMigration('free', lp, prot, { trash: async (p) => void trashed.push(p), log: () => undefined });
+    expect(r.verified).toBe(true);
+    expect(trashed).not.toContain(lp.data);
+    expect(trashed.some((t) => py.startsWith(t))).toBe(false);
+    expect(fs.existsSync(py)).toBe(true);
+  });
+
+  it('las publicaciones migradas se ven tras recargar y no se pisan', () => {
+    const dir = path.join(root, 'pubmig');
+    const s = new PublishStore(dir);
+    w(path.join(dir, 'publish.json'), JSON.stringify({ old: { c: { tiktok: entry('publicado') } } }));
+    s.reload();
+    s.put('nuevo', 'c', 'tiktok', entry('borrador'));
+    const again = new PublishStore(dir);
+    expect(again.get('old', 'c', 'tiktok')?.status).toBe('publicado');
+    expect(again.get('nuevo', 'c', 'tiktok')?.status).toBe('borrador');
+  });
+
   it('verificación detecta lo que falta', () => {
     const { lp, userData } = setup();
     expect(verifyMigration(lp.data, userData).ok).toBe(false);
