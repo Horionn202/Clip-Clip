@@ -228,13 +228,14 @@ export async function autoCleanup(ctx: IpcContext): Promise<void> {
   if (!s.autoCleanupDays) return;
   const limit = Date.now() - s.autoCleanupDays * 86400_000;
   for (const j of ctx.jobs.list()) {
-    if (j.status !== 'completed' || Date.parse(j.updatedAt) >= limit || j.archivedExportsOnly || rerendering.has(j.id)) continue;
+    if (j.status !== 'completed' || Date.parse(j.updatedAt) >= limit || rerendering.has(j.id)) continue;
     // «hasta exportar» / «tras exportar» exigen que todos los clips tengan export verificado; «confirmar» nunca borra sin el usuario.
     const withFiles = j.clips.filter((c) => c.file);
     const exported = withFiles.length > 0 && withFiles.every((c) => verifyExport(ctx.jobsDir, j.id, c));
     const temps = s.keepTemp === 'tras-completar' || (s.keepTemp === 'tras-exportar' && exported);
     const o: CleanupOptions = { source: s.keepSource === 'hasta-exportar' && exported, audio: temps, frames: temps, temp: temps, transcript: !s.keepTranscript && exported, internalClips: true };
-    if (!o.source && !temps && !o.transcript && !exported) continue;
+    // La elegibilidad sale de lo que queda en disco, no de los indicadores: así se reintentan fallos anteriores.
+    if (!planCleanup([j], ctx.jobsDir, o, {}, j.id).files.length) continue;
     await cleanWith(ctx, o, j.id, false);
   }
 }
