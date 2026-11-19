@@ -290,6 +290,7 @@ export function registerIpc(ctx: IpcContext): void {
     const opts = { title: 'Carpeta de exportación', defaultPath: ctx.settings.get().exportDir, properties: ['openDirectory', 'createDirectory'] as ('openDirectory' | 'createDirectory')[] };
     const r = win ? await dialog.showOpenDialog(win, opts) : await dialog.showOpenDialog(opts);
     if (r.canceled || !r.filePaths[0]) return null;
+    if (isInside(ctx.jobsDir, r.filePaths[0]) || isInside(r.filePaths[0], ctx.jobsDir)) throw new UserFacingError('La carpeta de exportación no puede estar dentro de los datos internos de la app.');
     ctx.settings.update({ exportDir: r.filePaths[0] });
     return r.filePaths[0];
   });

@@ -154,6 +154,8 @@ export async function executeCleanup(files: PlannedFile[], jobs: Job[], jobsDir:
   const active = new Set(jobs.filter((j) => !CLEANABLE_STATUSES.includes(j.status)).map((j) => j.id));
   const known = new Set(jobs.map((j) => j.id));
   const touched = new Set<string>();
+  // Exports registrados de cualquier trabajo: nunca se borran, estén donde estén.
+  const exportsSet = new Set(jobs.flatMap((j) => j.clips.map((c) => c.exportedPath)).filter((x): x is string => !!x).map((x) => path.resolve(x).toLowerCase()));
   for (const f of files) {
     const jobDir = path.join(jobsDir, f.jobId);
     const full = path.resolve(jobDir, f.rel);
@@ -162,6 +164,7 @@ export async function executeCleanup(files: PlannedFile[], jobs: Job[], jobsDir:
       if (active.has(f.jobId)) throw new Error('el trabajo está en curso');
       // Nunca fuera de la carpeta administrada del trabajo (ni la propia carpeta).
       if (!isInside(jobDir, full) || path.resolve(full) === path.resolve(jobDir) || !isInside(jobsDir, full)) throw new Error('ruta fuera de la carpeta administrada');
+      if (exportsSet.has(full.toLowerCase())) throw new Error('es un clip exportado; se conserva');
       if (!fs.existsSync(full)) {
         touched.add(f.jobId);
         continue;

@@ -151,6 +151,15 @@ describe('ejecución de la limpieza', () => {
     expect(res.errors.map((e) => e.message)).toEqual(['ruta fuera de la carpeta administrada', 'ruta fuera de la carpeta administrada']);
     expect(fs.existsSync(path.join(root, 'fuera.txt'))).toBe(true);
   });
+  it('nunca borra un export registrado aunque esté en una carpeta del trabajo', async () => {
+    makeJob('job-a');
+    const exp = path.join(jobsDir, 'job-a', 'frames', 'exp.mp4');
+    w(exp, 100);
+    const jobs = [job('job-a', 'completed', [clip(1, { exportedPath: exp })])];
+    const res = await executeCleanup(planCleanup(jobs, jobsDir, TEMP_ONLY).files, jobs, jobsDir, realRemove);
+    expect(fs.existsSync(exp)).toBe(true);
+    expect(res.errors.some((e) => /exportado/.test(e.message))).toBe(true);
+  });
   it('no borra de trabajos activos aunque se lo pidan', async () => {
     makeJob('job-a');
     const res = await executeCleanup([{ jobId: 'job-a', rel: 'source.mp4', category: 'source', bytes: 1000 }], [job('job-a', 'downloading', [])], jobsDir, realRemove);
