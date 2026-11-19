@@ -117,6 +117,7 @@ export function App() {
           // Tras migrar, se recargan historial y ajustes.
           void api().listJobs().then(setJobs);
           void api().getSettings().then(setSettings);
+          void refreshDiag();
         }}
       />
     </div>

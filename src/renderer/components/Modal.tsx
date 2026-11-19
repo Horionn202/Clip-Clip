@@ -54,7 +54,13 @@ export function Modal({ open, title, onClose, children, footer, headerExtra, dir
   const onKeyDown = (e: React.KeyboardEvent<HTMLDialogElement>) => {
     if (e.key !== 'Tab') return;
     const items = [...(ref.current?.querySelectorAll<HTMLElement>(FOCUSABLE) ?? [])].filter((el) => !el.matches(':disabled') && (el.offsetParent !== null || el === document.activeElement));
-    const i = nextFocusIndex(items.length, items.indexOf(document.activeElement as HTMLElement), e.shiftKey);
+    // Sólo se intercepta en los extremos (o si el foco salió del modal): dentro, el navegador navega con normalidad,
+    // incluidos los controles nativos del vídeo.
+    const cur = items.indexOf(document.activeElement as HTMLElement);
+    const inside = ref.current?.contains(document.activeElement) ?? false;
+    const atEdge = cur === -1 ? !inside : e.shiftKey ? cur === 0 : cur === items.length - 1;
+    if (!atEdge) return;
+    const i = nextFocusIndex(items.length, cur, e.shiftKey);
     if (i >= 0) {
       e.preventDefault();
       items[i].focus();

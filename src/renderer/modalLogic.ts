@@ -1,6 +1,6 @@
 // Lógica pura de las ventanas modales (testeable sin DOM).
 
-export const FOCUSABLE = 'a[href],button:not([disabled]),input:not([disabled]):not([type="hidden"]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"]),summary';
+export const FOCUSABLE = 'a[href],button:not([disabled]),input:not([disabled]):not([type="hidden"]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"]),summary,video[controls],audio[controls]';
 
 /** Índice del siguiente elemento con foco al pulsar Tab / Shift+Tab, cerrando el ciclo dentro del modal. */
 export function nextFocusIndex(count: number, current: number, shift: boolean): number {
