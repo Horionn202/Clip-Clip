@@ -17,6 +17,7 @@ p.add_argument("--compute-type", default="float16", choices=["float16", "int8_fl
 p.add_argument("--language", default=None)
 p.add_argument("--output", required=True)
 p.add_argument("--local-only", action="store_true")
+p.add_argument("--precise", action="store_true", help="Modo preciso: más haces, sin arrastrar el contexto anterior y filtrado de silencios (más lento).")
 a = p.parse_args()
 
 def emit(**kw):
@@ -42,7 +43,10 @@ t0 = time.time()
 model = WhisperModel(a.model, device=a.device, compute_type=a.compute_type, local_files_only=a.local_only)
 emit(event="loaded", seconds=round(time.time() - t0, 2))
 
-segments, info = model.transcribe(a.audio, language=a.language or None, word_timestamps=True, beam_size=5)
+if a.precise:
+    segments, info = model.transcribe(a.audio, language=a.language or None, word_timestamps=True, beam_size=8, best_of=5, temperature=0.0, condition_on_previous_text=False, vad_filter=True)
+else:
+    segments, info = model.transcribe(a.audio, language=a.language or None, word_timestamps=True, beam_size=5)
 emit(event="info", duration=info.duration, language=info.language)
 out = []
 for s in segments:

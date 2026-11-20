@@ -12,6 +12,13 @@ export interface Cue {
   start: number;
   end: number;
   text: string;
+  /**
+   * Tiempos de cada palabra (relativos al clip) tal como los dio Whisper. Ausente en cues editados a mano:
+   * entonces se reparten provisionalmente (ver `wordTimings`).
+   */
+  words?: TimedWord[];
+  /** Cue sacado de segmentos sin tiempos por palabra: no admite karaoke. */
+  noWordTiming?: boolean;
 }
 
 export interface CueOptions {
@@ -82,7 +89,8 @@ export function buildCues(words: TimedWord[], clipStart: number, clipEnd: number
     // Duración mínima legible, sin invadir el cue siguiente (así ninguna frase aparece antes de decirse).
     if (en - st < o.minDuration) en = Math.min(st + o.minDuration, nextStart);
     if (en <= st) continue;
-    cues.push({ start: round(st), end: round(en), text: g.map((w) => w.text).join(' ') });
+    const words = g.map((w, k) => ({ start: round(Math.max(st, w.start - clipStart)), end: round(Math.min(k === g.length - 1 ? en : g[k + 1].start - clipStart, Math.max(w.end - clipStart, w.start - clipStart + 0.05), en)), text: w.text }));
+    cues.push({ start: round(st), end: round(en), text: g.map((w) => w.text).join(' '), words });
   }
   return cues;
 }
@@ -98,7 +106,13 @@ export function sanitizeCues(cues: Cue[], clipDuration: number): Cue[] {
     const start = Math.max(0, Math.min(c.start, clipDuration), out.length ? out[out.length - 1].end : 0);
     const end = Math.min(clipDuration, Math.max(c.end, start + 0.1));
     if (end <= start) continue;
-    out.push({ start: round(start), end: round(end), text });
+    const cue: Cue = { start: round(start), end: round(end), text };
+    // Los tiempos por palabra sólo se conservan si siguen describiendo exactamente este texto y este tramo.
+    if (c.words?.length && c.words.map((w) => clean(w.text)).join(' ') === text && c.words[0].start >= start - 0.01 && c.words[c.words.length - 1].end <= end + 0.01) {
+      cue.words = c.words.map((w) => ({ start: round(w.start), end: round(w.end), text: clean(w.text) }));
+    }
+    if (c.noWordTiming) cue.noWordTiming = true;
+    out.push(cue);
   }
   return out;
 }
@@ -111,16 +125,22 @@ export function splitCue(cues: Cue[], index: number, at: number): Cue[] {
   if (at <= 0 || at >= words.length) return cues;
   const a = words.slice(0, at).join(' ');
   const b = words.slice(at).join(' ');
-  const mid = round(c.start + (c.end - c.start) * (a.length / (a.length + b.length)));
-  return [...cues.slice(0, index), { start: c.start, end: mid, text: a }, { start: mid, end: c.end, text: b }, ...cues.slice(index + 1)];
+  const ws = wordTimings(c);
+  // Con tiempos reales, el corte cae justo cuando empieza la palabra; si no, se reparte por caracteres.
+  const mid = !ws[at].approx ? ws[at].start : round(c.start + (c.end - c.start) * (a.length / (a.length + b.length)));
+  const exact = ws.every((w) => !w.approx);
+  const left: Cue = { start: c.start, end: mid, text: a, ...(exact ? { words: c.words!.slice(0, at) } : {}) };
+  const right: Cue = { start: mid, end: c.end, text: b, ...(exact ? { words: c.words!.slice(at) } : {}) };
+  return [...cues.slice(0, index), left, right, ...cues.slice(index + 1)];
 }
 
-/** Une el cue `index` con el siguiente. */
+/** Une el cue `index` con el siguiente (conserva los tiempos por palabra si ambos los tienen). */
 export function mergeCues(cues: Cue[], index: number): Cue[] {
   const a = cues[index];
   const b = cues[index + 1];
   if (!a || !b) return cues;
-  return [...cues.slice(0, index), { start: a.start, end: b.end, text: `${a.text} ${b.text}` }, ...cues.slice(index + 2)];
+  const words = a.words && b.words ? [...a.words, ...b.words] : undefined;
+  return [...cues.slice(0, index), { start: a.start, end: b.end, text: `${a.text} ${b.text}`, ...(words ? { words } : {}) }, ...cues.slice(index + 2)];
 }
 
 /**
@@ -131,4 +151,50 @@ export function normalizeText(s: string): string {
   let t = clean(s).replace(/\s+([,.;:!?…])/g, '$1');
   t = t.replace(/(^|[.!?…]\s+)(\p{Ll})/gu, (_m, p: string, c: string) => p + c.toUpperCase());
   return t;
+}
+
+export interface WordTiming extends TimedWord {
+  /** true si el tiempo se repartió a partir del texto (no lo midió Whisper). */
+  approx: boolean;
+}
+
+/**
+ * Tiempos por palabra de un cue (relativos al clip). Con los de Whisper, tal cual; si el texto se editó, se reparten
+ * provisionalmente según la longitud de cada palabra (pueden necesitar ajuste). Nunca antes del inicio del cue.
+ */
+export function wordTimings(c: Cue): WordTiming[] {
+  const tokens = clean(c.text).split(' ').filter(Boolean);
+  if (c.words?.length && c.words.length === tokens.length && c.words.every((w, i) => clean(w.text) === tokens[i])) {
+    return c.words.map((w) => ({ start: Math.max(c.start, w.start), end: Math.min(c.end, Math.max(w.start, w.end)), text: w.text, approx: false }));
+  }
+  const total = tokens.reduce((n, t) => n + t.length + 1, 0) || 1;
+  let t = c.start;
+  return tokens.map((text) => {
+    const d = ((c.end - c.start) * (text.length + 1)) / total;
+    const w = { start: round(t), end: round(t + d), text, approx: true };
+    t += d;
+    return w;
+  });
+}
+
+/** Índice de la palabra que se está diciendo en `t` (relativo al clip), o -1 si ninguna (silencio entre palabras). */
+export function activeWordIndex(ws: TimedWord[], t: number): number {
+  return ws.findIndex((w) => t >= w.start && t < w.end);
+}
+
+/** Palabras aproximadas a partir de segmentos (sin tiempos por palabra): sólo para el estilo estándar. */
+export function wordsFromSegments(segments: TimedWord[]): (TimedWord & { approx: true })[] {
+  const out: (TimedWord & { approx: true })[] = [];
+  for (const s of segments) {
+    const tokens = clean(s.text).split(' ').filter(Boolean);
+    const d = (s.end - s.start) / Math.max(1, tokens.length);
+    tokens.forEach((text, i) => out.push({ start: s.start + i * d, end: s.start + (i + 1) * d, text, approx: true }));
+  }
+  return out;
+}
+
+/** Desplaza un cue (y sus tiempos por palabra) `shift` segundos, sin bajar de 0. */
+export function shiftCue(c: Cue, shift: number): Cue {
+  const t = (n: number) => Math.max(0, round(n + shift));
+  return { ...c, start: t(c.start), end: t(c.end), ...(c.words ? { words: c.words.map((w) => ({ ...w, start: t(w.start), end: t(w.end) })) } : {}) };
 }

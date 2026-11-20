@@ -19,9 +19,11 @@ export interface RetranscribeResult {
   device: 'cpu' | 'cuda';
   language: string;
   words: number;
+  precise: boolean;
 }
 
-export async function retranscribeJob(job: Job, ctx: PipelineContext, s: Settings, tools: ResolvedTools, gpu: GpuInfo, signal: AbortSignal, onMsg: (m: string) => void): Promise<RetranscribeResult> {
+export async function retranscribeJob(job: Job, ctx: PipelineContext, s: Settings, tools: ResolvedTools, gpu: GpuInfo, signal: AbortSignal, onMsg: (m: string) => void, opts: { precise?: boolean } = {}): Promise<RetranscribeResult> {
+  const precise = !!opts.precise;
   const dir = jobDir(ctx.jobsDir, job.id);
   // Sin el vídeo original los clips no se pueden volver a renderizar: retranscribir los dejaría pendientes para siempre.
   if (job.clips.some((c) => c.file && !c.subtitleCues) && !fs.readdirSync(dir).some((f) => /^source\.(mp4|mkv|webm|mov)$/i.test(f))) {
@@ -49,8 +51,8 @@ export async function retranscribeJob(job: Job, ctx: PipelineContext, s: Setting
   let ok: { file: string; device: 'cpu' | 'cuda'; model: string } | null = null;
   let lastErr = '';
   for (const p of [plan, ...fallbackPlans(plan, selOpts)].filter((p) => isModelCached(p.engine, p.model, gpu))) {
-    onMsg(`Transcribiendo con ${p.device === 'cuda' ? 'GPU' : 'CPU'} (${p.model})…`);
-    const r = await transcribe(ctx, tools, p, audio, tmpDir, lang, job.sourceDuration ?? 0, false, false, signal, () => undefined, gpu.whisperInstalled);
+    onMsg(`Transcribiendo${precise ? ' en modo preciso' : ''} con ${p.device === 'cuda' ? 'GPU' : 'CPU'} (${p.model}, idioma ${lang || 'auto'})…`);
+    const r = await transcribe(ctx, tools, p, audio, tmpDir, lang, job.sourceDuration ?? 0, false, false, signal, () => undefined, gpu.whisperInstalled, precise);
     if (r.ok) {
       ok = { file: r.outFile, device: p.device, model: p.model };
       break;
@@ -75,8 +77,8 @@ export async function retranscribeJob(job: Job, ctx: PipelineContext, s: Setting
     const clips = job.clips.map((c) => (c.file && !c.subtitleCues ? { ...c, dirty: true, rendered: c.rendered ? { ...c.rendered, cues: 'retranscribed' } : c.rendered } : c));
     for (const c of clips) if (c.rendered && c.dirty && !differsFromRendered(c, c.rendered)) c.dirty = false;
     const detected = (JSON.parse(raw) as { language?: string }).language;
-    const metrics = { ...(job.metrics ?? { stagesMs: {}, renderMsPerClip: [] }), whisperModel: ok.model, device: ok.device, languageRequested: lang || 'auto', languageDetected: detected };
-    return { job: { ...job, clips, metrics }, model: ok.model, device: ok.device, language: detected ?? lang, words: words.length };
+    const metrics = { ...(job.metrics ?? { stagesMs: {}, renderMsPerClip: [] }), whisperModel: ok.model, device: ok.device, languageRequested: lang || 'auto', languageDetected: detected, wordTimestamps: words.length > 0, preciseTranscription: precise };
+    return { job: { ...job, clips, metrics }, model: ok.model, device: ok.device, language: detected ?? lang, words: words.length, precise };
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
     if (audio.endsWith('audio.retranscribe.wav')) fs.rmSync(audio, { force: true });

@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { autoComposition, clampRect, combineDetections, compositionErrors, compositionOf, cornerRect, iou, outputSize } from '../src/shared/composition';
+import { autoComposition, clampRect, combineDetections, compositionErrors, compositionOf, cornerRect, facecamShape, iou, outputSize } from '../src/shared/composition';
+import { NO_CAM_CONFIRMED, decideLayout } from '../src/shared/layouts';
 import { layoutFilter, zoomRect } from '../src/main/layoutRender';
 import { layoutInputFor } from '../src/main/clipRender';
 import { applyClipPatch, differsFromRendered, renderedState } from '../src/shared/clipEdit';
@@ -17,7 +18,7 @@ describe('coordenadas normalizadas → filtros FFmpeg', () => {
   it('todos los recortes caben en el origen y son pares, en cada plantilla y aspecto', () => {
     for (const layout of ['gameplay_full', 'game_top_cam_bottom', 'cam_top_game_bottom', 'game_cam_float', 'split_horizontal', 'split_vertical', 'custom'] as const) {
       for (const a of ['9:16', '1:1', '16:9'] as const) {
-        const f = layoutFilter({ layout, srcW: W, srcH: H, offsetX: 0, cam: CAM, out: outputSize(a), gameZoom: 1.5, camCrop: { x: 0.5, y: -0.5, zoom: 1.3 }, overlay: cornerRect('bottom-left', 0.4, 4 / 3, outputSize(a)) });
+        const f = layoutFilter({ layout, srcW: W, srcH: H, offsetX: 0, sourceCam: CAM, out: outputSize(a), gameZoom: 1.5, camCrop: { x: 0.5, y: -0.5, zoom: 1.3 }, outputCam: cornerRect('bottom-left', 0.4, 4 / 3, outputSize(a)) });
         for (const [cw, ch, cx, cy] of crops(f)) {
           expect(cx + cw).toBeLessThanOrEqual(W);
           expect(cy + ch).toBeLessThanOrEqual(H);
@@ -30,12 +31,12 @@ describe('coordenadas normalizadas → filtros FFmpeg', () => {
   it('el tamaño de salida sigue al aspecto elegido', () => {
     expect(layoutFilter({ layout: 'gameplay_full', srcW: W, srcH: H, offsetX: 0, out: outputSize('1:1') })).toContain('scale=1080:1080');
     expect(layoutFilter({ layout: 'gameplay_full', srcW: W, srcH: H, offsetX: 0, out: outputSize('16:9') })).toContain('scale=1920:1080');
-    const stacked = layoutFilter({ layout: 'game_top_cam_bottom', srcW: W, srcH: H, offsetX: 0, cam: CAM, out: outputSize('9:16') });
+    const stacked = layoutFilter({ layout: 'game_top_cam_bottom', srcW: W, srcH: H, offsetX: 0, sourceCam: CAM, out: outputSize('9:16') });
     expect(stacked).toContain('scale=1080:1216');
     expect(stacked).toContain('vstack');
   });
   it('la caja de la cámara se coloca donde dice la composición', () => {
-    const f = layoutFilter({ layout: 'custom', srcW: W, srcH: H, offsetX: 0, cam: CAM, overlay: { x: 0.1, y: 0.5, w: 0.5, h: 0.2 } });
+    const f = layoutFilter({ layout: 'custom', srcW: W, srcH: H, offsetX: 0, sourceCam: CAM, outputCam: { x: 0.1, y: 0.5, w: 0.5, h: 0.2 } });
     expect(f).toContain('overlay=108:960');
   });
   it('con zoom, el desplazamiento mueve el recorte aunque el aspecto coincida', () => {
@@ -50,7 +51,7 @@ describe('coordenadas normalizadas → filtros FFmpeg', () => {
   });
   it('clip antiguo sin composición = mismo filtro que antes', () => {
     const old = clip({ layout: 'game_top_cam_bottom', camRect: CAM });
-    expect(layoutFilter(layoutInputFor(old, W, H, 0))).toBe(layoutFilter({ layout: 'game_top_cam_bottom', srcW: W, srcH: H, offsetX: 0, cam: CAM }).replace(/overlay=[^[]*/, (m) => m));
+    expect(layoutFilter(layoutInputFor(old, W, H, 0))).toBe(layoutFilter({ layout: 'game_top_cam_bottom', srcW: W, srcH: H, offsetX: 0, sourceCam: CAM }).replace(/overlay=[^[]*/, (m) => m));
   });
 });
 
@@ -86,7 +87,7 @@ describe('edición no destructiva', () => {
   const ctx = (c: Clip) => ({ clips: [c], preset: 30 as const, sourceDuration: 120 });
   it('guardar una composición personalizada marca cambios y sincroniza layout/camRect', () => {
     const c = clip({ layout: 'gameplay_full', rendered: { start: 0, end: 30, layout: 'gameplay_full' } });
-    const n = applyClipPatch('c1', { composition: { template: 'custom', facecamRect: CAM, overlayRect: { x: 0.1, y: 0.1, w: 0.4, h: 0.2 }, outputAspectRatio: '1:1' } }, ctx(c));
+    const n = applyClipPatch('c1', { composition: { template: 'custom', sourceFacecamRect: CAM, outputFacecamRect: { x: 0.1, y: 0.1, w: 0.4, h: 0.2 }, outputAspectRatio: '1:1' } }, ctx(c));
     expect(n).toMatchObject({ layout: 'custom', camRect: CAM, dirty: true });
     expect(n.composition).toMatchObject({ manualOverride: true, source: 'user-edited' });
     // Tras renderizar, deja de estar pendiente; volver a la automática lo vuelve a marcar.
@@ -114,5 +115,32 @@ describe('edición no destructiva', () => {
     const c = clip({ start: 10, end: 40, subtitleCues: [{ start: 5, end: 6, text: 'hola' }, { start: 0.5, end: 1, text: 'fuera' }] });
     const n = applyClipPatch('c1', { start: 12, end: 42 }, { clips: [c], preset: 30, sourceDuration: 120 });
     expect(n.subtitleCues).toEqual([{ start: 3, end: 4, text: 'hola' }]);
+  });
+});
+
+describe('detección: forma de facecam y diagnóstico', () => {
+  const det = (cam: { x: number; y: number; w: number; h: number }) => ({ cls: 'facecam_derecha' as const, confidence: 0.9, cam, engine: 't' });
+  it('una región fija en el CENTRO (p. ej. una cara del gameplay) no se acepta como facecam', () => {
+    const center = { x: 0.4, y: 0.35, w: 0.2, h: 0.3 };
+    expect(facecamShape(center).factor).toBeLessThan(0.5);
+    const r = combineDetections([det(center), det(center), det(center)], { samples: 12 });
+    expect(r.confidence).toBeLessThan(0.6);
+    expect(decideLayout('auto', r).layout).toBe('gameplay_full');
+    expect(decideLayout('auto', r).reason).toContain(NO_CAM_CONFIRMED);
+    expect(r.diagnostic?.reason).toMatch(/centro/);
+  });
+  it('esquina con forma de cámara: se acepta y el diagnóstico lo explica', () => {
+    const corner = { x: 0.75, y: 0.65, w: 0.21, h: 0.28 };
+    const r = combineDetections([det(corner), det(corner), det(corner)], { samples: 12 });
+    expect(r.confidence).toBeGreaterThanOrEqual(0.6);
+    expect(r.diagnostic).toMatchObject({ samples: 12, windows: 3, consistency: 1, rect: r.cam });
+  });
+  it('plantilla preferida con cámara poco fiable: se usa gameplay y se pide ajustarla', () => {
+    expect(decideLayout('game_cam_float', { cls: 'facecam_derecha', confidence: 0.3, cam: { x: 0.7, y: 0.6, w: 0.2, h: 0.3 }, engine: 't' }).layout).toBe('gameplay_full');
+  });
+  it('trabajos antiguos: facecamRect/overlayRect se leen como sourceFacecamRect/outputFacecamRect', () => {
+    const c = compositionOf({ composition: { template: 'custom', facecamRect: CAM, overlayRect: { x: 0.1, y: 0.1, w: 0.3, h: 0.2 } } as never });
+    expect(c.sourceFacecamRect).toEqual(CAM);
+    expect(c.outputFacecamRect).toEqual({ x: 0.1, y: 0.1, w: 0.3, h: 0.2 });
   });
 });

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildCues, mergeCues, normalizeText, normalizeWords, sanitizeCues, splitCue, wordsInClip } from '../src/shared/cues';
+import { activeWordIndex, buildCues, mergeCues, normalizeText, normalizeWords, sanitizeCues, splitCue, wordTimings, wordsFromSegments, wordsInClip } from '../src/shared/cues';
 import { buildAss } from '../src/main/media';
 
 const W = (start: number, end: number, text: string) => ({ start, end, text });
@@ -69,5 +69,53 @@ describe('ASS', () => {
     expect(ass).toContain('EDITADO');
     expect(ass).not.toContain('AUTO');
     expect(ass).toContain('PlayResY: 1080');
+  });
+});
+
+describe('karaoke por palabra', () => {
+  // «Mira, mira qué músculos»: cuatro palabras con sus tiempos de Whisper.
+  const words = [W(0, 0.3, 'Mira,'), W(0.35, 0.6, 'mira'), W(0.7, 0.9, 'qué'), W(0.9, 1.5, 'músculos')];
+  const cue = buildCues(words, 0, 10)[0];
+  it('la frase entera visible y sólo la palabra que se dice en azul', async () => {
+    const { karaokeEvents, assColor } = await import('../src/main/media');
+    const blue = assColor('#3B82F6');
+    expect(blue).toBe('&H00F6823B');
+    const evs = karaokeEvents(cue, blue);
+    for (const e of evs) {
+      expect(e.text.replace(/\{[^}]*\}/g, '')).toBe('MIRA, MIRA QUÉ MÚSCULOS');
+      expect((e.text.match(/\\1c&H00F6823B&/g) ?? []).length).toBeLessThanOrEqual(1);
+    }
+    const at = (t: number) => evs.find((e) => t >= e.start && t < e.end)!.text;
+    expect(at(0.1)).toBe(`{\\1c${blue}&}MIRA,{\\1c&H00FFFFFF&} MIRA QUÉ MÚSCULOS`);
+    expect(at(0.4)).toBe(`MIRA, {\\1c${blue}&}MIRA{\\1c&H00FFFFFF&} QUÉ MÚSCULOS`);
+    expect(at(0.8)).toBe(`MIRA, MIRA {\\1c${blue}&}QUÉ{\\1c&H00FFFFFF&} MÚSCULOS`);
+    // Silencio entre palabras: ninguna activa.
+    expect(at(0.32)).toBe('MIRA, MIRA QUÉ MÚSCULOS');
+  });
+  it('ASS karaoke frente a estándar y fallback sin tiempos por palabra', () => {
+    expect(buildAss(words, 0, 10, 72, undefined, undefined, { style: 'karaoke' })).toContain('\\1c&H00F6823B&');
+    expect(buildAss(words, 0, 10, 72, undefined, undefined, { style: 'standard' })).not.toContain('\\1c');
+    const approx = wordsFromSegments([W(0, 2, 'hola qué tal')]);
+    expect(buildAss(approx, 0, 10, 72, undefined, undefined, { style: 'karaoke' })).not.toContain('\\1c');
+  });
+  it('texto editado: tiempos repartidos provisionalmente y marcados como aproximados', () => {
+    const t = wordTimings({ start: 1, end: 3, text: 'hola mundo' });
+    expect(t.every((w) => w.approx)).toBe(true);
+    expect(t[0].start).toBe(1);
+    expect(t[1].end).toBeCloseTo(3, 2);
+    expect(t[0].end).toBeLessThanOrEqual(t[1].start);
+  });
+  it('dividir y unir conservan los tiempos reales de cada palabra', () => {
+    const s = splitCue([cue], 0, 2);
+    expect(s[1].start).toBe(0.7);
+    expect(s[0].words?.map((w) => w.text)).toEqual(['Mira,', 'mira']);
+    expect(mergeCues(s, 0)[0].words?.length).toBe(4);
+  });
+  it('nunca una palabra activa antes de decirse', () => {
+    const ws = wordTimings(cue);
+    ws.forEach((w, i) => {
+      expect(activeWordIndex(ws, w.start - 0.01)).not.toBe(i);
+      expect(activeWordIndex(ws, w.start + 0.01)).toBe(i);
+    });
   });
 });

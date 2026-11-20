@@ -1,4 +1,4 @@
-import { buildCues, type Cue } from '../shared/cues';
+import { buildCues, wordTimings, type Cue } from '../shared/cues';
 import { SAFE_AREA } from '../shared/composition';
 // Subtítulos ASS, encuadre y construcción de argumentos FFmpeg (funciones puras y testeables).
 
@@ -28,13 +28,55 @@ export function assTime(t: number): string {
   return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}.${String(c).padStart(2, '0')}`;
 }
 
-/** Genera un ASS con cues cortos por palabra (o los cues editados del clip), relativo al inicio del clip. */
-export function buildAss(words: Word[], clipStart: number, clipEnd: number, fontSize = 72, cues?: Cue[], out: { w: number; h: number } = { w: 1080, h: 1920 }): string {
-  const list = cues ?? buildCues(words, clipStart, clipEnd);
+export type SubtitleStyle = 'standard' | 'karaoke';
+export interface AssOptions {
+  style?: SubtitleStyle;
+  /** Color de la palabra activa en karaoke (#RRGGBB). */
+  activeColor?: string;
+}
+export const DEFAULT_ACTIVE_COLOR = '#3B82F6';
+
+/** #RRGGBB → color ASS (&H00BBGGRR). Un valor no válido usa el azul por defecto. */
+export function assColor(hex: string | undefined): string {
+  const m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex ?? '') ?? /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(DEFAULT_ACTIVE_COLOR)!;
+  return `&H00${m[3]}${m[2]}${m[1]}`.toUpperCase();
+}
+
+/**
+ * Eventos karaoke de un cue: la frase entera visible todo el tiempo y SÓLO la palabra que se está diciendo en el
+ * color activo (las anteriores vuelven a blanco). Un evento por tramo de tiempo; en los silencios, todo blanco.
+ */
+export function karaokeEvents(c: Cue, activeColor: string): { start: number; end: number; text: string }[] {
+  const ws = wordTimings(c);
+  const words = ws.map((w) => escapeAssText(w.text).toUpperCase()).filter(Boolean);
+  if (words.length !== ws.length || !ws.length) return [{ start: c.start, end: c.end, text: escapeAssText(c.text).toUpperCase() }];
+  const cuts = [...new Set([c.start, c.end, ...ws.flatMap((w) => [w.start, w.end])].map((t) => Math.round(Math.min(c.end, Math.max(c.start, t)) * 100) / 100))].sort((a, b) => a - b);
+  const out: { start: number; end: number; text: string; active: number }[] = [];
+  for (let k = 0; k + 1 < cuts.length; k++) {
+    const [s0, s1] = [cuts[k], cuts[k + 1]];
+    if (s1 - s0 < 0.01) continue;
+    const mid = (s0 + s1) / 2;
+    const active = ws.findIndex((w) => mid >= w.start && mid < w.end);
+    const last = out[out.length - 1];
+    if (last && last.active === active && Math.abs(last.end - s0) < 0.005) last.end = s1;
+    else out.push({ start: s0, end: s1, active, text: '' });
+  }
+  for (const e of out) e.text = words.map((w, i) => (i === e.active ? `{\\1c${activeColor}&}${w}{\\1c&H00FFFFFF&}` : w)).join(' ');
+  return out.map(({ start, end, text }) => ({ start, end, text }));
+}
+
+/**
+ * Genera un ASS con cues cortos por palabra (o los cues editados del clip), relativo al inicio del clip.
+ * Estilo «karaoke»: la palabra que se dice resalta; los cues sin tiempos por palabra caen al estándar.
+ */
+export function buildAss(words: Word[], clipStart: number, clipEnd: number, fontSize = 72, cues?: Cue[], out: { w: number; h: number } = { w: 1080, h: 1920 }, o: AssOptions = {}): string {
+  const list = cues ?? buildCues(words, clipStart, clipEnd).map((c) => ((words as { approx?: boolean }[]).some((w) => w.approx) ? { ...c, words: undefined, noWordTiming: true } : c));
+  const color = assColor(o.activeColor);
   const lines: string[] = [];
   for (const c of list) {
-    const txt = escapeAssText(c.text).toUpperCase();
-    if (txt && c.end > c.start) lines.push(`Dialogue: 0,${assTime(c.start)},${assTime(c.end)},Default,,0,0,0,,${txt}`);
+    if (!(c.end > c.start)) continue;
+    const evs = o.style === 'karaoke' && !c.noWordTiming ? karaokeEvents(c, color) : [{ start: c.start, end: c.end, text: escapeAssText(c.text).toUpperCase() }];
+    for (const e of evs) if (e.text && assTime(e.end) !== assTime(e.start)) lines.push(`Dialogue: 0,${assTime(e.start)},${assTime(e.end)},Default,,0,0,0,,${e.text}`);
   }
   // Margen inferior dentro del área segura (por encima de los controles de TikTok/Shorts/Reels).
   const marginV = Math.round(out.h * SAFE_AREA.bottom + 40);

@@ -122,6 +122,7 @@ export function ResultsPage(props: { jobs: Job[]; selected: string | null; onSel
   const [pub, setPub] = usePublish(job?.id);
   const [exportAllOpen, setExportAllOpen] = useState(false);
   const [retrOpen, setRetrOpen] = useState(false);
+  const [retrPrecise, setRetrPrecise] = useState(false);
   const [retrBusy, setRetrBusy] = useState(false);
 
   if (!job)
@@ -184,7 +185,7 @@ export function ResultsPage(props: { jobs: Job[]; selected: string | null; onSel
           onConfirm={async () => {
             setRetrBusy(true);
             try {
-              const j = await api().retranscribeJob(job.id);
+              const j = await api().retranscribeJob(job.id, { precise: retrPrecise });
               setMsg({ kind: 'info', text: j.message });
             } catch (e) {
               setMsg({ kind: 'error', text: errMsg(e) });
@@ -194,7 +195,20 @@ export function ResultsPage(props: { jobs: Job[]; selected: string | null; onSel
             }
           }}
         >
-          <p>Vuelve a transcribir el audio de este trabajo con el modelo e idioma de Configuración, sin descargar ni analizar de nuevo. La transcripción anterior se conserva.</p>
+          <p>Vuelve a transcribir el audio de este trabajo con el modelo e idioma de Configuración, sin descargar ni analizar de nuevo. La transcripción anterior (y la original) se conservan.</p>
+          {job.metrics?.whisperModel && (
+            <p className="small">
+              Actual: modelo <b>{job.metrics.whisperModel}</b> · idioma {job.metrics.languageRequested === 'auto' || !job.metrics.languageRequested ? 'automático' : job.metrics.languageRequested}
+              {job.metrics.languageDetected ? ` (detectado: ${job.metrics.languageDetected})` : ''} · {job.metrics.device === 'cuda' ? 'GPU' : 'CPU'} ·{' '}
+              {job.metrics.wordTimestamps === false ? 'sin tiempos por palabra (no hay karaoke)' : 'con tiempos por palabra'}
+              {job.metrics.preciseTranscription ? ' · modo preciso' : ''}
+            </p>
+          )}
+          <label className="check">
+            <input type="checkbox" checked={retrPrecise} onChange={(e) => setRetrPrecise(e.target.checked)} />
+            <span>Reprocesar transcripción en modo preciso (más lento: búsqueda más amplia y filtrado de silencios)</span>
+          </label>
+          <p className="small muted">Ninguna transcripción es perfecta: si una palabra sale mal, corrígela en el editor del clip (pestaña Subtítulos).</p>
           <p className="small muted">Los subtítulos editados a mano no se tocan. Después, vuelve a renderizar los clips para aplicar los subtítulos nuevos.</p>
         </ConfirmModal>
       </div>

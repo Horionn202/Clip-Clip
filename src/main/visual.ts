@@ -103,7 +103,37 @@ export const frameEdgeAnalyzer: VisualAnalyzer = {
     }
     const ratio = best.minSide / bg;
     if (ratio < 3) return { cls: ratio < 1.5 ? 'sin_facecam' : 'incierto', confidence: Math.min(0.5, ratio / 6), engine };
-    const cam: NormRect = { x: best.x0 / w, y: best.y0 / h, w: (best.x1 - best.x0) / w, h: (best.y1 - best.y0) / h };
+    // Afinado: la búsqueda va de 2 en 2 px y el borde real puede caer en el píxel de al lado (mezclado con el
+    // fondo). Cada lado se ajusta ±2 px al borde más fuerte y luego se amplía 1 px hacia fuera: es preferible
+    // incluir un poco de marco que cortar parte de la cámara.
+    const refine = (cur: number, f: (p: number) => number, lo: number, hi: number) => {
+      let bestP = cur;
+      let bestV = f(cur);
+      for (let p = Math.max(lo, cur - 2); p <= Math.min(hi, cur + 2); p++) if (f(p) > bestV) [bestP, bestV] = [p, f(p)];
+      return bestP;
+    };
+    // Marcos dentro de la cámara (bordes decorativos del overlay, la propia ventana): si hay otro borde fijo
+    // paralelo un poco más afuera, el bueno es el EXTERIOR. Se busca hasta ~6 % de la imagen hacia fuera.
+    const outward = (cur: number, f: (p: number) => number, dir: 1 | -1, limit: number) => {
+      const ref = f(cur);
+      let out = cur;
+      for (let k = 1, p = cur + dir; k <= Math.round(w * 0.06) && (dir > 0 ? p <= limit : p >= limit); k++, p += dir) if (f(p) >= Math.max(ref * 0.6, bg * 3)) out = p;
+      return out;
+    };
+    const { y0: by0, y1: by1 } = best;
+    let rx0 = best.x0 === 0 ? 0 : refine(best.x0, (p) => vSide(Math.max(0, p - 1), by0, by1), 1, best.x1 - minW);
+    let rx1 = best.x1 >= w - 1 ? w - 1 : refine(best.x1, (p) => vSide(p, by0, by1), rx0 + minW, w - 2);
+    let ry0 = best.y0 === 0 ? 0 : refine(best.y0, (p) => hSide(Math.max(0, p - 1), rx0, rx1), 1, best.y1 - minH);
+    let ry1 = best.y1 >= h - 1 ? h - 1 : refine(best.y1, (p) => hSide(p, rx0, rx1), ry0 + minH, h - 2);
+    if (rx0 > 0) rx0 = outward(rx0, (p) => vSide(Math.max(0, p - 1), ry0, ry1), -1, 1);
+    if (rx1 < w - 1) rx1 = outward(rx1, (p) => vSide(p, ry0, ry1), 1, w - 2);
+    if (ry0 > 0) ry0 = outward(ry0, (p) => hSide(Math.max(0, p - 1), rx0, rx1), -1, 1);
+    if (ry1 < h - 1) ry1 = outward(ry1, (p) => hSide(p, rx0, rx1), 1, h - 2);
+    const fx0 = Math.max(0, rx0 - 1);
+    const fy0 = Math.max(0, ry0 - 1);
+    const fx1 = Math.min(w, rx1 + 2);
+    const fy1 = Math.min(h, ry1 + 2);
+    const cam: NormRect = { x: fx0 / w, y: fy0 / h, w: (fx1 - fx0) / w, h: (fy1 - fy0) / h };
     const confidence = Math.max(0, Math.min(1, (ratio - 3) / 6 + 0.55));
     return { cls: classify(cam), confidence: Math.round(confidence * 100) / 100, cam, engine };
   },

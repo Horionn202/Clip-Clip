@@ -7,6 +7,7 @@ import { UserFacingError, assertClipInvariants } from '../shared/validation';
 import { resultSummary } from '../shared/selection';
 import { missingDepMessage, realGpuProbes, runDiagnostics, type ResolvedTools } from './deps';
 import { parseWhisperJson, type Word } from './media';
+import { wordsFromSegments } from '../shared/cues';
 import { chatJson, modelPlacement, unloadModel } from './ollama';
 import { CancelledError, runProcess } from './proc';
 import { event, log, urlHost } from './logger';
@@ -287,6 +288,7 @@ export function createPipeline(ctx: PipelineContext): JobRunner {
       }
       const parsed = parseWhisperJson(fs.readFileSync(tFile, 'utf8'));
       const { segments } = parsed;
+      metrics.wordTimestamps = parsed.words.length > 0;
       fs.renameSync(tFile, path.join(dir, 'transcript.json'));
       if (segments.length === 0) throw new UserFacingError('No se detectó voz en el vídeo; no es posible proponer clips.');
       event('transcribed', { job: job.id, engine: usedPlan.engine, device: usedPlan.device, model: usedPlan.model, speed: metrics.transcribeSpeed, audioSec: Math.round(duration) });
@@ -359,7 +361,7 @@ export function createPipeline(ctx: PipelineContext): JobRunner {
         const frames = await sampleFrames(tools.ffmpeg!, sourcePath, clip.start, clip.end, framesDir, 12, signal);
         const third = Math.floor(frames.length / 3);
         const windows = frames.length >= 9 ? [frames.slice(0, third), frames.slice(third, 2 * third), frames.slice(2 * third)] : [frames];
-        const { consistency, ...visual } = combineDetections([frameEdgeAnalyzer.analyze(frames), ...windows.map((f) => frameEdgeAnalyzer.analyze(f))]);
+        const { consistency, ...visual } = combineDetections([frameEdgeAnalyzer.analyze(frames), ...windows.map((f) => frameEdgeAnalyzer.analyze(f))], { samples: frames.length, srcAspect: width / height });
         const decision = decideLayout(s.defaultLayout, visual);
         clip.visual = visual;
         clip.camRect = visual.cam;
@@ -373,7 +375,7 @@ export function createPipeline(ctx: PipelineContext): JobRunner {
       event('visual', { job: job.id, clips: clips.map((c) => ({ i: c.index, cls: c.visual?.cls, conf: c.visual?.confidence, layout: c.layout, sug: c.layoutSuggestion })) });
 
       // 7b. Render con el layout de cada clip.
-      const env: RenderEnv = { ffmpeg: tools.ffmpeg!, clipsDir, sourcePath, srcW: width, srcH: height, words: words as Word[], settings: s, signal };
+      const env: RenderEnv = { ffmpeg: tools.ffmpeg!, clipsDir, sourcePath, srcW: width, srcH: height, words: (words.length ? words : wordsFromSegments(segments)) as Word[], settings: s, signal };
       for (const [i, clip] of clips.entries()) {
         check(signal);
         const tc = Date.now();
@@ -432,6 +434,7 @@ export async function transcribe(
   signal: AbortSignal,
   onProgress: (p: TranscribeProgress) => void,
   pythonHasWhisper: boolean,
+  precise = false,
 ): Promise<TranscribeResult> {
   const startedAt = Date.now();
   const st: ProgressState = { phase: needsDownload ? 'downloadingModel' : 'loadingModel', audioDone: 0, firstSegmentAt: null };
@@ -458,7 +461,7 @@ export async function transcribe(
     if (plan.engine === 'faster-whisper-cuda') {
       if (!tools.python) return { ok: false, stderr: 'python no encontrado', outFile: '', reason: 'No se encontró Python.' };
       const outFile = path.join(dir, 'audio.json');
-      const fArgs = fasterArgs(ctx.fasterScript, plan, audioPath, outFile, language, allowDownload);
+      const fArgs = fasterArgs(ctx.fasterScript, plan, audioPath, outFile, language, allowDownload, precise);
       const r = await (ctx.run ?? runProcess)(tools.python, fArgs, {
         signal,
         timeoutMs: 6 * 60 * 60 * 1000,
@@ -483,7 +486,7 @@ export async function transcribe(
     // Se ejecuta en el mismo intérprete que se diagnosticó (python -m whisper); whisper.exe sólo como respaldo.
     const cmd = openaiCommand(tools, pythonHasWhisper);
     if (!cmd) return { ok: false, stderr: 'openai-whisper no encontrado', outFile: '', reason: 'No se encontró openai-whisper.' };
-    const oArgs = [...cmd.prefix, ...openaiArgs(plan, audioPath, dir, language)];
+    const oArgs = [...cmd.prefix, ...openaiArgs(plan, audioPath, dir, language, precise)];
     const r = await (ctx.run ?? runProcess)(cmd.exe, oArgs, {
       signal,
       timeoutMs: 6 * 60 * 60 * 1000,

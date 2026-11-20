@@ -114,7 +114,7 @@ export function SettingsPage(props: { settings: Settings; onChange: (s: Settings
             </option>
           ))}
         </select>
-        <small className="muted">Si la detección no es fiable se usa «Gameplay completo» y se muestra la sugerencia en cada clip. Puedes cambiar la plantilla de cada clip en Resultados.</small>
+        <small className="muted">Si la detección no es fiable se usa «Sin facecam: sólo gameplay» y se muestra la sugerencia en cada clip. Puedes cambiar la plantilla de cada clip en Resultados.</small>
       </label>
       <label className="field">
         <span>Desplazamiento horizontal del recorte: {s.cropOffsetX.toFixed(2)} (−1 izquierda, 0 centro, 1 derecha)</span>
@@ -124,6 +124,20 @@ export function SettingsPage(props: { settings: Settings; onChange: (s: Settings
         <span>Tamaño de subtítulos: {s.subtitleFontSize}</span>
         <input type="range" min={30} max={140} value={s.subtitleFontSize} onChange={(e) => patch({ subtitleFontSize: Number(e.target.value) })} />
       </label>
+      <div className="grid2">
+        <label className="field">
+          <span>Estilo de subtítulo</span>
+          <select value={s.subtitleStyle ?? 'karaoke'} onChange={(e) => patch({ subtitleStyle: e.target.value as Settings['subtitleStyle'] })}>
+            <option value="standard">Estándar (frase en blanco)</option>
+            <option value="karaoke">Karaoke por palabra (resalta la palabra que se dice)</option>
+          </select>
+        </label>
+        <label className="field">
+          <span>Color de la palabra activa</span>
+          <input type="color" value={s.subtitleActiveColor ?? '#3B82F6'} disabled={s.subtitleStyle === 'standard'} onChange={(e) => patch({ subtitleActiveColor: e.target.value.toUpperCase() })} />
+        </label>
+      </div>
+      <small className="muted">Se aplica a los clips que renderices a partir de ahora (los ya renderizados no cambian hasta volver a renderizarlos).</small>
 
       <h2>Almacenamiento</h2>
       <p className="small muted">

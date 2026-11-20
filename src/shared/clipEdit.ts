@@ -2,7 +2,7 @@
 import type { Clip, ClipPatch, DurationPreset, RenderedState } from './types';
 import { NEEDS_CAM } from './layouts';
 import { compositionErrors, compositionOf } from './composition';
-import { sanitizeCues } from './cues';
+import { sanitizeCues, shiftCue } from './cues';
 import { UserFacingError, overlaps, presetRange } from './validation';
 
 export interface EditContext {
@@ -57,14 +57,14 @@ export function applyClipPatch(clipId: string, patch: ClipPatch, ctx: EditContex
       next.composition = { ...merged, manualOverride: true, source: 'user-edited', needsReview: false };
       // layout/camRect se mantienen sincronizados (compatibilidad con el resto de la app).
       next.layout = merged.template;
-      next.camRect = merged.facecamRect;
+      next.camRect = merged.sourceFacecamRect;
       needsRender = true;
     }
   }
   // Subtítulos editados a mano y nuevo tramo: se desplazan para seguir pegados a las mismas palabras del vídeo.
   if (patch.subtitleCues === undefined && next.subtitleCues && (next.start !== cur.start || next.end !== cur.end)) {
     const shift = cur.start - next.start;
-    next.subtitleCues = sanitizeCues(next.subtitleCues.map((c) => ({ ...c, start: c.start + shift, end: c.end + shift })).filter((c) => c.end > 0), next.end - next.start);
+    next.subtitleCues = sanitizeCues(next.subtitleCues.map((c) => shiftCue(c, shift)).filter((c) => c.end > 0), next.end - next.start);
   }
   if (patch.subtitleCues !== undefined) {
     const before = JSON.stringify(cur.subtitleCues ?? null);
@@ -89,7 +89,7 @@ export function renderedState(c: Clip): RenderedState {
 export function compositionKey(c: Clip): string | undefined {
   if (!c.composition) return undefined;
   const k = compositionOf(c);
-  return JSON.stringify([k.template, k.facecamRect, k.facecamCrop, k.facecamPosition, k.overlayRect, k.gameplayCrop, k.outputAspectRatio, !!k.manualOverride]);
+  return JSON.stringify([k.template, k.sourceFacecamRect, k.facecamCrop, k.facecamPosition, k.outputFacecamRect, k.gameplayCrop, k.outputAspectRatio, !!k.manualOverride]);
 }
 
 export function differsFromRendered(c: Clip, r: RenderedState): boolean {

@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { findExecutable } from '../src/main/deps';
-import { renderClip, renderPreview, type RenderEnv } from '../src/main/clipRender';
+import { placeRendered, renderClip, renderPreview, type RenderEnv } from '../src/main/clipRender';
 import { runProcess } from '../src/main/proc';
 import { applyClipPatch, renderedState, differsFromRendered } from '../src/shared/clipEdit';
 import { buildCues } from '../src/shared/cues';
@@ -47,11 +47,26 @@ describe('editor: validación y estado', () => {
     }
   });
 
+  it('Windows: si el MP4 está abierto en el reproductor, el render nuevo se guarda con otro nombre (no falla ni deja .part)', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-lock-'));
+    const fd = fs.openSync(path.join(dir, '01_Prueba.mp4'), 'w');
+    try {
+      fs.writeFileSync(path.join(dir, '01_Prueba.mp4.part.mp4'), 'nuevo');
+      const name = await placeRendered(dir, '01_Prueba.mp4.part.mp4', '01_Prueba.mp4', 1);
+      expect(fs.readFileSync(path.join(dir, name), 'utf8')).toBe('nuevo');
+      if (process.platform === 'win32') expect(name).toMatch(/^01_Prueba_v[0-9a-z]+\.mp4$/);
+      expect(fs.readdirSync(dir).filter((f) => f.includes('.part'))).toEqual([]);
+    } finally {
+      fs.closeSync(fd);
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('renderedState representa exactamente lo renderizado (composición y subtítulos)', () => {
-    const c = applyClipPatch('c1', { composition: { template: 'game_cam_float', facecamRect: CAM, facecamPosition: 'bottom-left', outputAspectRatio: '1:1' }, subtitleCues: [{ start: 0, end: 1, text: 'hola' }] }, ctx(clip()));
+    const c = applyClipPatch('c1', { composition: { template: 'game_cam_float', sourceFacecamRect: CAM, facecamPosition: 'bottom-left', outputAspectRatio: '1:1' }, subtitleCues: [{ start: 0, end: 1, text: 'hola' }] }, ctx(clip()));
     const r = { ...c, rendered: renderedState(c), dirty: false };
     expect(differsFromRendered(r, r.rendered!)).toBe(false);
-    const moved = applyClipPatch('c1', { composition: { template: 'game_cam_float', facecamRect: CAM, facecamPosition: 'top-left', outputAspectRatio: '1:1' } }, ctx(r));
+    const moved = applyClipPatch('c1', { composition: { template: 'game_cam_float', sourceFacecamRect: CAM, facecamPosition: 'top-left', outputAspectRatio: '1:1' } }, ctx(r));
     expect(moved.dirty).toBe(true);
   });
 
@@ -102,7 +117,7 @@ describe.skipIf(!ffmpeg || !ffprobe)('FFmpeg real: cada plantilla en 9:16, 1:1 y
           title: `${template}-${aspect.replace(':', 'x')}`,
           layout: template,
           camRect: CAM,
-          composition: { template, facecamRect: CAM, facecamPosition: 'bottom-right', overlayRect: template === 'custom' ? cornerRect('bottom-left', 0.35, 4 / 3, out) : undefined, outputAspectRatio: aspect, gameplayCrop: { x: 0.3, zoom: 1.2 }, facecamCrop: { x: 0, y: 0, zoom: 1.1 }, manualOverride: true },
+          composition: { template, sourceFacecamRect: CAM, facecamPosition: 'bottom-right', outputFacecamRect: template === 'custom' ? cornerRect('bottom-left', 0.35, 4 / 3, out) : undefined, outputAspectRatio: aspect, gameplayCrop: { x: 0.3, zoom: 1.2 }, facecamCrop: { x: 0, y: 0, zoom: 1.1 }, manualOverride: true },
         });
         const env: RenderEnv = { ffmpeg: ffmpeg!, clipsDir: dir, sourcePath: src, srcW: 1920, srcH: 1080, words: [{ start: 0.2, end: 0.6, text: 'Hola' }, { start: 0.7, end: 1.2, text: 'mundo' }], settings: { cropOffsetX: 0, subtitleFontSize: 72 } };
         const file = await renderClip(c, env);

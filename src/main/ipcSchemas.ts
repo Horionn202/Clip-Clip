@@ -61,6 +61,8 @@ export const settingsPatchSchema = z
     cropOffsetX: z.number().min(-1).max(1),
     defaultLayout: z.enum(['auto', ...LAYOUT_IDS]),
     subtitleFontSize: z.number().int().min(30).max(140),
+    subtitleStyle: z.enum(['standard', 'karaoke']),
+    subtitleActiveColor: z.string().regex(/^#[0-9a-fA-F]{6}$/),
     onboardingDone: z.boolean(),
   })
   .partial()
@@ -87,15 +89,18 @@ const unit = z.number().finite().min(-1).max(1);
 export const compositionSchema = z
   .object({
     template: z.enum(LAYOUT_IDS),
-    facecamRect: normRectSchema.optional(),
+    sourceFacecamRect: normRectSchema.optional(),
     facecamCrop: z.object({ x: unit, y: unit, zoom: z.number().finite().min(1).max(4) }).strict().optional(),
     facecamPosition: z.enum(['top-left', 'top-right', 'bottom-left', 'bottom-right', 'custom']).optional(),
-    overlayRect: normRectSchema.optional(),
+    outputFacecamRect: normRectSchema.optional(),
     gameplayCrop: z.object({ x: unit, zoom: z.number().finite().min(1).max(4) }).strict().optional(),
     outputAspectRatio: z.enum(['9:16', '1:1', '16:9']).optional(),
   })
   .strict();
-export const cueSchema = z.object({ start: z.number().finite().min(0).max(36000), end: z.number().finite().min(0).max(36000), text: z.string().max(200) }).strict();
+const timedWordSchema = z.object({ start: z.number().finite().min(0).max(36000), end: z.number().finite().min(0).max(36000), text: z.string().max(80) }).strict();
+export const cueSchema = z
+  .object({ start: z.number().finite().min(0).max(36000), end: z.number().finite().min(0).max(36000), text: z.string().max(200), words: z.array(timedWordSchema).max(40).optional(), noWordTiming: z.boolean().optional() })
+  .strict();
 
 export const clipPatchSchema = z
   .object({
