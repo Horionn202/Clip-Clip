@@ -595,7 +595,9 @@ export function registerIpc(ctx: IpcContext): void {
   h('jobs:retryFrom', async (id: unknown, stage: unknown) => {
     const prev = requireJob(ctx, id);
     if (!TERMINAL.includes(prev.status)) throw new UserFacingError('El trabajo sigue en curso.');
-    const st = z.enum(['validating', 'downloading', 'extractingAudio', 'transcribing', 'analyzing', 'rendering']).parse(stage);
+    return retryFromStage(prev, z.enum(['validating', 'downloading', 'extractingAudio', 'transcribing', 'analyzing', 'rendering']).parse(stage));
+  });
+  async function retryFromStage(prev: Job, st: import('../shared/types').MetricStage): Promise<Job> {
     const order = ['validating', 'downloading', 'extractingAudio', 'transcribing', 'analyzing', 'rendering'];
     const i = order.indexOf(st);
     const src = jobDir(ctx.jobsDir, prev.id);
@@ -623,10 +625,12 @@ export function registerIpc(ctx: IpcContext): void {
         }
       },
     );
-  });
+  }
   h('jobs:retry', async (id: unknown) => {
     const prev = requireJob(ctx, id);
     if (!TERMINAL.includes(prev.status)) throw new UserFacingError('El trabajo sigue en curso.');
+    // Un bloque de directo se reintenta con su vídeo grabado (no con la URL del directo).
+    if (prev.localSource) return retryFromStage(prev, 'validating');
     return enqueueJob({ url: prev.url, preset: prev.preset, maxClips: prev.maxClips, allowModelDownload: prev.allowModelDownload });
   });
   async function enqueueJob(r: { url: string; preset: Job['preset']; maxClips: number; allowModelDownload?: boolean }, extra: Partial<Job> = {}, prepare?: (dir: string) => void): Promise<Job> {

@@ -276,7 +276,11 @@ export class LiveManager {
     const m = this.monitors.get(id);
     const yt = this.d.ytDlp();
     const ff = this.d.ffmpeg();
-    if (!m || !yt || !ff) return;
+    if (!m) return;
+    if (!yt || !ff) {
+      this.set(id, { status: 'error', error: `Falta ${!ff ? 'FFmpeg' : 'yt-dlp'} para grabar el directo. Revisa Configuración → Diagnóstico y pulsa «Reanudar».` });
+      return;
+    }
     const rt = this.runtime(id);
     if (rt.recorderRunning || !isActive(m.status)) return;
     const gen = rt.gen;
