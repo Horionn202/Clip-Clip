@@ -40,7 +40,7 @@ export const settingsPatchSchema = z
       .regex(/^http:\/\/(127\.0\.0\.1|localhost|\[::1\]):\d{2,5}$/, 'Ollama debe ser local (http://127.0.0.1:11434).'),
     ollamaModel: z.string().regex(/^[A-Za-z0-9._:/-]{1,100}$/, 'Nombre de modelo no válido.'),
     whisperModel: z.enum(['tiny', 'base', 'small', 'medium', 'large', 'turbo']),
-    whisperLanguage: z.string().regex(/^([a-z]{2,3})?$/),
+    whisperLanguage: z.string().regex(/^([a-z]{2,3}|auto)$/),
     exportDir: z.string().max(1024),
     ffmpegPath: exe,
     ffprobePath: exe,
@@ -83,6 +83,20 @@ export const normRectSchema = z
   .strict()
   .refine((r) => validRect(r), 'Rectángulo de facecam fuera de la imagen o demasiado pequeño.');
 
+const unit = z.number().finite().min(-1).max(1);
+export const compositionSchema = z
+  .object({
+    template: z.enum(LAYOUT_IDS),
+    facecamRect: normRectSchema.optional(),
+    facecamCrop: z.object({ x: unit, y: unit, zoom: z.number().finite().min(1).max(4) }).strict().optional(),
+    facecamPosition: z.enum(['top-left', 'top-right', 'bottom-left', 'bottom-right', 'custom']).optional(),
+    overlayRect: normRectSchema.optional(),
+    gameplayCrop: z.object({ x: unit, zoom: z.number().finite().min(1).max(4) }).strict().optional(),
+    outputAspectRatio: z.enum(['9:16', '1:1', '16:9']).optional(),
+  })
+  .strict();
+export const cueSchema = z.object({ start: z.number().finite().min(0).max(36000), end: z.number().finite().min(0).max(36000), text: z.string().max(200) }).strict();
+
 export const clipPatchSchema = z
   .object({
     title: z.string().trim().min(1).max(100).optional(),
@@ -91,6 +105,8 @@ export const clipPatchSchema = z
     end: z.number().finite().min(0).optional(),
     layout: z.enum(LAYOUT_IDS).optional(),
     camRect: normRectSchema.nullable().optional(),
+    composition: compositionSchema.nullable().optional(),
+    subtitleCues: z.array(cueSchema).max(400).nullable().optional(),
   })
   .strict();
 

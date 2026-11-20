@@ -4,7 +4,8 @@ import path from 'node:path';
 import type { Clip, Settings } from '../shared/types';
 import { UserFacingError, safeFileName } from '../shared/validation';
 import { buildAss, type Word } from './media';
-import { layoutFilter, layoutRenderArgs, previewArgs } from './layoutRender';
+import { layoutFilter, layoutRenderArgs, previewArgs, type LayoutInput } from './layoutRender';
+import { compositionOf, cornerRect, outputSize } from '../shared/composition';
 import { runProcess } from './proc';
 
 export interface RenderEnv {
@@ -19,6 +20,25 @@ export interface RenderEnv {
   run?: typeof runProcess;
 }
 
+/** Entrada del filtergraph a partir de la composición del clip (compatible con clips antiguos). */
+export function layoutInputFor(clip: Clip, srcW: number, srcH: number, offsetX: number): LayoutInput {
+  const c = compositionOf(clip);
+  const out = outputSize(c.outputAspectRatio);
+  const overlay = c.template === 'custom' || c.facecamPosition === 'custom' ? c.overlayRect ?? cornerRect('top-right', 0.4, 4 / 3, out) : c.template === 'game_cam_float' ? cornerRect(c.facecamPosition, 0.4, 4 / 3, out) : undefined;
+  return {
+    layout: c.template,
+    srcW,
+    srcH,
+    // El desplazamiento del clip, si se fijó, manda sobre el ajuste global.
+    offsetX: c.gameplayCrop.x || offsetX,
+    cam: c.facecamRect,
+    out,
+    gameZoom: c.gameplayCrop.zoom,
+    camCrop: c.facecamCrop,
+    overlay,
+  };
+}
+
 export function clipFileName(clip: Clip): string {
   return `${String(clip.index).padStart(2, '0')}_${safeFileName(clip.title)}.mp4`;
 }
@@ -26,10 +46,10 @@ export function clipFileName(clip: Clip): string {
 /** Renderiza el clip y devuelve el nombre del MP4. Si cambia el nombre, borra el anterior (archivo creado por la app). */
 export async function renderClip(clip: Clip, env: RenderEnv, onProgress?: (fraction: number) => void): Promise<string> {
   const assName = `${String(clip.index).padStart(2, '0')}.ass`;
-  fs.writeFileSync(path.join(env.clipsDir, assName), buildAss(env.words, clip.start, clip.end, env.settings.subtitleFontSize), 'utf8');
+  fs.writeFileSync(path.join(env.clipsDir, assName), buildAss(env.words, clip.start, clip.end, env.settings.subtitleFontSize, clip.subtitleCues, outputSize(compositionOf(clip).outputAspectRatio)), 'utf8');
   const out = clipFileName(clip);
   const tmp = `${out}.part.mp4`;
-  const filter = layoutFilter({ layout: clip.layout ?? 'gameplay_full', srcW: env.srcW, srcH: env.srcH, offsetX: env.settings.cropOffsetX, cam: clip.camRect });
+  const filter = layoutFilter(layoutInputFor(clip, env.srcW, env.srcH, env.settings.cropOffsetX));
   const total = clip.end - clip.start;
   const r = await (env.run ?? runProcess)(env.ffmpeg, layoutRenderArgs({ source: env.sourcePath, start: clip.start, end: clip.end, filter, assFile: assName, output: tmp }), {
     cwd: env.clipsDir,
@@ -64,7 +84,7 @@ export async function renderClip(clip: Clip, env: RenderEnv, onProgress?: (fract
 /** Fotograma de vista previa (360×640) con el layout aplicado. */
 export async function renderPreview(env: Omit<RenderEnv, 'words'>, clip: Clip, framesDir: string, outName: string): Promise<string> {
   fs.mkdirSync(framesDir, { recursive: true });
-  const filter = layoutFilter({ layout: clip.layout ?? 'gameplay_full', srcW: env.srcW, srcH: env.srcH, offsetX: env.settings.cropOffsetX, cam: clip.camRect });
+  const filter = layoutFilter(layoutInputFor(clip, env.srcW, env.srcH, env.settings.cropOffsetX));
   const r = await (env.run ?? runProcess)(env.ffmpeg, previewArgs({ source: env.sourcePath, at: (clip.start + clip.end) / 2, filter, output: path.join(framesDir, outName) }), {
     signal: env.signal,
     timeoutMs: 60_000,

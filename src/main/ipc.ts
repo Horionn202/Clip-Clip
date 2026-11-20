@@ -6,7 +6,7 @@ import { BrowserWindow, clipboard, dialog, ipcMain, shell, type IpcMainInvokeEve
 import type { ClipPatch, GpuInfo, GpuSetupInfo, Job, Settings } from '../shared/types';
 import { MAX_CLIPS } from '../shared/types';
 import { UserFacingError } from '../shared/validation';
-import { platformSchema, publishMetaSchema, publishStatusSchema, publishUrlSchema } from './ipcSchemas';
+import { compositionSchema, platformSchema, publishMetaSchema, publishStatusSchema, publishUrlSchema } from './ipcSchemas';
 import { cleanupOptionsSchema, clipPatchSchema, previewRangeSchema, createJobSchema, idSchema, layoutIdSchema, modelNameSchema, normRectSchema, probeUrlSchema, renameClipSchema, rendererSettingsPatchSchema } from './ipcSchemas';
 import { readSourceInfo } from './source';
 import { isInside } from './paths';
@@ -14,6 +14,8 @@ import { log } from './logger';
 import { runDiagnostics, type ResolvedTools } from './deps';
 import { benchmarkModel, chatJson, listModels, pullModel, unloadModel } from './ollama';
 import { PublishStore } from './publishStore';
+import { retranscribeJob } from './retranscribe';
+import { compositionErrors, compositionOf } from '../shared/composition';
 import { readState, runLegacyMigration, scanLegacy, writeState, type LegacyPaths } from './legacy';
 import { deletePublishedExports, findPublishedExports, markExportDeleted, recoverableBytes } from './publishedExports';
 import { listConnections } from './publishers';
@@ -65,7 +67,7 @@ let setupCtrl: AbortController | null = null;
 let setupState: SetupState | null = null;
 import type { JobQueue } from './queue';
 import type { JobStore, SettingsStore } from './store';
-import { jobDir } from './pipeline';
+import { jobDir, type PipelineContext } from './pipeline';
 
 export interface IpcContext {
   jobsDir: string;
@@ -82,6 +84,7 @@ export interface IpcContext {
   probeScript: string;
   takeStartupNotice: () => { kind: 'info' | 'error'; text: string } | null;
   publish: PublishStore;
+  pipelineCtx: PipelineContext;
   legacy: LegacyPaths;
   installDir: string;
   appVersion: string;
@@ -503,6 +506,26 @@ export function registerIpc(ctx: IpcContext): void {
 
   h('jobs:create', async (req: unknown) => enqueueJob(createJobSchema.parse(req)));
   // Reintentar = trabajo nuevo con la misma URL, duración y meta (el original se conserva en el historial).
+  let retranscribing = false;
+  h('jobs:retranscribe', async (id: unknown) => {
+    const job = requireJob(ctx, id);
+    if (job.status !== 'completed') throw new UserFacingError('Sólo se puede volver a transcribir un trabajo completado.');
+    // Una sola inferencia pesada a la vez (GPUs de 6 GB): ni con trabajos en curso ni con otra retranscripción.
+    if (retranscribing || ctx.queue.activeCount > 0) throw new UserFacingError('Hay otra transcripción o trabajo en curso; espera a que termine.');
+    if (rerendering.has(job.id)) throw new UserFacingError('Se está renderizando un clip de este trabajo; espera a que termine.');
+    retranscribing = true;
+    try {
+      const r = await retranscribeJob(job, ctx.pipelineCtx, ctx.settings.get(), ctx.tools(), await ctx.gpuInfo(true), new AbortController().signal, (m) => emitJob({ ...job, message: m }));
+      const cur = ctx.jobs.get(job.id) ?? job;
+      const next = { ...cur, clips: r.job.clips, metrics: r.job.metrics, message: `Transcripción rehecha (${r.model}, ${r.device === 'cuda' ? 'GPU' : 'CPU'}, idioma ${r.language || 'auto'}). Vuelve a renderizar los clips para aplicar los subtítulos.` };
+      ctx.jobs.put(next);
+      emitJob(next);
+      event('retranscribe', { job: job.id, model: r.model, device: r.device, words: r.words });
+      return next;
+    } finally {
+      retranscribing = false;
+    }
+  });
   h('jobs:retry', async (id: unknown) => {
     const prev = requireJob(ctx, id);
     if (!TERMINAL.includes(prev.status)) throw new UserFacingError('El trabajo sigue en curso.');
@@ -624,7 +647,7 @@ export function registerIpc(ctx: IpcContext): void {
       rerendering.delete(job.id);
     }
   });
-  h('clips:preview', async (jobId: unknown, clipId: unknown, layout: unknown, camRect: unknown, range: unknown) => {
+  h('clips:preview', async (jobId: unknown, clipId: unknown, layout: unknown, camRect: unknown, range: unknown, composition: unknown) => {
     const job = requireJob(ctx, jobId);
     const id = idSchema.parse(clipId);
     const clip = job.clips.find((c) => c.id === id);
@@ -637,7 +660,18 @@ export function registerIpc(ctx: IpcContext): void {
     const draft = r ? applyClipPatch(id, { start: r.start, end: r.end }, { clips: job.clips, preset: job.preset, sourceDuration: job.sourceDuration ?? 0 }) : clip;
     const env = renderEnvFor(ctx, job);
     const name = `${String(clip.index).padStart(2, '0')}_preview_${l}.jpg`;
-    return renderPreview(env, { ...clip, start: draft.start, end: draft.end, layout: l, camRect: cam }, path.join(jobDir(ctx.jobsDir, job.id), 'frames'), name);
+    const comp = composition == null ? undefined : compositionSchema.parse(composition);
+    const errs = comp ? compositionErrors(compositionOf({ ...clip, composition: comp })) : [];
+    if (errs.length) throw new UserFacingError(errs[0]);
+    const view = comp ? { ...clip, composition: { ...clip.composition, ...comp }, layout: comp.template, camRect: comp.facecamRect } : { ...clip, layout: l, camRect: cam };
+    return renderPreview(env, { ...view, start: draft.start, end: draft.end }, path.join(jobDir(ctx.jobsDir, job.id), 'frames'), name);
+  });
+  h('clips:words', (jobId: unknown, clipId: unknown) => {
+    const job = requireJob(ctx, jobId);
+    const id = idSchema.parse(clipId);
+    const clip = job.clips.find((c) => c.id === id);
+    if (!clip) throw new UserFacingError('El clip no existe.');
+    return transcriptWords(ctx, job.id).filter((w) => w.end > clip.start - 1 && w.start < clip.end + 1);
   });
   h('clips:export', async (jobId: unknown, clipId: unknown) => {
     const job = requireJob(ctx, jobId);
@@ -683,7 +717,7 @@ export function registerIpc(ctx: IpcContext): void {
       const s = ctx.settings.get();
       const words = transcriptWords(ctx, job.id).filter((w) => w.end > clip.start && w.start < clip.end);
       // Contexto editorial limpio: sin URL, rutas, nombres de archivo, IDs ni metadata técnica (ni siquiera el título del vídeo de origen).
-      const ectx = buildEditorialContext(clip, words.map((w) => w.text).join(' '), { tone: o.tone as never, niche: o.niche, language: s.whisperLanguage || undefined });
+      const ectx = buildEditorialContext(clip, words.map((w) => w.text).join(' '), { tone: o.tone as never, niche: o.niche, language: s.whisperLanguage && s.whisperLanguage !== 'auto' ? s.whisperLanguage : undefined });
       const ask = (system: string, user: string) => chatJson(s.ollamaHost, s.ollamaModel, system, user, new AbortController().signal, { schema: editorialSchema(), numPredict: 1400, temperature: 0.5, timeoutMs: 3 * 60 * 1000 });
       const out = await generateEditorial(ectx, ask);
       // El trabajo o el clip pudieron borrarse mientras Ollama respondía: no se recrean sus datos.

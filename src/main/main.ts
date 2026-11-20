@@ -8,7 +8,7 @@ import { legacyPaths } from './legacy';
 import { JobStore, SettingsStore, defaultSettings } from './store';
 import { JobQueue } from './queue';
 import { PublishStore } from './publishStore';
-import { createPipeline, jobDir } from './pipeline';
+import { createPipeline, jobDir, type PipelineContext } from './pipeline';
 import { probeGpu, resolveTools, type ResolvedTools } from './deps';
 import type { GpuInfo } from '../shared/types';
 import { emitJob, registerIpc } from './ipc';
@@ -53,13 +53,14 @@ function gpuInfo(refresh = false): Promise<GpuInfo> {
   return gpuCache;
 }
 
+const pipelineCtx: PipelineContext = { jobsDir: paths.jobsDir, settings: () => settings.get(), tools: () => tools, gpuInfo: () => gpuInfo(true), fasterScript, trash: (p) => shell.trashItem(p) };
 const queue = new JobQueue({
   get: (id) => jobs.get(id),
   put: (j) => jobs.put(j),
   emit: emitJob,
   concurrency: () => settings.get().maxConcurrentJobs,
   // Cada trabajo re-evalúa la GPU (por si se instaló Torch CUDA mientras la app estaba abierta).
-  runner: createPipeline({ jobsDir: paths.jobsDir, settings: () => settings.get(), tools: () => tools, gpuInfo: () => gpuInfo(true), fasterScript, trash: (p) => shell.trashItem(p) }),
+  runner: createPipeline(pipelineCtx),
   logError: (m, e) => log.error(m, e),
 });
 
@@ -151,6 +152,7 @@ app.whenReady().then(() => {
     logsDir: paths.logsDir,
     probeScript,
     publish,
+    pipelineCtx,
     legacy,
     installDir: path.dirname(app.getPath('exe')),
     appVersion: app.getVersion(),

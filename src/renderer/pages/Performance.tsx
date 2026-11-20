@@ -98,6 +98,7 @@ export function LastRunPanel({ jobs }: { jobs: Job[] }) {
           <tr><td>Render por clip</td><td>{m.renderMsPerClip.length ? m.renderMsPerClip.map((x) => fmt(x)).join(' · ') : '—'}</td></tr>
           <tr><td>Total</td><td><b>{fmt(m.totalMs)}</b></td></tr>
           <tr><td>Motor</td><td>{m.engine ? `${ENGINE_LABELS[m.engine]} · ${m.whisperModel}` : '—'}{m.transcribeSpeed ? ` · ${m.transcribeSpeed.toFixed(1)}× tiempo real` : ''}{m.modelDownloadMs ? ` · descarga de modelo ${fmt(m.modelDownloadMs)}` : ''}</td></tr>
+          {m.languageRequested && <tr><td>Idioma</td><td>{m.languageRequested === 'auto' ? `autodetectado${m.languageDetected ? `: ${m.languageDetected}` : ''}` : `${m.languageRequested} (forzado)`} · {m.device === 'cuda' ? 'GPU' : 'CPU'}{m.sourceDuration ? ` · ${Math.round(m.sourceDuration)} s de audio` : ''}</td></tr>}
           {m.transcribeAttempts?.map((t, i) => (
             <tr key={i}>
               <td>Intento de transcripción {i + 1}</td>

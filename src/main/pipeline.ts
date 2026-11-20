@@ -17,6 +17,7 @@ import { analyzeClips } from './analysis';
 import { renderClip, renderThumb, type RenderEnv } from './clipRender';
 import { frameEdgeAnalyzer, sampleFrames } from './visual';
 import { decideLayout } from '../shared/layouts';
+import { autoComposition, combineDetections } from '../shared/composition';
 import { renderedState } from '../shared/clipEdit';
 import { listFiles, locateTranscript, sanitizeArgs, tailLines } from './transcriptOutput';
 import {
@@ -50,6 +51,12 @@ export interface PipelineContext {
   run?: typeof runProcess;
   /** Envía un archivo a la Papelera de reciclaje (Electron shell.trashItem). */
   trash?: (full: string) => Promise<void>;
+}
+
+/** Idioma que se pasa a Whisper: «auto» (elección explícita) = sin --language; vacío (ajuste antiguo) = español. */
+export function whisperLang(l: string): string {
+  if (l === 'auto') return '';
+  return l || 'es';
 }
 
 export function jobDir(jobsDir: string, id: string): string {
@@ -216,7 +223,7 @@ export function createPipeline(ctx: PipelineContext): JobRunner {
         }
         update({ engine: p });
         const tAttempt = Date.now();
-        const r = await transcribe(ctx, tools, p, audioPath, dir, s.whisperLanguage, duration, !!job.allowModelDownload, !isModelCached(p.engine, p.model, gpu), signal, (d) =>
+        const r = await transcribe(ctx, tools, p, audioPath, dir, whisperLang(s.whisperLanguage), duration, !!job.allowModelDownload, !isModelCached(p.engine, p.model, gpu), signal, (d) =>
           update({ detail: d, progress: d.audioTotalSec ? Math.min(1, d.audioDoneSec / d.audioTotalSec) : 0, message: formatProgress(d) }),
           gpu.whisperInstalled,
         );
@@ -253,6 +260,13 @@ export function createPipeline(ctx: PipelineContext): JobRunner {
       metrics.engine = usedPlan.engine;
       metrics.device = usedPlan.device;
       metrics.whisperModel = usedPlan.model;
+      metrics.languageRequested = whisperLang(s.whisperLanguage) || 'auto';
+      try {
+        const lj = JSON.parse(fs.readFileSync(tFile, 'utf8')) as { language?: string };
+        if (typeof lj.language === 'string') metrics.languageDetected = lj.language;
+      } catch {
+        /* el JSON se valida más abajo */
+      }
       const { words, segments } = parseWhisperJson(fs.readFileSync(tFile, 'utf8'));
       fs.renameSync(tFile, path.join(dir, 'transcript.json'));
       if (segments.length === 0) throw new UserFacingError('No se detectó voz en el vídeo; no es posible proponer clips.');
@@ -311,11 +325,16 @@ export function createPipeline(ctx: PipelineContext): JobRunner {
       for (const [i, clip] of clips.entries()) {
         check(signal);
         update({ message: `Analizando composición: clip ${i + 1} de ${clips.length}…`, progress: (i / clips.length) * 0.1 });
-        const frames = await sampleFrames(tools.ffmpeg!, sourcePath, clip.start, clip.end, framesDir, 6, signal);
-        const visual = frameEdgeAnalyzer.analyze(frames);
+        // Varias ventanas del clip: la cámara debe repetirse en la mayoría (una cara del gameplay no es una facecam).
+        const frames = await sampleFrames(tools.ffmpeg!, sourcePath, clip.start, clip.end, framesDir, 12, signal);
+        const third = Math.floor(frames.length / 3);
+        const windows = frames.length >= 9 ? [frames.slice(0, third), frames.slice(third, 2 * third), frames.slice(2 * third)] : [frames];
+        const { consistency, ...visual } = combineDetections([frameEdgeAnalyzer.analyze(frames), ...windows.map((f) => frameEdgeAnalyzer.analyze(f))]);
         const decision = decideLayout(s.defaultLayout, visual);
         clip.visual = visual;
         clip.camRect = visual.cam;
+        clip.composition = autoComposition(decision.layout, visual);
+        if (consistency < 0.5 && visual.cam) clip.composition.needsReview = true;
         clip.layout = decision.layout;
         clip.layoutSuggestion = decision.suggestion;
         clip.layoutReason = decision.reason;

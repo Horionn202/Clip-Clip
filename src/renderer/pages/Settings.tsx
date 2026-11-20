@@ -87,8 +87,14 @@ export function SettingsPage(props: { settings: Settings; onChange: (s: Settings
         </select>
       </label>
       <label className="field">
-        <span>Idioma (código ISO, vacío = autodetectar)</span>
-        <input value={s.whisperLanguage} maxLength={3} placeholder="es" onChange={(e) => patch({ whisperLanguage: e.target.value.toLowerCase().replace(/[^a-z]/g, '') })} />
+        <span>Idioma del audio (se fuerza en Whisper; mejora la precisión)</span>
+        <select value={s.whisperLanguage || 'es'} onChange={(e) => patch({ whisperLanguage: e.target.value })}>
+          {[['es', 'Español'], ['en', 'Inglés'], ['pt', 'Portugués'], ['fr', 'Francés'], ['it', 'Italiano'], ['de', 'Alemán'], ['ca', 'Catalán'], ['auto', 'Detectar idioma automáticamente']].map(([v, l]) => (
+            <option key={v} value={v}>
+              {l}
+            </option>
+          ))}
+        </select>
       </label>
 
       <h2>Exportación</h2>
