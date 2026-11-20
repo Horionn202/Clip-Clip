@@ -155,6 +155,12 @@ describe.skipIf(!ffmpeg)('FFmpeg real: la facecam sale entera, en su sitio y sin
     }, 90000);
   }
 
+  it('revisión Codex: contain en una cámara personalizada mínima (54 px) renderiza sin error', async () => {
+    const c = clip('custom', '9:16', { title: 'contain-min', composition: { template: 'custom', sourceFacecamRect: CAM, facecamFit: 'contain', outputFacecamRect: { x: 0.1, y: 0.1, w: 0.05, h: 0.05 }, outputAspectRatio: '9:16', manualOverride: true } as Clip['composition'] });
+    const file = await renderClip(c, env(withCam));
+    expect(fs.existsSync(path.join(dir, file))).toBe(true);
+  }, 90000);
+
   it('detección: encuentra la cámara del vídeo sintético y la elige con confianza', async () => {
     const frames = await sampleFrames(ffmpeg!, withCam, 0, 4, path.join(dir, 'frames'), 12);
     expect(frames.length).toBeGreaterThanOrEqual(9);

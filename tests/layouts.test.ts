@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { decideLayout, validRect, AUTO_CONFIDENCE, type VisualResult } from '../src/shared/layouts';
 import { classify, frameEdgeAnalyzer, ANALYSIS_W, ANALYSIS_H, type GrayFrame } from '../src/main/visual';
-import { CAM_H, GAME_H, OUT_H, camChain, coverRect, fitAspect, gameplayCrop, layoutFilter, layoutRenderArgs } from '../src/main/layoutRender';
+import { CAM_H, GAME_H, OUT_H, blurFor, camChain, coverRect, fitAspect, gameplayCrop, layoutFilter, layoutRenderArgs } from '../src/main/layoutRender';
 
 // Generador determinista (sin Math.random) para fixtures reproducibles.
 function rng(seed: number) {
@@ -163,6 +163,13 @@ describe('facecam: cover (por defecto) y contain a partir de sourceFacecamRect',
     expect(chain).toContain('boxblur');
     expect(chain).toContain('force_original_aspect_ratio=decrease');
     expect(chain).not.toContain('color=black');
+  });
+  it('revisión Codex: el desenfoque de contain nunca supera lo que admite un panel pequeño', () => {
+    // Panel mínimo permitido (5 % de 1080 = 54 px): croma de 27 px → radio máximo 13.
+    expect(blurFor(54, 40)).toBe('boxblur=luma_radius=18:luma_power=2:chroma_radius=9:chroma_power=2');
+    expect(blurFor(1080, 768)).toBe('boxblur=luma_radius=18:luma_power=2:chroma_radius=18:chroma_power=2');
+    expect(blurFor(6, 6)).toBe('boxblur=luma_radius=2:luma_power=2:chroma_radius=0:chroma_power=2');
+    expect(camChain({ x: 1440, y: 700, w: 400, h: 300 }, 54, 60, 1920, 1080, 'csrc', 'cam', 'contain')).toContain('chroma_radius=12');
   });
   it('una selección que se sale del fotograma se limita a él', () => {
     // Se limita al fotograma (1800+120 = 1920, 1000+80 = 1080) y nunca lo sobrepasa.

@@ -57,6 +57,18 @@ export function selectionPx(sel: PxRect, srcW: number, srcH: number): PxRect {
 export type CamFit = 'cover' | 'contain';
 
 /**
+ * Desenfoque del fondo de `contain` acotado al tamaño del panel. FFmpeg rechaza un radio mayor que la mitad del
+ * plano: en YUV 4:2:0 el croma mide la mitad, así que su radio máximo es min(ancho, alto)/4. Con paneles pequeños
+ * (p. ej. una cámara flotante de 54 px) un radio fijo rompería la vista previa y el render.
+ */
+export function blurFor(tw: number, th: number, wanted = 18): string {
+  const m = Math.min(tw, th);
+  const luma = Math.max(0, Math.min(wanted, Math.floor(m / 2) - 1));
+  const chroma = Math.max(0, Math.min(wanted, Math.floor(m / 4) - 1));
+  return `boxblur=luma_radius=${luma}:luma_power=2:chroma_radius=${chroma}:chroma_power=2`;
+}
+
+/**
  * Ventana «cover» dentro de la selección: el mayor rectángulo con el aspecto del panel que cabe en la cámara elegida,
  * dividido por el zoom y desplazado por el encuadre (-1..1). Nunca sale de la selección ni del fotograma, así que el
  * panel se llena sin barras y sin deformar; sólo se recorta lo imprescindible.
@@ -104,7 +116,7 @@ export function camChain(sel: PxRect, tw: number, th: number, srcW: number, srcH
   if (Math.abs(z.w / z.h / (tw / th) - 1) <= 0.02) return `[${inL}]${c},scale=${tw}:${th}:flags=lanczos,setsar=1[${outL}]`;
   return (
     `[${inL}]${c},split=2[${outL}bgs][${outL}fgs];` +
-    `[${outL}bgs]scale=${tw}:${th}:force_original_aspect_ratio=increase,crop=${tw}:${th},boxblur=18:2,eq=brightness=-0.08,setsar=1[${outL}bg];` +
+    `[${outL}bgs]scale=${tw}:${th}:force_original_aspect_ratio=increase,crop=${tw}:${th},${blurFor(tw, th)},eq=brightness=-0.08,setsar=1[${outL}bg];` +
     `[${outL}fgs]scale=${tw}:${th}:force_original_aspect_ratio=decrease:force_divisible_by=2:flags=lanczos,setsar=1[${outL}fg];` +
     `[${outL}bg][${outL}fg]overlay=(W-w)/2:(H-h)/2[${outL}]`
   );
