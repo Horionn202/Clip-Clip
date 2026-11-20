@@ -322,9 +322,7 @@ describe('flujos del monitor', () => {
 
   it('directos con vídeo y audio por separado: se graban ambos', () => {
     expect(LIVE_FORMAT.startsWith('bv*[height<=720]+ba')).toBe(true);
-    const urls = streamUrls('https://v.example/video.m3u8
-https://a.example/audio.m3u8
-');
+    const urls = streamUrls(['https://v.example/video.m3u8', 'https://a.example/audio.m3u8', ''].join('\n'));
     expect(recorderInputs(urls)).toEqual(['-i', 'https://v.example/video.m3u8', '-i', 'https://a.example/audio.m3u8', '-map', '0:v:0', '-map', '1:a:0']);
     expect(recorderInputs(streamUrls('https://c.example/x.m3u8'))).toEqual(['-i', 'https://c.example/x.m3u8', '-map', '0:v:0?', '-map', '0:a:0?']);
   });
