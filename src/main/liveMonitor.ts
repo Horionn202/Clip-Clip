@@ -483,8 +483,10 @@ export class LiveManager {
     try {
       dur = await this.probeDuration(segPath);
     } catch (e) {
-      // No se pudo medir: el bloque queda en error (visible y reintentable); el segmento se conserva.
-      this.putBlock(id, { index, startSec, endSec: startSec, hash: `${index}:?`, status: 'error', clips: 0, error: (e as Error).message });
+      // No se pudo medir: el bloque queda en error (visible y reintentable) y reserva su duración nominal, para que
+      // los bloques siguientes no se solapen en el tiempo con él al reintentarlo.
+      const nominal = m.settings.blockSec;
+      this.putBlock(id, { index, startSec, endSec: startSec + nominal, hash: `${index}:?`, status: 'error', clips: 0, error: (e as Error).message }, grow(nominal));
       return;
     }
     const bytes = fs.statSync(segPath).size;
@@ -525,7 +527,9 @@ export class LiveManager {
     }
     // Pausado o detenido mientras se preparaba el bloque: no se encola (el segmento se procesará al reanudar).
     const cur = this.monitors.get(id);
-    if (!cur || cur.status === 'pausado' || cur.status === 'detenido' || cur.status === 'error' || (!retry && cur.blocks.some((b) => b.index === index))) {
+    // Un «Reintentar bloque» explícito sí se encola con el monitor en pausa o en error (no graba nada nuevo).
+    const halted = cur && (cur.status === 'detenido' || (!retry && (cur.status === 'pausado' || cur.status === 'error')));
+    if (!cur || halted || (!retry && cur.blocks.some((b) => b.index === index))) {
       fs.rmSync(blockFile, { force: true });
       return;
     }

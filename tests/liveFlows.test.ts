@@ -276,4 +276,30 @@ describe('flujos del monitor', () => {
     expect(lm.list().monitors[0].blocks[0].error).toMatch(/No se pudo medir/);
     lm.shutdown();
   });
+
+  it('un fallo de medición reserva su tiempo y se puede reintentar con el monitor en pausa', async () => {
+    const d = deps();
+    const base = d.run!;
+    let probeFails = true;
+    d.run = async (cmd, args, opts) => (cmd === 'ffprobe' && probeFails && args[args.length - 1].endsWith('seg_00000.ts') ? { code: 1, stdout: '', stderr: 'Invalid data' } : base(cmd, args, opts));
+    const lm = new LiveManager(d);
+    const m = lm.create('https://www.youtube.com/watch?v=x', {}, true);
+    await until(() => w.recorderStarts.length === 1);
+    seg(m, 0);
+    seg(m, 1);
+    seg(m, 2);
+    await lm.tick(m.id); // bloque 0: error de medición
+    await lm.tick(m.id); // bloque 1
+    const b1 = lm.list().monitors[0].blocks.find((b) => b.index === 1)!;
+    expect(b1.startSec).toBe(60); // no se solapa con el 0
+    w.jobs.set('job-1', { ...w.jobs.get('job-1')!, status: 'completed', clips: [] } as unknown as Job);
+    await lm.tick(m.id);
+    lm.pause(m.id);
+    probeFails = false;
+    await lm.retryBlock(m.id, 0);
+    const b0 = lm.list().monitors[0].blocks.find((b) => b.index === 0)!;
+    expect(b0).toMatchObject({ status: 'procesando', startSec: 0 });
+    expect(w.jobs.get('job-0')!.live!.offsetSec).toBe(0);
+    lm.shutdown();
+  });
 });
