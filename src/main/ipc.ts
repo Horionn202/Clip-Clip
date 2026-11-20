@@ -378,7 +378,7 @@ export function registerIpc(ctx: IpcContext): void {
   h('ollama:benchmark', async (name: unknown) => {
     const model = modelNameSchema.parse(name);
     // No compite con un trabajo en curso por la GPU: se espera a que termine.
-    if (ctx.queue.activeCount > 0) throw new UserFacingError('Hay un trabajo en curso; ejecuta el benchmark cuando termine.');
+    if (ctx.queue.activeCount > 0 || retranscribing) throw new UserFacingError('Hay un trabajo o una transcripción en curso; ejecuta el benchmark cuando termine.');
     if (benchCtrl) throw new UserFacingError('Ya hay un benchmark en curso.');
     benchCtrl = new AbortController();
     benchModel = model;
@@ -439,7 +439,7 @@ export function registerIpc(ctx: IpcContext): void {
   h('gpu:setupStart', async (mode: unknown) => {
     const m = mode === 'verify' ? 'verify' : 'install';
     if (setupCtrl) throw new UserFacingError('Ya hay una instalación o verificación en curso.');
-    if (ctx.queue.activeCount > 0) throw new UserFacingError('Hay un trabajo en curso; espera a que termine para usar la GPU.');
+    if (ctx.queue.activeCount > 0 || retranscribing) throw new UserFacingError('Hay un trabajo o una transcripción en curso; espera a que termine para usar la GPU.');
     // El bloqueo se reserva antes de cualquier await: dos peticiones simultáneas no pueden arrancar a la vez.
     const ctrl = new AbortController();
     setupCtrl = ctrl;
@@ -517,7 +517,15 @@ export function registerIpc(ctx: IpcContext): void {
     if (retranscribing || ctx.queue.activeCount > 0) throw new UserFacingError('Hay otra transcripción o trabajo en curso; espera a que termine.');
     if (rerendering.has(job.id)) throw new UserFacingError('Se está renderizando un clip de este trabajo; espera a que termine.');
     if (cleaning) throw new UserFacingError('Hay una limpieza de almacenamiento en curso; espera a que termine.');
+    if (setupCtrl) throw new UserFacingError('Se está instalando o verificando la aceleración GPU. Espera a que termine.');
     retranscribing = true;
+    // Como al encolar un trabajo: el benchmark se cancela y se espera a que suelte la GPU.
+    if (benchCtrl) {
+      const benched = benchModel;
+      benchCtrl.abort();
+      await benchRun;
+      if (benched) await unloadModel(ctx.settings.get().ollamaHost, benched);
+    }
     // Mientras tanto el trabajo cuenta como ocupado: «Liberar espacio» no toca su vídeo ni su audio y no se edita.
     rerendering.add(job.id);
     try {
