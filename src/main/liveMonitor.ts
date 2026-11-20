@@ -309,8 +309,18 @@ export class LiveManager {
     }
     if (!cur || !isActive(cur.status)) return;
     // ¿Sigue en directo? Entonces fue una caída (o el enlace HLS caducó): se reconecta y se anota el hueco.
-    const again = await this.run(yt, ['-J', '--no-playlist', '--no-warnings', '--', cur.url], { timeoutMs: 90_000 });
-    const st = again.code === 0 ? parseLiveStatus(again.stdout).state : 'not-live';
+    let st: string;
+    try {
+      const again = await this.run(yt, ['-J', '--no-playlist', '--no-warnings', '--', cur.url], { timeoutMs: 90_000 });
+      st = again.code === 0 ? parseLiveStatus(again.stdout).state : 'not-live';
+    } catch (e) {
+      // No se pudo comprobar: se reintenta la grabación (si sigue sin poder, acabará en error reanudable).
+      st = 'live';
+      this.d.log('directo: no se pudo comprobar el estado tras la grabación', { id, error: (e as Error).message });
+    }
+    // Pausado o detenido mientras se comprobaba: no se toca el estado.
+    const after = this.monitors.get(id);
+    if (gen !== rt.gen || !after || !isActive(after.status)) return;
     const files = fs.existsSync(dir) ? fs.readdirSync(dir) : [];
     const maxSeg = Math.max(cur.nextSegment - 1, ...files.map(segmentIndex).filter((n): n is number => n !== null));
     if (st === 'live') {
