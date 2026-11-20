@@ -512,6 +512,9 @@ export function registerIpc(ctx: IpcContext): void {
   h('jobs:create', async (req: unknown) => enqueueJob(createJobSchema.parse(req)));
   // Reintentar = trabajo nuevo con la misma URL, duración y meta (el original se conserva en el historial).
   let retranscribing = false;
+  let retranscribeCtrl: AbortController | null = null;
+  // Al cerrar la app se aborta la retranscripción (sin procesos de Whisper huérfanos).
+  ctx.onShutdown?.(() => retranscribeCtrl?.abort());
   h('jobs:retranscribe', async (id: unknown) => {
     const job = requireJob(ctx, id);
     if (job.status !== 'completed') throw new UserFacingError('Sólo se puede volver a transcribir un trabajo completado.');
@@ -520,6 +523,7 @@ export function registerIpc(ctx: IpcContext): void {
     if (rerendering.has(job.id)) throw new UserFacingError('Se está renderizando un clip de este trabajo; espera a que termine.');
     if (cleaning) throw new UserFacingError('Hay una limpieza de almacenamiento en curso; espera a que termine.');
     if (setupCtrl) throw new UserFacingError('Se está instalando o verificando la aceleración GPU. Espera a que termine.');
+    if (generating) throw new UserFacingError('Se están generando textos de publicación con la IA; espera a que termine.');
     retranscribing = true;
     // Como al encolar un trabajo: el benchmark se cancela y se espera a que suelte la GPU.
     if (benchCtrl) {
@@ -531,7 +535,7 @@ export function registerIpc(ctx: IpcContext): void {
     // Mientras tanto el trabajo cuenta como ocupado: «Liberar espacio» no toca su vídeo ni su audio y no se edita.
     rerendering.add(job.id);
     try {
-      const r = await retranscribeJob(job, ctx.pipelineCtx, ctx.settings.get(), ctx.tools(), await ctx.gpuInfo(true), new AbortController().signal, (m) => emitJob({ ...job, message: m }));
+      const r = await retranscribeJob(job, ctx.pipelineCtx, ctx.settings.get(), ctx.tools(), await ctx.gpuInfo(true), (retranscribeCtrl = new AbortController()).signal, (m) => emitJob({ ...job, message: m }));
       const cur = ctx.jobs.get(job.id) ?? job;
       const next = { ...cur, clips: r.job.clips, metrics: r.job.metrics, message: `Transcripción rehecha (${r.model}, ${r.device === 'cuda' ? 'GPU' : 'CPU'}, idioma ${r.language || 'auto'}). Vuelve a renderizar los clips para aplicar los subtítulos.` };
       ctx.jobs.put(next);
@@ -540,6 +544,7 @@ export function registerIpc(ctx: IpcContext): void {
       return next;
     } finally {
       retranscribing = false;
+      retranscribeCtrl = null;
       rerendering.delete(job.id);
     }
   });
@@ -844,6 +849,8 @@ export function registerIpc(ctx: IpcContext): void {
     const { job, clip } = pubClip(jobId, clipId);
     const o = z.object({ tone: z.enum(TONES as [string, ...string[]]).optional(), niche: z.string().max(40).optional() }).strict().optional().parse(options) ?? {};
     if (generating) throw new UserFacingError('Ya se están generando metadatos; espera a que termine.');
+    // Una sola inferencia pesada a la vez: no se carga Ollama mientras Whisper retranscribe en la GPU.
+    if (retranscribing) throw new UserFacingError('Se está volviendo a transcribir un trabajo; espera a que termine para generar textos.');
     generating = true;
     try {
       const s = ctx.settings.get();
