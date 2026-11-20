@@ -326,6 +326,11 @@ export class LiveManager {
       if (next !== cur.nextSegment) this.set(id, { nextSegment: next });
     }
     if (!cur || !isActive(cur.status)) return;
+    // Se pausó y reanudó mientras FFmpeg terminaba: la reanudación no pudo arrancar (reserva ocupada); se arranca ahora.
+    if (gen !== rt.gen) {
+      if (cur.status === 'en-directo' || cur.status === 'procesando') void this.startRecorder(id);
+      return;
+    }
     // ¿Sigue en directo? Entonces fue una caída (o el enlace HLS caducó): se reconecta y se anota el hueco.
     let st: string;
     try {
