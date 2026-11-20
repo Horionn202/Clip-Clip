@@ -99,4 +99,8 @@ describe('edición no destructiva', () => {
     expect(n.dirty).toBe(true);
     expect(n.subtitleCues).toEqual([{ start: 0, end: 1, text: 'hola' }]);
   });
+  it('un desplazamiento 0 guardado en el clip manda sobre el ajuste global', () => {
+    expect(layoutInputFor(clip({ composition: { template: 'gameplay_full', gameplayCrop: { x: 0, zoom: 1 } } }), W, H, 0.8).offsetX).toBe(0);
+    expect(layoutInputFor(clip(), W, H, 0.8).offsetX).toBe(0.8);
+  });
 });

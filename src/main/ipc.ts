@@ -607,6 +607,8 @@ export function registerIpc(ctx: IpcContext): void {
   async function enqueueJob(r: { url: string; preset: Job['preset']; maxClips: number; allowModelDownload?: boolean }, extra: Partial<Job> = {}, prepare?: (dir: string) => void): Promise<Job> {
     // Mientras se instala o verifica la GPU no se encolan trabajos (tampoco reintentos): competirían por la VRAM y el entorno puede estar cambiando.
     // Durante la migración de ClipsVirales se recarga el historial: un trabajo nuevo se perdería o quedaría como fallido.
+    // Una sola inferencia pesada a la vez: mientras se retranscribe no se encolan trabajos (los bloques de directo se reintentan solos).
+    if (retranscribing) throw new UserFacingError('Se está volviendo a transcribir un trabajo; espera a que termine.');
     if (migratingLegacy) throw new UserFacingError('Se están migrando los datos de ClipsVirales. Espera a que termine para crear trabajos.');
     if (setupCtrl) throw new UserFacingError('Se está instalando o verificando la aceleración GPU. Espera a que termine o cancélala en Configuración → Aceleración.');
     // Un trabajo tiene prioridad: se cancela el benchmark y se espera a que suelte la GPU antes de encolar.

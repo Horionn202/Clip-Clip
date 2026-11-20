@@ -50,6 +50,8 @@ interface Runtime {
   poll?: NodeJS.Timeout;
   tick?: NodeJS.Timeout;
   busy: boolean;
+  /** Se incrementa al pausar/detener: una grabación que estaba arrancando lo comprueba y no empieza. */
+  gen: number;
   /** Clips ya generados (tiempos absolutos de la grabación) para deduplicar. */
   absClips: AbsClip[];
 }
@@ -101,7 +103,7 @@ export class LiveManager {
   private runtime(id: string): Runtime {
     let r = this.rt.get(id);
     if (!r) {
-      r = { recorderRunning: false, busy: false, absClips: [] };
+      r = { recorderRunning: false, busy: false, absClips: [], gen: 0 };
       this.rt.set(id, r);
     }
     return r;
@@ -187,6 +189,7 @@ export class LiveManager {
   private stopRuntime(id: string, all: boolean): void {
     const r = this.rt.get(id);
     if (!r) return;
+    r.gen++;
     r.recorder?.abort();
     r.recorder = undefined;
     if (r.poll) clearTimeout(r.poll);
@@ -244,28 +247,44 @@ export class LiveManager {
     const ff = this.d.ffmpeg();
     if (!m || !yt || !ff) return;
     const rt = this.runtime(id);
-    if (rt.recorderRunning) return;
+    if (rt.recorderRunning || !isActive(m.status)) return;
+    const gen = rt.gen;
+    rt.recorderRunning = true; // reservado desde ya: evita dos grabaciones a la vez
     const dir = this.dirOf(id);
     fs.mkdirSync(dir, { recursive: true });
     const g = await this.run(yt, ['-g', '-f', 'b[height<=720]/b', '--no-playlist', '--no-warnings', '--', m.url], { timeoutMs: 90_000 });
     const stream = g.stdout.split(/\r?\n/).find((l) => /^https:\/\//.test(l.trim()))?.trim();
+    // Pausado o detenido mientras se consultaba el flujo: no se empieza a grabar.
+    const live = this.monitors.get(id);
+    if (gen !== rt.gen || !live || !isActive(live.status)) {
+      rt.recorderRunning = false;
+      return;
+    }
     if (g.code !== 0 || !stream) {
+      rt.recorderRunning = false;
       this.set(id, { status: 'error', error: 'No se pudo obtener el flujo del directo (puede haber terminado o no permitir la descarga).' });
       return;
     }
+    // Nunca se reutiliza un nombre de segmento: se continúa tras lo ya grabado o procesado.
+    const start = nextSegmentIndex(live, fs.readdirSync(dir));
+    if (start !== live.nextSegment) this.set(id, { nextSegment: start });
     const ctrl = new AbortController();
     rt.recorder = ctrl;
-    rt.recorderRunning = true;
-    this.d.log('directo: grabación iniciada', { id, segmento: m.nextSegment });
+    this.d.log('directo: grabación iniciada', { id, segmento: start });
     const res = await this.run(
       ff,
-      ['-hide_banner', '-loglevel', 'error', '-i', stream, '-map', '0:v:0?', '-map', '0:a:0?', '-c', 'copy', '-f', 'segment', '-segment_time', String(m.settings.blockSec), '-reset_timestamps', '1', '-segment_start_number', String(m.nextSegment), '-segment_format', 'mpegts', 'seg_%05d.ts'],
+      ['-hide_banner', '-loglevel', 'error', '-i', stream, '-map', '0:v:0?', '-map', '0:a:0?', '-c', 'copy', '-f', 'segment', '-segment_time', String(m.settings.blockSec), '-reset_timestamps', '1', '-segment_start_number', String(start), '-segment_format', 'mpegts', 'seg_%05d.ts'],
       { cwd: dir, signal: ctrl.signal, timeoutMs: 12 * 60 * 60 * 1000 },
     ).catch((e) => ({ code: -1, stdout: '', stderr: String(e) }) as RunResult);
     rt.recorderRunning = false;
     rt.recorder = undefined;
     const cur = this.monitors.get(id);
-    if (!cur || !isActive(cur.status)) return; // pausado o detenido por el usuario
+    // Pausado o detenido: se guarda el siguiente índice para que al reanudar no se pisen segmentos.
+    if (cur && fs.existsSync(dir)) {
+      const next = nextSegmentIndex(cur, fs.readdirSync(dir));
+      if (next !== cur.nextSegment) this.set(id, { nextSegment: next });
+    }
+    if (!cur || !isActive(cur.status)) return;
     // ¿Sigue en directo? Entonces fue una caída (o el enlace HLS caducó): se reconecta y se anota el hueco.
     const again = await this.run(yt, ['-J', '--no-playlist', '--no-warnings', '--', cur.url], { timeoutMs: 90_000 });
     const st = again.code === 0 ? parseLiveStatus(again.stdout).state : 'not-live';
@@ -421,6 +440,12 @@ export class LiveManager {
     this.set(id, { status: 'finalizado', finishedAt: new Date().toISOString(), notice: `Directo terminado: ${m.blocks.filter((b) => b.status === 'procesado').length} bloques procesados y ${m.clipsGenerated} clips generados.` });
     this.d.log('directo: finalizado', { id, bloques: m.blocks.length, clips: m.clipsGenerated, liberado: m.freedBytes });
   }
+}
+
+/** Siguiente índice de segmento: después de lo guardado, de lo que hay en disco y de los bloques ya registrados. */
+export function nextSegmentIndex(m: Pick<LiveMonitor, 'nextSegment' | 'blocks'>, files: string[]): number {
+  const onDisk = files.map(segmentIndex).filter((n): n is number => n !== null);
+  return Math.max(m.nextSegment, ...onDisk.map((n) => n + 1), ...m.blocks.map((b) => b.index + 1));
 }
 
 function dirBytes(dir: string): number {

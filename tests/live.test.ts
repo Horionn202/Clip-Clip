@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { blockWindow, completeSegments, dedupeClips, isNotLiveError, liveCheckUrl, monitorSummary, parseLiveStatus, recoverMonitor, validateLiveSettings, type LiveMonitor } from '../src/shared/live';
-import { LiveManager, type LiveDeps } from '../src/main/liveMonitor';
+import { LiveManager, nextSegmentIndex, type LiveDeps } from '../src/main/liveMonitor';
 import type { Job } from '../src/shared/types';
 
 describe('lógica del monitor', () => {
@@ -162,5 +162,31 @@ describe('LiveManager (procesos simulados)', () => {
     expect(again.list().monitors.find((x) => x.id === m.id)?.status).toBe('pausado');
     expect(again.list().ack).toBe(true);
     again.shutdown();
+  });
+
+  it('al reanudar no reutiliza índices de segmento', () => {
+    expect(nextSegmentIndex({ nextSegment: 0, blocks: [{ index: 3 } as never] }, ['seg_00004.ts'])).toBe(5);
+    expect(nextSegmentIndex({ nextSegment: 7, blocks: [] }, [])).toBe(7);
+  });
+
+  it('pausar mientras se consulta el flujo no arranca la grabación', async () => {
+    let release: () => void = () => undefined;
+    const started: string[] = [];
+    const d = deps('live');
+    const base = d.run!;
+    d.run = async (cmd, args, opts) => {
+      if (cmd === 'yt-dlp' && args[0] === '-g') await new Promise<void>((r) => (release = r));
+      if (cmd === 'ffmpeg' && args.includes('segment')) started.push('rec');
+      return base(cmd, args, opts);
+    };
+    const lm = new LiveManager(d);
+    const m = lm.create('https://www.youtube.com/watch?v=x', {}, true);
+    for (let i = 0; i < 50 && lm.list().monitors[0].status !== 'en-directo'; i++) await new Promise((r) => setTimeout(r, 5));
+    lm.stop(m.id);
+    release();
+    await new Promise((r) => setTimeout(r, 20));
+    expect(started).toEqual([]);
+    expect(lm.list().monitors[0].status).toBe('detenido');
+    lm.shutdown();
   });
 });
