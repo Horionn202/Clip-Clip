@@ -751,7 +751,7 @@ export function registerIpc(ctx: IpcContext): void {
     const comp = composition == null ? undefined : compositionSchema.parse(composition);
     const errs = comp ? compositionErrors(compositionOf({ ...clip, composition: comp })) : [];
     if (errs.length) throw new UserFacingError(errs[0]);
-    const view = comp ? { ...clip, composition: { ...clip.composition, ...comp, manualOverride: true }, layout: comp.template, camRect: comp.facecamRect } : { ...clip, layout: l, camRect: cam };
+    const view = comp ? { ...clip, composition: { ...clip.composition, ...comp, manualOverride: true }, layout: comp.template, camRect: comp.facecamRect } : { ...clip, composition: undefined, layout: l, camRect: cam };
     return renderPreview(env, { ...view, start: draft.start, end: draft.end }, path.join(jobDir(ctx.jobsDir, job.id), 'frames'), name);
   });
   h('clips:words', (jobId: unknown, clipId: unknown, range: unknown) => {

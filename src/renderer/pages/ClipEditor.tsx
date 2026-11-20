@@ -98,6 +98,8 @@ export function EditClipModal({ open, onClose, job, clip, onError, onInfo }: { o
   const [cues, setCues] = useState<Cue[]>([]);
   const [cuesTouched, setCuesTouched] = useState(false);
   const [cuesReset, setCuesReset] = useState(false);
+  /** Inicio (s del vídeo) al que son relativos los tiempos de `cues`. */
+  const [cuesOrigin, setCuesOrigin] = useState(clip.start);
   const [sel, setSel] = useState(0);
   const [preview, setPreview] = useState<string | null>(null);
   const [busy, setBusy] = useState<'' | 'preview' | 'save' | 'render'>('');
@@ -116,6 +118,7 @@ export function EditClipModal({ open, onClose, job, clip, onError, onInfo }: { o
     setResetAuto(false);
     setCuesTouched(false);
     setCuesReset(false);
+    setCuesOrigin(clip.start);
     setPreview(null);
     setErr('');
     setSel(0);
@@ -163,7 +166,11 @@ export function EditClipModal({ open, onClose, job, clip, onError, onInfo }: { o
       };
     }
     if (cuesReset) p.subtitleCues = null;
-    else if (cuesTouched) p.subtitleCues = cues;
+    else if (cuesTouched) {
+      // Si el tramo cambió en esta misma sesión, los tiempos se pasan al nuevo inicio (siguen pegados a las mismas palabras).
+      const shift = cuesOrigin - Number(start);
+      p.subtitleCues = shift ? cues.map((c) => ({ ...c, start: Math.max(0, c.start + shift), end: Math.max(0, c.end + shift) })).filter((c) => c.end > 0) : cues;
+    }
     return p;
   };
   const run = async (kind: 'preview' | 'save' | 'render', fn: () => Promise<void>, close = false) => {
@@ -181,7 +188,8 @@ export function EditClipModal({ open, onClose, job, clip, onError, onInfo }: { o
   const quickPreview = () =>
     run('preview', async () =>
       setPreview(
-        await api().previewLayout(job.id, clip.id, comp.template, comp.facecamRect ?? null, { start: Number(start), end: Number(end) }, {
+        // Sólo una composición editada (o ya manual) se envía como ajuste manual; la automática conserva el desplazamiento global.
+        await api().previewLayout(job.id, clip.id, comp.template, comp.facecamRect ?? null, { start: Number(start), end: Number(end) }, !compTouched && (resetAuto || !clip.composition?.manualOverride) ? null : {
           template: comp.template,
           facecamRect: comp.facecamRect,
           facecamCrop: comp.facecamCrop,
@@ -373,6 +381,7 @@ export function EditClipModal({ open, onClose, job, clip, onError, onInfo }: { o
                   .clipWords(job.id, clip.id, { start: Number(start), end: Number(end) })
                   .then((w) => {
                     setCues(buildCues(w, Number(start), Number(end)));
+                    setCuesOrigin(Number(start));
                     setCuesTouched(false);
                     setCuesReset(true);
                   });
