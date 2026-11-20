@@ -58,6 +58,8 @@ export const settingsPatchSchema = z
     maxSourceMinutes: z.number().int().min(1).max(600),
     maxDownloadMB: z.number().int().min(10).max(20000),
     minFreeDiskMB: z.number().int().min(100).max(500000),
+    liveTempLimitMB: z.number().int().min(256).max(500000),
+    autoCleanLiveTemps: z.boolean(),
     cropOffsetX: z.number().min(-1).max(1),
     defaultLayout: z.enum(['auto', ...LAYOUT_IDS]),
     subtitleFontSize: z.number().int().min(30).max(140),
@@ -120,7 +122,8 @@ export const clipPatchSchema = z
 export const layoutIdSchema = z.enum(LAYOUT_IDS);
 
 export const cleanupOptionsSchema = z
-  .object({ source: z.boolean(), audio: z.boolean(), frames: z.boolean(), temp: z.boolean(), transcript: z.boolean(), internalClips: z.boolean() })
+  .object({ source: z.boolean(), audio: z.boolean(), frames: z.boolean(), temp: z.boolean(), transcript: z.boolean(), internalClips: z.boolean(),
+    sourceOnlyExported: z.boolean().optional() })
   .strict();
 
 export const previewRangeSchema = z.object({ start: z.number().finite().min(0), end: z.number().finite().min(0) }).strict();

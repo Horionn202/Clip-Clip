@@ -86,7 +86,8 @@ export function SettingsPage(props: { settings: Settings; onChange: (s: Settings
         <div className="grid2">
           <NumField label="Duración máx. del vídeo (min)" value={s.maxSourceMinutes} min={1} max={600} onSave={(v) => patch({ maxSourceMinutes: v })} />
           <NumField label="Tamaño máx. de descarga (MB)" value={s.maxDownloadMB} min={10} max={20000} onSave={(v) => patch({ maxDownloadMB: v })} />
-          <NumField label="Espacio libre mínimo (MB)" value={s.minFreeDiskMB} min={100} max={500000} onSave={(v) => patch({ minFreeDiskMB: v })} />
+          <NumField label="Espacio mínimo libre de seguridad (MB, por defecto 10 240)" value={s.minFreeDiskMB} min={100} max={500000} onSave={(v) => patch({ minFreeDiskMB: v })} />
+          <NumField label="Límite de temporales por directo (MB, por defecto 2048)" value={s.liveTempLimitMB ?? 2048} min={256} max={500000} onSave={(v) => patch({ liveTempLimitMB: v })} />
           <NumField label="Trabajos simultáneos (1–2)" value={s.maxConcurrentJobs} min={1} max={2} onSave={(v) => patch({ maxConcurrentJobs: v })} />
         </div>
   
@@ -129,11 +130,11 @@ export function SettingsPage(props: { settings: Settings; onChange: (s: Settings
         </p>
         <div className="grid2">
           <label className="field">
-            <span>Conservar vídeos originales</span>
+            <span>Vídeo fuente tras exportar</span>
             <select value={s.keepSource} onChange={(e) => patch({ keepSource: e.target.value as Settings['keepSource'] })}>
-              <option value="confirmar">Hasta que pulse «Liberar espacio» (recomendado)</option>
-              <option value="hasta-exportar">Hasta exportar todos los clips (se verifica cada export)</option>
-              <option value="siempre">Siempre (permite volver a renderizar)</option>
+              <option value="confirmar">Preguntar cada vez (se borra sólo con «Liberar espacio»)</option>
+              <option value="hasta-exportar">Borrar automáticamente tras confirmar la exportación de todos los clips</option>
+              <option value="siempre">Conservar (permite volver a renderizar)</option>
             </select>
           </label>
           <label className="field">
@@ -148,6 +149,10 @@ export function SettingsPage(props: { settings: Settings; onChange: (s: Settings
         <label className="check">
           <input type="checkbox" checked={s.keepTranscript} onChange={(e) => patch({ keepTranscript: e.target.checked })} />
           <span>Conservar la transcripción (ocupa poco y permite rehacer subtítulos)</span>
+        </label>
+        <label className="check">
+          <input type="checkbox" checked={s.autoCleanLiveTemps !== false} onChange={(e) => patch({ autoCleanLiveTemps: e.target.checked })} />
+          <span>Limpiar automáticamente los temporales de los directos terminados (recomendado)</span>
         </label>
         <label className="check">
           <input type="checkbox" checked={!!s.deleteExportsAfterPublish} onChange={(e) => patch({ deleteExportsAfterPublish: e.target.checked })} />

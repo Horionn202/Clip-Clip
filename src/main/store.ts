@@ -41,7 +41,9 @@ export function defaultSettings(exportDir: string): Settings {
     maxConcurrentJobs: 1,
     maxSourceMinutes: 180,
     maxDownloadMB: 4096,
-    minFreeDiskMB: 2048,
+    minFreeDiskMB: 10240,
+    liveTempLimitMB: 2048,
+    autoCleanLiveTemps: true,
     cropOffsetX: 0,
     defaultLayout: 'auto',
     subtitleFontSize: 84,
@@ -60,6 +62,8 @@ export function migrateSettings(defaults: Settings, saved: Partial<Settings>): S
   const out: Settings = { ...defaults, ...saved };
   // Antes '' significaba autodetectar sin que el usuario lo eligiera: ahora el idioma se fuerza (español por defecto).
   if (!out.whisperLanguage) out.whisperLanguage = 'es';
+  // El mínimo antiguo por defecto (2 GB) era poco para directos: quien no lo cambió pasa a 10 GB.
+  if (saved.minFreeDiskMB === 2048) out.minFreeDiskMB = 10240;
   if (saved.subtitleActiveColor === '#3B82F6') out.subtitleActiveColor = '#00C285';
   if (saved.keepTemp === undefined && saved.deleteTempAfterCompletion !== undefined) {
     out.keepTemp = saved.deleteTempAfterCompletion ? 'tras-completar' : 'siempre';

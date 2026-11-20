@@ -7,6 +7,8 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { Job } from '../shared/types';
 import {
+  planSegmentCleanup,
+  storageLevel,
   LIVE_DEFAULTS,
   blockHash,
   blockWindow,
@@ -47,6 +49,12 @@ export interface LiveDeps {
   log: (msg: string, extra?: unknown) => void;
   run?: (cmd: string, args: string[], opts: { signal?: AbortSignal; timeoutMs?: number; cwd?: string }) => Promise<RunResult>;
   now?: () => number;
+  /** Límite de temporales por monitor y espacio libre mínimo del disco (bytes). */
+  limits?: () => { tempLimitBytes: number; minFreeBytes: number };
+  /** Espacio libre del disco donde está la carpeta (undefined si no se puede medir). */
+  freeDiskBytes?: (dir: string) => number | undefined;
+  /** Limpieza automática al terminar o detener (por defecto sí). */
+  autoClean?: () => boolean;
 }
 
 interface Runtime {
@@ -64,6 +72,8 @@ interface Runtime {
   reconnectTimer?: NodeJS.Timeout;
   /** Clips ya generados (tiempos absolutos de la grabación) para deduplicar. */
   absClips: AbsClip[];
+  /** Muestra anterior del tamaño de la carpeta, para estimar cuánto falta hasta el límite. */
+  lastBytes?: { at: number; bytes: number };
 }
 
 const TERMINAL = ['completed', 'failed', 'cancelled'];
@@ -85,11 +95,35 @@ export class LiveManager {
     this.ack = saved.ack === true;
     const now = new Date().toISOString();
     // Tras un cierre: los monitores activos quedan en pausa (reanudables) y se registra el hueco.
-    for (const m of saved.monitors ?? []) this.monitors.set(m.id, recoverMonitor(m, now));
+    for (const m of saved.monitors ?? []) this.monitors.set(m.id, { ...recoverMonitor(m, now), settings: validateLiveSettings(m.settings ?? {}) });
     this.flush();
+    this.sweepOnStart();
     // Bloques que quedaron «procesando» (incluso en monitores detenidos o pausados): se vuelve a revisar su
     // trabajo para cerrarlos (procesado o error reintentable) y limpiar; nunca se quedan colgados.
     for (const m of this.monitors.values()) if (m.blocks.some((b) => b.status === 'procesando')) this.ensureTick(m.id);
+  }
+
+  /**
+   * Tras un cierre inesperado: los monitores que ya no graban (detenidos o terminados) se limpian según su retención,
+   * y las carpetas de monitores que ya no existen (restos huérfanos) se borran. Siempre dentro de la carpeta de directos.
+   */
+  private sweepOnStart(): void {
+    for (const m of this.monitors.values()) if ((m.status === 'detenido' || m.status === 'finalizado') && (this.d.autoClean?.() ?? true)) this.cleanupSegments(m.id, true);
+    let entries: string[] = [];
+    try {
+      entries = fs.readdirSync(this.d.liveDir);
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      if (this.monitors.has(e) || !/^[a-z0-9-]{8,64}$/.test(e)) continue;
+      const dir = path.join(this.d.liveDir, e);
+      if (isInside(this.d.liveDir, dir) && dir !== path.resolve(this.d.liveDir)) {
+        const bytes = dirBytes(dir);
+        fs.rmSync(dir, { recursive: true, force: true });
+        this.d.log('directo: carpeta huérfana eliminada', { carpeta: e, bytes });
+      }
+    }
   }
 
   private run(cmd: string, args: string[], opts: { signal?: AbortSignal; timeoutMs?: number; cwd?: string }): Promise<RunResult> {
@@ -207,14 +241,15 @@ export class LiveManager {
     const pending = m.blocks.some((b) => b.status === 'procesando');
     this.stopRuntime(id, !pending);
     this.recordFailedAsGaps(id);
-    this.cleanupSegments(id, true);
+    if (this.d.autoClean?.() ?? true) this.cleanupSegments(id, true);
     if (pending) this.ensureTick(id);
     return this.set(id, { status: m.status === 'finalizado' ? 'finalizado' : 'detenido', finishedAt: m.finishedAt ?? new Date().toISOString() });
   }
 
   /** Borra el registro y los temporales del monitor (nunca los trabajos ni los clips generados). */
-  remove(id: string): void {
+  remove(id: string): { freedBytes: number; clips: number } {
     const m = this.must(id);
+    const freedBytes = dirBytes(this.dirOf(id));
     if (isActive(m.status)) throw new UserFacingError('Detén el monitor antes de quitarlo.');
     // Los bloques en cola o en proceso no dependen de esta carpeta: su trabajo enlazó el vídeo en la suya al
     // encolarse. Siguen procesándose y sus clips aparecen en Resultados aunque se quite el monitor.
@@ -222,6 +257,26 @@ export class LiveManager {
     fs.rmSync(this.dirOf(id), { recursive: true, force: true });
     this.monitors.delete(id);
     this.flush();
+    return { freedBytes, clips: m.clipsGenerated };
+  }
+
+  /** Tamaño de los temporales de cada monitor (para el centro de almacenamiento). */
+  usage(): { id: string; title: string; active: boolean; bytes: number; clips: number }[] {
+    return [...this.monitors.values()].map((m) => ({ id: m.id, title: m.title ?? 'Directo', active: isActive(m.status) || m.status === 'pausado', bytes: dirBytes(this.dirOf(m.id)), clips: m.clipsGenerated }));
+  }
+
+  /**
+   * «Liberar temporales ahora»: en monitores terminados o detenidos, todo lo que ya no hace falta; en uno pausado o
+   * activo, sólo lo procesado (nunca lo pendiente ni lo que usa un trabajo). Devuelve lo liberado.
+   */
+  freeTemps(id?: string): number {
+    let freed = 0;
+    for (const m of [...this.monitors.values()]) {
+      if (id && m.id !== id) continue;
+      const done = m.status === 'detenido' || m.status === 'finalizado';
+      freed += this.cleanupSegments(m.id, done, 'none');
+    }
+    return freed;
   }
 
   shutdown(): void {
@@ -448,7 +503,7 @@ export class LiveManager {
         m = this.monitors.get(id)!;
         if (m.status === 'detenido' || m.status === 'finalizado') {
           this.recordFailedAsGaps(id);
-          this.cleanupSegments(id, true);
+          if (this.d.autoClean?.() ?? true) this.cleanupSegments(id, true);
           this.stopRuntime(id, true);
           return;
         }
@@ -459,6 +514,7 @@ export class LiveManager {
       const done = new Set(m.blocks.map((b) => b.index));
       const ready = completeSegments(files, rt.recorderRunning, done);
       m = this.set(id, { tempBytes: dirBytes(dir) });
+      if (this.guardDisk(id)) return;
       if (!ready.length) {
         if (m.status === 'finalizando' && !rt.recorderRunning) this.finalize(id);
         return;
@@ -467,6 +523,49 @@ export class LiveManager {
     } finally {
       rt.busy = false;
     }
+  }
+
+  /**
+   * Vigila el disco en cada ciclo: tamaño real de la carpeta, límite de temporales y espacio libre. Avisa al 75 % y
+   * al 90 %; al llegar al límite (tras limpiar lo posible) o con poco espacio libre, pausa de forma segura.
+   * Devuelve true si ha pausado.
+   */
+  private guardDisk(id: string): boolean {
+    const m = this.monitors.get(id);
+    if (!m || !this.d.limits) return false;
+    const { tempLimitBytes, minFreeBytes } = this.d.limits();
+    const dir = this.dirOf(id);
+    const rt = this.runtime(id);
+    const now = (this.d.now ?? Date.now)();
+    let bytes = dirBytes(dir);
+    let level = storageLevel(bytes, tempLimitBytes);
+    // Antes de pausar, se libera lo procesado (sin tocar lo pendiente ni el solape).
+    if (level === 'full') {
+      this.cleanupSegments(id, false, 'none');
+      bytes = dirBytes(dir);
+      level = storageLevel(bytes, tempLimitBytes);
+    }
+    const free = this.d.freeDiskBytes?.(dir);
+    let etaSec: number | undefined;
+    if (rt.lastBytes && bytes > rt.lastBytes.bytes && now > rt.lastBytes.at) {
+      const rate = (bytes - rt.lastBytes.bytes) / ((now - rt.lastBytes.at) / 1000);
+      if (rate > 0) etaSec = Math.max(0, Math.round((tempLimitBytes - bytes) / rate));
+    }
+    rt.lastBytes = { at: now, bytes };
+    const lowDisk = free !== undefined && free < minFreeBytes;
+    this.set(id, { tempBytes: bytes, storage: { limitBytes: tempLimitBytes, freeBytes: free, level, etaSec } });
+    if ((level === 'full' || lowDisk) && isActive(m.status)) {
+      this.stopRuntime(id, false);
+      const reason = lowDisk ? 'Queda poco espacio libre en el disco.' : 'Se alcanzó el límite de temporales del directo.';
+      this.set(id, {
+        status: 'pausado',
+        error: `${reason} El directo se pausó de forma segura: libera temporales o sube el límite en Configuración y pulsa «Reanudar».`,
+        gaps: [...m.gaps, { at: new Date(now).toISOString(), reason }],
+      });
+      this.d.log('directo: pausa por disco', { id, bytes, free, limite: tempLimitBytes });
+      return true;
+    }
+    return false;
   }
 
   /** Registra (o sustituye, en un reintento) la entrada de un bloque. */
@@ -605,37 +704,60 @@ export class LiveManager {
       lastProcessedSec: Math.max(m.lastProcessedSec, b.endSec),
     });
     this.d.log('directo: bloque procesado', { id, index, clips: kept, duplicados: dups });
-    this.cleanupSegments(id, false, index);
+    this.cleanupSegments(id, false);
   }
 
-  /** Borra temporales ya procesados: el bloque y los segmentos anteriores al último (que hace falta para el solape). */
-  private cleanupSegments(id: string, all: boolean, lastDone?: number): void {
+  /**
+   * Borra los temporales que ya no hacen falta según la retención del monitor (o la indicada). `final`: el directo
+   * terminó o se detuvo, así que lo pendiente tampoco se procesará. Nunca toca lo que necesita un trabajo activo.
+   * Devuelve los bytes liberados.
+   */
+  private cleanupSegments(id: string, final: boolean, retention?: LiveMonitor['settings']['retention']): number {
     const m = this.monitors.get(id);
-    if (!m) return;
+    if (!m) return 0;
     const dir = this.dirOf(id);
-    if (!fs.existsSync(dir)) return;
-    let freed = 0;
-    for (const f of fs.readdirSync(dir)) {
-      const full = path.join(dir, f);
-      const seg = segmentIndex(f);
-      const isBlock = /^block_\d{5}\.mp4$/.test(f);
-      const processed = seg !== null && m.blocks.some((b) => b.index === seg && (b.status === 'procesado' || b.status === 'omitido'));
-      const removable = isBlock ? all || (lastDone !== undefined && f === `block_${String(lastDone).padStart(5, '0')}.mp4`) : seg !== null && (all || (processed && lastDone !== undefined && seg < lastDone));
-      if (!removable || (m.settings.keepSegments && !isBlock)) continue;
-      // Un bloque cuyo trabajo sigue en cola o en proceso aún se necesita (el trabajo lo enlaza al empezar).
-      if (isBlock) {
-        const b = m.blocks.find((x) => f === `block_${String(x.index).padStart(5, '0')}.mp4`);
-        const job = b?.jobId ? this.d.getJob(b.jobId) : undefined;
-        if (job && !TERMINAL.includes(job.status)) continue;
-      }
+    if (!fs.existsSync(dir)) return 0;
+    const files = fs.readdirSync(dir).flatMap((name) => {
       try {
-        freed += fs.statSync(full).size;
-        fs.rmSync(full, { force: true });
+        const st = fs.statSync(path.join(dir, name));
+        return st.isFile() ? [{ name, bytes: st.size }] : [];
       } catch {
-        /* se reintenta en el siguiente ciclo */
+        return [];
+      }
+    });
+    // Bloques cuyo trabajo sigue en cola o en proceso: su vídeo y su segmento se conservan.
+    const busy = new Set(
+      m.blocks
+        .filter((b) => {
+          const job = b.jobId ? this.d.getJob(b.jobId) : undefined;
+          return b.status === 'en-cola' || (job ? !TERMINAL.includes(job.status) : b.status === 'procesando');
+        })
+        .map((b) => b.index),
+    );
+    const drop = planSegmentCleanup(files, m.blocks, {
+      retention: retention ?? m.settings.retention ?? 'none',
+      blockSec: m.settings.blockSec,
+      capBytes: (m.settings.retentionCapMB ?? 2048) * 1024 * 1024,
+      final,
+      busyBlocks: busy,
+    });
+    let freed = 0;
+    for (const name of drop) {
+      const full = path.join(dir, name);
+      if (!isInside(dir, full)) continue;
+      try {
+        const size = fs.statSync(full).size;
+        fs.rmSync(full, { force: true });
+        freed += size;
+      } catch {
+        /* en uso: se reintenta en el siguiente ciclo */
       }
     }
-    if (freed) this.set(id, { freedBytes: m.freedBytes + freed, tempBytes: dirBytes(dir) });
+    if (freed) {
+      this.set(id, { freedBytes: m.freedBytes + freed, tempBytes: dirBytes(dir) });
+      this.d.log('directo: temporales liberados', { id, archivos: drop.length, bytes: freed, final });
+    }
+    return freed;
   }
 
   /** Antes de la limpieza final: los bloques que quedaron en error se anotan como hueco (no desaparecen en silencio). */
@@ -650,7 +772,7 @@ export class LiveManager {
   private finalize(id: string): void {
     this.stopRuntime(id, true);
     this.recordFailedAsGaps(id);
-    this.cleanupSegments(id, true);
+    if (this.d.autoClean?.() ?? true) this.cleanupSegments(id, true);
     const m = this.monitors.get(id)!;
     this.set(id, { status: 'finalizado', finishedAt: new Date().toISOString(), notice: `Directo terminado: ${m.blocks.filter((b) => b.status === 'procesado').length} bloques procesados y ${m.clipsGenerated} clips generados.` });
     this.d.log('directo: finalizado', { id, bloques: m.blocks.length, clips: m.clipsGenerated, liberado: m.freedBytes });

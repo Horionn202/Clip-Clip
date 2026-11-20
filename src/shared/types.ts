@@ -354,6 +354,10 @@ export interface Settings {
   maxSourceMinutes: number;
   maxDownloadMB: number;
   minFreeDiskMB: number;
+  /** Límite de temporales por directo (MB): al llegar se libera lo procesado y, si no basta, se pausa. */
+  liveTempLimitMB: number;
+  /** Limpiar los temporales de los directos al terminar o detenerse (según su retención). */
+  autoCleanLiveTemps: boolean;
   cropOffsetX: number; // -1 (izquierda) .. 1 (derecha), 0 = centro
   /** Layout por defecto de los clips: «auto» usa el análisis visual con fallback seguro. */
   defaultLayout: LayoutChoice;
@@ -468,7 +472,11 @@ export interface ClipsApi {
   livePause(id: string): Promise<import('./live').LiveMonitor>;
   liveResume(id: string): Promise<import('./live').LiveMonitor>;
   liveStop(id: string): Promise<import('./live').LiveMonitor>;
-  liveRemove(id: string): Promise<void>;
+  liveRemove(id: string): Promise<{ freedBytes: number; clips: number }>;
+  liveFreeTemps(id?: string): Promise<number>;
+  cacheSize(): Promise<number>;
+  clearCache(): Promise<number>;
+  liveUsage(): Promise<{ id: string; title: string; active: boolean; bytes: number; clips: number }[]>;
   liveRetryBlock(id: string, index: number): Promise<import('./live').LiveMonitor>;
   onLiveUpdate(cb: (m: import('./live').LiveMonitor) => void): () => void;
   /** Vuelve a transcribir un trabajo terminado sin descargar ni analizar de nuevo. */

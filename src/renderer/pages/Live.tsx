@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { DURATION_PRESETS } from '../../shared/types';
-import { LIVE_DEFAULTS, MONITOR_STATUS_LABELS, isActive, monitorSummary, type LiveMonitor, type LiveSettings } from '../../shared/live';
+import { LIVE_DEFAULTS, MONITOR_STATUS_LABELS, RETENTION_LABELS, estimateLiveBytes, isActive, monitorSummary, type LiveMonitor, type LiveSettings, type SegmentRetention } from '../../shared/live';
 import { humanSize } from '../../shared/storage';
 import { fmtMs } from '../../shared/jobView';
 import { api, errMsg } from '../api';
@@ -19,6 +19,14 @@ export function LivePage({ onOpenResults }: { onOpenResults: () => void }) {
   const [settings, setSettings] = useState<LiveSettings>(LIVE_DEFAULTS);
   const [warnOpen, setWarnOpen] = useState(false);
   const [detail, setDetail] = useState<LiveMonitor | null>(null);
+  const [allOpen, setAllOpen] = useState(false);
+  const [removing, setRemoving] = useState<LiveMonitor | null>(null);
+  const [info, setInfo] = useState('');
+  const freeNow = (id: string) =>
+    act(async () => {
+      const freed = await api().liveFreeTemps(id);
+      setInfo(freed ? `Se liberaron ${humanSize(freed)} de temporales del directo. Los clips se conservaron.` : 'No había temporales que se pudieran liberar (lo pendiente y lo que usa un bloque en proceso se conservan).');
+    });
   const [err, setErr] = useState('');
   const [now, setNow] = useState(Date.now());
 
@@ -84,9 +92,26 @@ export function LivePage({ onOpenResults }: { onOpenResults: () => void }) {
             <input type="number" min={1} max={5} value={settings.maxClipsPerBlock} onChange={(e) => setSettings({ ...settings, maxClipsPerBlock: Number(e.target.value) })} />
           </label>
         </div>
-        <label className="check">
-          <input type="checkbox" checked={settings.keepSegments} onChange={(e) => setSettings({ ...settings, keepSegments: e.target.checked })} />
-          <span>Conservar los segmentos grabados tras procesarlos (ocupa disco; por defecto se borran y se conservan los clips)</span>
+        <label className="field">
+          <span>Conservar grabación temporal del directo para edición/reintentos</span>
+          <select
+            value={settings.retention}
+            onChange={(e) => {
+              const r = e.target.value as SegmentRetention;
+              if (r === 'all') setAllOpen(true);
+              else setSettings({ ...settings, retention: r });
+            }}
+          >
+            {(Object.keys(RETENTION_LABELS) as SegmentRetention[]).map((r) => (
+              <option key={r} value={r}>
+                {RETENTION_LABELS[r]}
+              </option>
+            ))}
+          </select>
+          <small className="muted">
+            Un directo de 1 hora puede ocupar aproximadamente {humanSize(estimateLiveBytes(3600))} (720p). Los clips viven en sus trabajos y no necesitan la grabación: lo recomendado es no conservarla.
+            {settings.retention === 'all' && <b className="warn-text"> Con «Conservar todo» el directo sólo se frena por el límite global de temporales.</b>}
+          </small>
         </label>
         <div className="row">
           <button className="primary" disabled={!url.trim()} onClick={() => (ack ? void create(false) : setWarnOpen(true))}>
@@ -96,6 +121,14 @@ export function LivePage({ onOpenResults }: { onOpenResults: () => void }) {
         {err && (
           <div className="banner error small" role="alert">
             {err}
+          </div>
+        )}
+        {info && (
+          <div className="banner info small" role="status">
+            <span className="grow">{info}</span>
+            <Button variant="ghost" size="sm" onClick={() => setInfo('')}>
+              Cerrar
+            </Button>
           </div>
         )}
       </div>
@@ -119,10 +152,32 @@ export function LivePage({ onOpenResults }: { onOpenResults: () => void }) {
                 <div className="metric"><span className="m-k">Clips</span><span className="m-v">{m.clipsGenerated}</span></div>
                 <div className="metric"><span className="m-k">Disco temporal</span><span className="m-v">{humanSize(m.tempBytes)}</span></div>
               </div>
+              {m.storage && (
+                <p className="small muted" aria-live="polite">
+                  Disco temporal {humanSize(m.tempBytes)} de {humanSize(m.storage.limitBytes)}
+                  {m.storage.freeBytes !== undefined ? ` · libre en el disco ${humanSize(m.storage.freeBytes)}` : ''}
+                  {m.storage.etaSec !== undefined && isActive(m.status) ? ` · límite en ≈ ${dur(m.storage.etaSec)}` : ''}
+                </p>
+              )}
+              {m.storage && (m.storage.level === 'warn' || m.storage.level === 'high') && (
+                <div className={`banner ${m.storage.level === 'high' ? 'error' : 'warn'} small`} role="status">
+                  <span className="grow">
+                    {m.storage.level === 'high' ? 'Los temporales del directo están al 90 % del límite: si se llena, el directo se pausará.' : 'Los temporales del directo superan el 75 % del límite.'}
+                  </span>
+                  <Button size="sm" onClick={() => freeNow(m.id)}>
+                    Liberar temporales ahora
+                  </Button>
+                </div>
+              )}
               {m.notice && <p className="small muted">{m.notice}</p>}
               {m.error && (
                 <div className="banner error small" role="alert">
-                  {m.error}
+                  <span className="grow">{m.error}</span>
+                  {m.status === 'pausado' && (
+                    <Button size="sm" onClick={() => freeNow(m.id)}>
+                      Liberar temporales ahora
+                    </Button>
+                  )}
                 </div>
               )}
               <div className="row">
@@ -164,6 +219,49 @@ export function LivePage({ onOpenResults }: { onOpenResults: () => void }) {
         </ul>
       </ConfirmModal>
 
+      <ConfirmModal
+        open={allOpen}
+        title="Conservar toda la grabación"
+        confirmLabel="Conservar todo"
+        danger
+        onClose={() => setAllOpen(false)}
+        onConfirm={() => (setAllOpen(false), setSettings({ ...settings, retention: 'all' }))}
+      >
+        <p>
+          Se guardará <b>toda</b> la grabación del directo: aproximadamente <b>{humanSize(estimateLiveBytes(3600))} por hora</b>. Un directo de 3 horas puede superar los {humanSize(estimateLiveBytes(3 * 3600))}.
+        </p>
+        <p className="small muted">Los clips no la necesitan. Si se llega al límite de temporales de Configuración, el directo se pausará de forma segura.</p>
+      </ConfirmModal>
+      <ConfirmModal
+        open={!!removing}
+        title="Quitar el monitor"
+        confirmLabel={removing ? `Quitar y liberar ${humanSize(removing.tempBytes)}` : 'Quitar'}
+        onClose={() => setRemoving(null)}
+        onConfirm={() =>
+          act(async () => {
+            const r = removing!;
+            setRemoving(null);
+            const res = await api().liveRemove(r.id);
+            setMonitors((p) => p.filter((x) => x.id !== r.id));
+            setDetail(null);
+            setInfo(`Se liberaron ${humanSize(res.freedBytes)}. Tus ${res.clips} clips se conservaron.`);
+          })
+        }
+      >
+        {removing && (
+          <ul className="summary-list">
+            <li>
+              <span>Grabación temporal que se libera</span>
+              <b>{humanSize(removing.tempBytes)}</b>
+            </li>
+            <li>
+              <span>Clips que se conservan (en Resultados)</span>
+              <b>{removing.clipsGenerated}</b>
+            </li>
+          </ul>
+        )}
+        <p className="small muted">Sólo se borran los temporales del monitor y su registro. Los trabajos, los clips y los exportados no se tocan.</p>
+      </ConfirmModal>
       <Modal open={!!shown} onClose={() => setDetail(null)} title={shown?.title ?? 'Monitor de directo'} size="md">
         {shown && (
           <>
@@ -206,9 +304,12 @@ export function LivePage({ onOpenResults }: { onOpenResults: () => void }) {
               ))}
             </ol>
             {!isActive(shown.status) && (
-              <button className="ghost" onClick={() => act(async () => (await api().liveRemove(shown.id), setMonitors((p) => p.filter((x) => x.id !== shown.id)), setDetail(null)))}>
-                Quitar de la lista (los clips se conservan)
-              </button>
+              <div className="row">
+                <Button onClick={() => freeNow(shown.id)}>Liberar temporales ({humanSize(shown.tempBytes)})</Button>
+                <Button variant="ghost" aria-haspopup="dialog" onClick={() => setRemoving(shown)}>
+                  Quitar de la lista…
+                </Button>
+              </div>
             )}
           </>
         )}

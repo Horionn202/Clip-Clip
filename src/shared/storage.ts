@@ -38,6 +38,8 @@ export interface CleanupOptions {
   transcript: boolean;
   /** Clips internos: sólo los que tienen un export verificado. */
   internalClips: boolean;
+  /** Con `source`: sólo el vídeo de trabajos cuyos clips están todos exportados (verificados). */
+  sourceOnlyExported?: boolean;
 }
 
 /** «Liberar espacio» por defecto: todo lo regenerable; transcripción opcional (desactivada). */

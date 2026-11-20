@@ -488,7 +488,7 @@ export function JobsPage(props: {
           )}
         </div>
       )}
-      <FreeSpaceDialog open={freeOpen} onClose={() => setFreeOpen(false)} />
+      <FreeSpaceDialog open={freeOpen} onClose={() => setFreeOpen(false)} onSelectJobs={() => (setFilter('completados'), setSelecting(true), setSel(new Set()))} />
 
       <div className="tabs" role="tablist" aria-label="Filtrar trabajos">
         {JOB_FILTERS.map((f) => (
