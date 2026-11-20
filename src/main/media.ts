@@ -70,7 +70,7 @@ export function karaokeEvents(c: Cue, activeColor: string): { start: number; end
  * Estilo «karaoke»: la palabra que se dice resalta; los cues sin tiempos por palabra caen al estándar.
  */
 export function buildAss(words: Word[], clipStart: number, clipEnd: number, fontSize = 72, cues?: Cue[], out: { w: number; h: number } = { w: 1080, h: 1920 }, o: AssOptions = {}): string {
-  const list = cues ?? buildCues(words, clipStart, clipEnd).map((c) => ((words as { approx?: boolean }[]).some((w) => w.approx) ? { ...c, words: undefined, noWordTiming: true } : c));
+  const list = cues ?? buildCues(words, clipStart, clipEnd);
   const color = assColor(o.activeColor);
   const lines: string[] = [];
   for (const c of list) {

@@ -6,6 +6,8 @@ export interface TimedWord {
   start: number;
   end: number;
   text: string;
+  /** Tiempo inventado a partir de un segmento (la transcripción no traía tiempos por palabra). */
+  approx?: boolean;
 }
 
 export interface Cue {
@@ -46,7 +48,7 @@ const endsClause = (s: string) => /[,;:]["»”']?$/.test(s);
 export function normalizeWords(words: TimedWord[]): TimedWord[] {
   const ws = words
     .filter((w) => Number.isFinite(w.start) && Number.isFinite(w.end) && clean(w.text))
-    .map((w) => ({ start: Math.max(0, w.start), end: Math.max(w.start, w.end), text: clean(w.text) }))
+    .map((w) => ({ start: Math.max(0, w.start), end: Math.max(w.start, w.end), text: clean(w.text), ...(w.approx ? { approx: true } : {}) }))
     .sort((a, b) => a.start - b.start);
   for (let i = 0; i < ws.length - 1; i++) if (ws[i].end > ws[i + 1].start) ws[i].end = Math.max(ws[i].start, ws[i + 1].start);
   return ws;
@@ -90,7 +92,9 @@ export function buildCues(words: TimedWord[], clipStart: number, clipEnd: number
     if (en - st < o.minDuration) en = Math.min(st + o.minDuration, nextStart);
     if (en <= st) continue;
     const words = g.map((w, k) => ({ start: round(Math.max(st, w.start - clipStart)), end: round(Math.min(k === g.length - 1 ? en : g[k + 1].start - clipStart, Math.max(w.end - clipStart, w.start - clipStart + 0.05), en)), text: w.text }));
-    cues.push({ start: round(st), end: round(en), text: g.map((w) => w.text).join(' '), words });
+    const text = g.map((w) => w.text).join(' ');
+    // Sin tiempos reales por palabra no se guardan tiempos inventados: el cue queda marcado (subtítulo estándar).
+    cues.push(g.some((w) => w.approx) ? { start: round(st), end: round(en), text, noWordTiming: true } : { start: round(st), end: round(en), text, words });
   }
   return cues;
 }
@@ -121,7 +125,8 @@ export function sanitizeCues(cues: Cue[], clipDuration: number): Cue[] {
 export function splitCue(cues: Cue[], index: number, at: number): Cue[] {
   const c = cues[index];
   if (!c) return cues;
-  const words = c.text.split(' ');
+  // Mismos tokens que wordTimings (sin vacíos por espacios repetidos o finales).
+  const words = clean(c.text).split(' ').filter(Boolean);
   if (at <= 0 || at >= words.length) return cues;
   const a = words.slice(0, at).join(' ');
   const b = words.slice(at).join(' ');
@@ -129,8 +134,9 @@ export function splitCue(cues: Cue[], index: number, at: number): Cue[] {
   // Con tiempos reales, el corte cae justo cuando empieza la palabra; si no, se reparte por caracteres.
   const mid = !ws[at].approx ? ws[at].start : round(c.start + (c.end - c.start) * (a.length / (a.length + b.length)));
   const exact = ws.every((w) => !w.approx);
-  const left: Cue = { start: c.start, end: mid, text: a, ...(exact ? { words: c.words!.slice(0, at) } : {}) };
-  const right: Cue = { start: mid, end: c.end, text: b, ...(exact ? { words: c.words!.slice(at) } : {}) };
+  const keep = (cw: TimedWord[] | undefined): Partial<Cue> => (c.noWordTiming ? { noWordTiming: true } : exact && cw ? { words: cw } : {});
+  const left: Cue = { start: c.start, end: mid, text: a, ...keep(c.words?.slice(0, at)) };
+  const right: Cue = { start: mid, end: c.end, text: b, ...keep(c.words?.slice(at)) };
   return [...cues.slice(0, index), left, right, ...cues.slice(index + 1)];
 }
 
@@ -140,7 +146,7 @@ export function mergeCues(cues: Cue[], index: number): Cue[] {
   const b = cues[index + 1];
   if (!a || !b) return cues;
   const words = a.words && b.words ? [...a.words, ...b.words] : undefined;
-  return [...cues.slice(0, index), { start: a.start, end: b.end, text: `${a.text} ${b.text}`, ...(words ? { words } : {}) }, ...cues.slice(index + 2)];
+  return [...cues.slice(0, index), { start: a.start, end: b.end, text: `${a.text} ${b.text}`, ...(a.noWordTiming || b.noWordTiming ? { noWordTiming: true } : words ? { words } : {}) }, ...cues.slice(index + 2)];
 }
 
 /**

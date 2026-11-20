@@ -119,3 +119,23 @@ describe('karaoke por palabra', () => {
     });
   });
 });
+
+describe('revisión Codex (PR 17)', () => {
+  it('transcripción sin tiempos por palabra: los cues del editor quedan marcados y no inventan tiempos', () => {
+    const cues = buildCues(wordsFromSegments([W(0, 2, 'hola qué tal'), W(3, 4, 'adiós amigo')]), 0, 10);
+    expect(cues.length).toBeGreaterThan(0);
+    for (const c of cues) {
+      expect(c.noWordTiming).toBe(true);
+      expect(c.words).toBeUndefined();
+    }
+    // Se conserva al dividir, unir y sanear (lo que se guarda).
+    expect(splitCue(cues, 0, 1).every((c) => c.noWordTiming)).toBe(true);
+    expect(mergeCues(cues, 0)[0].noWordTiming).toBe(true);
+    expect(sanitizeCues(cues, 10).every((c) => c.noWordTiming)).toBe(true);
+  });
+  it('dividir un texto con espacios repetidos o finales no falla', () => {
+    expect(splitCue([{ start: 0, end: 1, text: 'hola ' }], 0, 1)).toEqual([{ start: 0, end: 1, text: 'hola ' }]);
+    const s = splitCue([{ start: 0, end: 2, text: 'hola   mundo  bonito ' }], 0, 1);
+    expect(s.map((c) => c.text)).toEqual(['hola', 'mundo bonito']);
+  });
+});
