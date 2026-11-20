@@ -330,7 +330,8 @@ export class LiveManager {
     fs.mkdirSync(dir, { recursive: true });
     let g: RunResult;
     try {
-      g = await this.lookup(id, yt, ['-g', '-f', 'b[height<=720]/b', '--no-playlist', '--no-warnings', '--', m.url]);
+      // Muchos directos sólo ofrecen vídeo y audio por separado: se piden ambos (y si no, uno combinado).
+      g = await this.lookup(id, yt, ['-g', '-f', LIVE_FORMAT, '--no-playlist', '--no-warnings', '--', m.url]);
     } catch (e) {
       // yt-dlp no arrancó, superó el tiempo o se canceló: se libera la reserva.
       rt.recorderRunning = false;
@@ -340,7 +341,7 @@ export class LiveManager {
       else if (now && (now.status === 'en-directo' || now.status === 'procesando')) void this.startRecorder(id);
       return;
     }
-    const stream = g.stdout.split(/\r?\n/).find((l) => /^https:\/\//.test(l.trim()))?.trim();
+    const streams = streamUrls(g.stdout);
     // Pausado o detenido mientras se consultaba el flujo: no se empieza a grabar.
     const live = this.monitors.get(id);
     if (gen !== rt.gen || !live || !isActive(live.status)) {
@@ -349,9 +350,12 @@ export class LiveManager {
       if (live && (live.status === 'en-directo' || live.status === 'procesando')) void this.startRecorder(id);
       return;
     }
-    if (g.code !== 0 || !stream) {
+    if (g.code !== 0 || !streams.length) {
       rt.recorderRunning = false;
-      this.set(id, { status: 'error', error: 'No se pudo obtener el flujo del directo (puede haber terminado o no permitir la descarga).' });
+      // Se muestra la causa real que da yt-dlp (sin el prefijo técnico) y se registra completa.
+      const why = (g.stderr.split('\n').filter(Boolean).slice(-1)[0] ?? '').replace(/^ERROR:\s*(\[[^\]]+\]\s*\S+:\s*)?/, '');
+      this.d.log('directo: no se pudo obtener el flujo', { id, error: g.stderr.slice(-500) });
+      this.set(id, { status: 'error', error: `No se pudo obtener el flujo del directo${why ? `: ${why}` : ''}. Pulsa «Reanudar» para reintentar.` });
       return;
     }
     // Nunca se reutiliza un nombre de segmento: se continúa tras lo ya grabado o procesado.
@@ -363,7 +367,7 @@ export class LiveManager {
     this.d.log('directo: grabación iniciada', { id, segmento: start });
     const res = await this.run(
       ff,
-      ['-hide_banner', '-loglevel', 'error', '-i', stream, '-map', '0:v:0?', '-map', '0:a:0?', '-c', 'copy', '-f', 'segment', '-segment_time', String(m.settings.blockSec), '-reset_timestamps', '1', '-segment_start_number', String(start), '-segment_format', 'mpegts', 'seg_%05d.ts'],
+      ['-hide_banner', '-loglevel', 'error', ...recorderInputs(streams), '-c', 'copy', '-f', 'segment', '-segment_time', String(m.settings.blockSec), '-reset_timestamps', '1', '-segment_start_number', String(start), '-segment_format', 'mpegts', 'seg_%05d.ts'],
       { cwd: dir, signal: ctrl.signal, timeoutMs: 12 * 60 * 60 * 1000 },
     ).catch((e) => ({ code: -1, stdout: '', stderr: String(e) }) as RunResult);
     rt.recorderRunning = false;
@@ -658,6 +662,23 @@ export function nextSegmentIndex(m: Pick<LiveMonitor, 'nextSegment' | 'blocks'>,
 }
 
 const MAX_RECONNECTS = 6;
+/** Formato del directo: vídeo ≤ 720p + audio por separado (lo habitual en YouTube Live) o, si no, combinado. */
+export const LIVE_FORMAT = 'bv*[height<=720]+ba/b[height<=720]/bv*+ba/b';
+
+/** URLs que devuelve `yt-dlp -g` (una combinada, o vídeo y audio). */
+export function streamUrls(stdout: string): string[] {
+  return stdout
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter((l) => /^https:\/\//.test(l))
+    .slice(0, 2);
+}
+
+/** Entradas y mapeo de FFmpeg: con vídeo y audio separados, cada uno de su entrada. */
+export function recorderInputs(urls: string[]): string[] {
+  if (urls.length >= 2) return ['-i', urls[0], '-i', urls[1], '-map', '0:v:0', '-map', '1:a:0'];
+  return ['-i', urls[0], '-map', '0:v:0?', '-map', '0:a:0?'];
+}
 const FORWARD_ONLY = 'Se graba sólo hacia adelante desde ahora: no se recupera lo emitido antes de empezar a vigilar, ni lo emitido durante pausas o cierres de la app.';
 
 /** Espera antes de reconectar: 3 s, 6 s, 12 s… hasta 2 min. */

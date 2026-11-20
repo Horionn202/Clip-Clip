@@ -3,7 +3,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { LiveManager, backoff, blockFitsClip, type LiveDeps } from '../src/main/liveMonitor';
+import { LIVE_FORMAT, LiveManager, backoff, blockFitsClip, recorderInputs, streamUrls, type LiveDeps } from '../src/main/liveMonitor';
 import { parseLiveStatus } from '../src/shared/live';
 import type { Job } from '../src/shared/types';
 import type { RunResult } from '../src/main/proc';
@@ -318,5 +318,14 @@ describe('flujos del monitor', () => {
     await lm.tick(m.id);
     expect(w.jobs.get('job-1')!.live!.offsetSec).toBe(60);
     lm.shutdown();
+  });
+
+  it('directos con vídeo y audio por separado: se graban ambos', () => {
+    expect(LIVE_FORMAT.startsWith('bv*[height<=720]+ba')).toBe(true);
+    const urls = streamUrls('https://v.example/video.m3u8
+https://a.example/audio.m3u8
+');
+    expect(recorderInputs(urls)).toEqual(['-i', 'https://v.example/video.m3u8', '-i', 'https://a.example/audio.m3u8', '-map', '0:v:0', '-map', '1:a:0']);
+    expect(recorderInputs(streamUrls('https://c.example/x.m3u8'))).toEqual(['-i', 'https://c.example/x.m3u8', '-map', '0:v:0?', '-map', '0:a:0?']);
   });
 });
