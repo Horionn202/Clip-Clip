@@ -335,7 +335,8 @@ export class LiveManager {
     let st: string;
     try {
       const again = await this.run(yt, ['-J', '--no-playlist', '--no-warnings', '--', cur.url], { timeoutMs: 90_000 });
-      st = again.code === 0 ? parseLiveStatus(again.stdout).state : 'not-live';
+      // Sólo se da por terminado si yt-dlp lo confirma; un fallo de red se trata como «sigue en directo» y se reconecta.
+      st = again.code === 0 ? parseLiveStatus(again.stdout).state : isNotLiveError(again.stderr) ? 'not-live' : 'live';
     } catch (e) {
       // No se pudo comprobar: se reintenta la grabación (si sigue sin poder, acabará en error reanudable).
       st = 'live';

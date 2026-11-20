@@ -8,6 +8,7 @@ import { UserFacingError } from '../shared/validation';
 import type { ResolvedTools } from './deps';
 import { parseWhisperJson } from './media';
 import { runProcess } from './proc';
+import { unloadModel } from './ollama';
 import { jobDir, transcribe, whisperLang, type PipelineContext } from './pipeline';
 import { availability, fallbackPlans, isGpuFailure, isModelCached, selectEngine } from './transcribe';
 import { differsFromRendered } from '../shared/clipEdit';
@@ -40,6 +41,8 @@ export async function retranscribeJob(job: Job, ctx: PipelineContext, s: Setting
   const plan = selectEngine(selOpts);
   if (!plan) throw new UserFacingError('No hay ningún motor de transcripción disponible.');
   if (!isModelCached(plan.engine, plan.model, gpu)) throw new UserFacingError(`El modelo «${plan.model}» no está descargado. Descárgalo primero (Configuración → Modelos).`);
+  // Igual que en el pipeline: se libera el modelo de Ollama de la VRAM antes de transcribir en GPU.
+  if (plan.device === 'cuda') await unloadModel(s.ollamaHost, s.ollamaModel).catch(() => false);
   const tmpDir = path.join(dir, 'retranscribe');
   fs.mkdirSync(tmpDir, { recursive: true });
   const lang = whisperLang(s.whisperLanguage);
