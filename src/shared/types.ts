@@ -260,7 +260,7 @@ export interface Job {
   /** Última etapa en la que entró (se conserva al fallar: «Reintentar desde este paso»). */
   stage?: MetricStage;
   /** Material reutilizado de un trabajo anterior (reintento desde un paso). */
-  reuse?: ('source' | 'audio' | 'transcript')[];
+  reuse?: ('source' | 'audio' | 'transcript' | 'clips')[];
   resumedFrom?: string;
   /** Vídeo local ya descargado (bloques de un directo): no se usa yt-dlp. */
   localSource?: string;

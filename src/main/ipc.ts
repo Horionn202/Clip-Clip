@@ -583,10 +583,13 @@ export function registerIpc(ctx: IpcContext): void {
     if (i > 1) want.push({ kind: 'source', file: files.find((f) => /^source\.(mp4|mkv|webm|mov)$/i.test(f)) });
     if (i > 2) want.push({ kind: 'audio', file: files.includes('audio.wav') ? 'audio.wav' : undefined });
     if (i > 3) want.push({ kind: 'transcript', file: files.includes('transcript.json') ? 'transcript.json' : undefined });
-    const reuse = want.filter((w) => w.file).map((w) => w.kind);
+    const reuse: ('source' | 'audio' | 'transcript' | 'clips')[] = want.filter((w) => w.file).map((w) => w.kind);
+    // Desde el render: también los momentos ya seleccionados (sin archivos ni exports del trabajo anterior).
+    const keepClips = st === 'rendering' && reuse.includes('transcript') && prev.clips.length > 0 && !!prev.analysis;
+    if (keepClips) reuse.push('clips');
     return enqueueJob(
       { url: prev.url, preset: prev.preset, maxClips: prev.maxClips, allowModelDownload: prev.allowModelDownload },
-      { reuse, resumedFrom: prev.id, sourceTitle: prev.sourceTitle, sourceDuration: prev.sourceDuration, localSource: prev.localSource, live: prev.live },
+      { reuse, resumedFrom: prev.id, ...(keepClips ? { clips: prev.clips.map((c) => ({ id: c.id, index: c.index, start: c.start, end: c.end, title: c.title, hook: c.hook, reason: c.reason, score: c.score })), analysis: prev.analysis } : {}), sourceTitle: prev.sourceTitle, sourceDuration: prev.sourceDuration, localSource: prev.localSource, live: prev.live },
       (dir) => {
         for (const w of want) {
           if (!w.file) continue;

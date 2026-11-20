@@ -59,6 +59,11 @@ export function applyClipPatch(clipId: string, patch: ClipPatch, ctx: EditContex
     }
     needsRender = true;
   }
+  // Subtítulos editados a mano y nuevo tramo: se desplazan para seguir pegados a las mismas palabras del vídeo.
+  if (patch.subtitleCues === undefined && next.subtitleCues && (next.start !== cur.start || next.end !== cur.end)) {
+    const shift = cur.start - next.start;
+    next.subtitleCues = sanitizeCues(next.subtitleCues.map((c) => ({ ...c, start: c.start + shift, end: c.end + shift })).filter((c) => c.end > 0), next.end - next.start);
+  }
   if (patch.subtitleCues !== undefined) {
     next.subtitleCues = patch.subtitleCues === null ? undefined : sanitizeCues(patch.subtitleCues, next.end - next.start);
     needsRender = true;

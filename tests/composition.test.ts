@@ -103,4 +103,9 @@ describe('edición no destructiva', () => {
     expect(layoutInputFor(clip({ composition: { template: 'gameplay_full', gameplayCrop: { x: 0, zoom: 1 } } }), W, H, 0.8).offsetX).toBe(0);
     expect(layoutInputFor(clip(), W, H, 0.8).offsetX).toBe(0.8);
   });
+  it('cambiar el tramo desplaza los subtítulos editados', () => {
+    const c = clip({ start: 10, end: 40, subtitleCues: [{ start: 5, end: 6, text: 'hola' }, { start: 0.5, end: 1, text: 'fuera' }] });
+    const n = applyClipPatch('c1', { start: 12, end: 42 }, { clips: [c], preset: 30, sourceDuration: 120 });
+    expect(n.subtitleCues).toEqual([{ start: 3, end: 4, text: 'hola' }]);
+  });
 });

@@ -302,13 +302,15 @@ export function createPipeline(ctx: PipelineContext): JobRunner {
       check(signal);
 
       // 5–6. Análisis por rondas + validación
-      enter('analyzing', `Analizando con ${s.ollamaModel}…`);
+      // Reintento desde el render: se reutilizan los momentos ya elegidos (la selección no se repite).
+      const reuseClips = !!job.reuse?.includes('clips') && job.clips.length > 0 && !!job.analysis;
+      enter('analyzing', reuseClips ? 'Reutilizando los momentos ya seleccionados…' : `Analizando con ${s.ollamaModel}…`);
       // Memoria GPU libre antes de cargar el modelo de Ollama (para explicar si no cabe entero).
-      if (tools.nvidiaSmi) {
+      if (tools.nvidiaSmi && !reuseClips) {
         const smi = parseNvidiaSmi((await realGpuProbes.nvidiaSmi(tools.nvidiaSmi)) ?? '');
         if (smi?.freeMB !== undefined) metrics.vramFreeBeforeAnalysisMB = smi.freeMB;
       }
-      const { clips: chosen, report } = await analyzeClips({
+      const { clips: chosen, report } = reuseClips ? { clips: job.clips, report: job.analysis! } : await analyzeClips({
         segments,
         words,
         duration,
@@ -321,7 +323,7 @@ export function createPipeline(ctx: PipelineContext): JobRunner {
         log: (m, extra) => log.info(`[${job.id}] análisis: ${m}`, extra),
       });
       // Dónde se cargó realmente el modelo (nunca se afirma GPU si parte quedó en CPU/RAM).
-      const placement = await modelPlacement(s.ollamaHost, s.ollamaModel);
+      const placement = reuseClips ? null : await modelPlacement(s.ollamaHost, s.ollamaModel);
       if (placement) metrics.ollamaPlacement = placement;
       update({ analysis: report, metrics: { ...metrics } });
       event('analysis', { job: job.id, ...report });
