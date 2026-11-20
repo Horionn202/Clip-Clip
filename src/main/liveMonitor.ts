@@ -281,6 +281,8 @@ export class LiveManager {
     const live = this.monitors.get(id);
     if (gen !== rt.gen || !live || !isActive(live.status)) {
       rt.recorderRunning = false;
+      // Se pausó y se reanudó mientras tanto: la reanudación no pudo arrancar (la reserva estaba ocupada); se arranca ahora.
+      if (live && (live.status === 'en-directo' || live.status === 'procesando')) void this.startRecorder(id);
       return;
     }
     if (g.code !== 0 || !stream) {

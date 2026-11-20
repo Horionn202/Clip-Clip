@@ -62,7 +62,7 @@ export interface LayoutDecision {
  */
 export function decideLayout(pref: LayoutChoice, v: VisualResult | undefined): LayoutDecision {
   if (pref !== 'auto') {
-    if (NEEDS_CAM.includes(pref) && !v?.cam) {
+    if ((NEEDS_CAM.includes(pref) || pref === 'custom') && !v?.cam) {
       return { layout: 'gameplay_full', suggestion: pref, reason: 'Tu layout preferido necesita la posición de la facecam y no se detectó: ajústala a mano.' };
     }
     return { layout: pref, reason: 'Layout preferido.' };

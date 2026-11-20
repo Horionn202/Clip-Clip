@@ -137,4 +137,7 @@ describe('revisión Codex: facecam alta que no cabe al ampliar', () => {
     expect(chain).not.toContain('pad=');
     expect(chain).toMatch(/^crop=\d+:\d+:\d+:\d+,scale=1080:704/);
   });
+  it('«Personalizado» por defecto sin facecam detectada cae al recorte seguro', () => {
+    expect(decideLayout('custom', undefined).layout).toBe('gameplay_full');
+  });
 });
