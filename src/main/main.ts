@@ -153,6 +153,7 @@ app.whenReady().then(() => {
     probeScript,
     publish,
     pipelineCtx,
+    onShutdown: (fn) => shutdownTasks.push(fn),
     legacy,
     installDir: path.dirname(app.getPath('exe')),
     appVersion: app.getVersion(),
@@ -188,7 +189,9 @@ app.on('second-instance', () => {
   }
 });
 
+const shutdownTasks: (() => void)[] = [];
 app.on('before-quit', () => {
+  for (const t of shutdownTasks) t();
   queue.cancelAll();
   jobs.flush();
 });

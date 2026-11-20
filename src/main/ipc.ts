@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { BrowserWindow, clipboard, dialog, ipcMain, shell, type IpcMainInvokeEvent } from 'electron';
 import type { ClipPatch, GpuInfo, GpuSetupInfo, Job, Settings } from '../shared/types';
 import { MAX_CLIPS } from '../shared/types';
-import { UserFacingError } from '../shared/validation';
+import { UserFacingError, validateVideoUrl } from '../shared/validation';
 import { compositionSchema, platformSchema, publishMetaSchema, publishStatusSchema, publishUrlSchema } from './ipcSchemas';
 import { cleanupOptionsSchema, clipPatchSchema, previewRangeSchema, createJobSchema, idSchema, layoutIdSchema, modelNameSchema, normRectSchema, probeUrlSchema, renameClipSchema, rendererSettingsPatchSchema } from './ipcSchemas';
 import { readSourceInfo } from './source';
@@ -15,6 +15,7 @@ import { runDiagnostics, type ResolvedTools } from './deps';
 import { benchmarkModel, chatJson, listModels, pullModel, unloadModel } from './ollama';
 import { PublishStore } from './publishStore';
 import { retranscribeJob } from './retranscribe';
+import { LiveManager } from './liveMonitor';
 import { compositionErrors, compositionOf } from '../shared/composition';
 import { readState, runLegacyMigration, scanLegacy, writeState, type LegacyPaths } from './legacy';
 import { deletePublishedExports, findPublishedExports, markExportDeleted, recoverableBytes } from './publishedExports';
@@ -89,6 +90,8 @@ export interface IpcContext {
   installDir: string;
   appVersion: string;
   reloadStores: () => void;
+  /** Registra una tarea de cierre (p. ej. detener grabaciones de directos). */
+  onShutdown?: (fn: () => void) => void;
 }
 
 const MAX_ACTIVE_JOBS = 10;
@@ -526,6 +529,47 @@ export function registerIpc(ctx: IpcContext): void {
       retranscribing = false;
     }
   });
+  // ---- Directos: monitor persistente; cada bloque es un trabajo normal con vídeo local ----
+  const live = new LiveManager({
+    dataDir: path.join(ctx.userDataDir, 'data'),
+    liveDir: path.join(ctx.userDataDir, 'live'),
+    ytDlp: () => ctx.tools().ytDlp,
+    ffmpeg: () => ctx.tools().ffmpeg,
+    ffprobe: () => ctx.tools().ffprobe,
+    enqueueBlock: (m, file, block, offsetSec) =>
+      enqueueJob(
+        { url: m.url, preset: m.settings.preset, maxClips: m.settings.maxClipsPerBlock, allowModelDownload: false },
+        { localSource: file, live: { monitorId: m.id, block, offsetSec }, sourceTitle: `${m.title ?? 'Directo'} · bloque ${block + 1}` },
+      ),
+    getJob: (id) => ctx.jobs.get(id),
+    removeClips: (jobId, ids) => {
+      const job = ctx.jobs.get(jobId);
+      if (!job) return;
+      const dir = path.join(jobDir(ctx.jobsDir, jobId), 'clips');
+      for (const c of job.clips.filter((x) => ids.includes(x.id))) if (c.file && !c.exportedPath) fs.rmSync(path.join(dir, c.file), { force: true });
+      const next = { ...job, clips: job.clips.filter((c) => !ids.includes(c.id) || !!c.exportedPath) };
+      ctx.jobs.put(next);
+      emitJob(next);
+    },
+    onChange: (m) => broadcast('live:update', m),
+    log: (msg, x) => (log.info(msg, x), event('live', { msg, ...(x as object) })),
+  });
+  ctx.onShutdown?.(() => live.shutdown());
+  h('live:list', () => live.list());
+  h('live:create', (url: unknown, settings: unknown, ack: unknown) => {
+    const u = validateVideoUrl(url);
+    const st = z.object({ blockSec: z.number().optional(), overlapSec: z.number().optional(), preset: z.number().optional(), maxClipsPerBlock: z.number().optional(), pollSec: z.number().optional(), keepSegments: z.boolean().optional() }).strict().parse(settings ?? {});
+    try {
+      return live.create(u, st as never, ack === true);
+    } catch (e) {
+      throw e instanceof UserFacingError ? e : new UserFacingError((e as Error).message);
+    }
+  });
+  h('live:pause', (id: unknown) => live.pause(idSchema.parse(id)));
+  h('live:resume', (id: unknown) => live.resume(idSchema.parse(id)));
+  h('live:stop', (id: unknown) => live.stop(idSchema.parse(id)));
+  h('live:remove', (id: unknown) => live.remove(idSchema.parse(id)));
+
   // Reintentar desde un paso: el trabajo nuevo reutiliza (enlace duro o copia) lo ya producido antes de ese paso.
   h('jobs:retryFrom', async (id: unknown, stage: unknown) => {
     const prev = requireJob(ctx, id);

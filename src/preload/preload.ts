@@ -3,7 +3,7 @@ import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron';
 import type { ClipsApi, Job, PullProgress } from '../shared/types';
 import type { SetupState } from '../shared/gpuSetup';
 
-const subscribe = <T>(channel: 'job:update' | 'ollama:pullProgress' | 'gpu:setupProgress' | 'publish:update', cb: (v: T) => void) => {
+const subscribe = <T>(channel: 'job:update' | 'ollama:pullProgress' | 'gpu:setupProgress' | 'publish:update' | 'live:update', cb: (v: T) => void) => {
   const listener = (_e: IpcRendererEvent, v: T) => cb(v);
   ipcRenderer.on(channel, listener);
   return () => {
@@ -43,6 +43,13 @@ const api: ClipsApi = {
   listJobs: () => ipcRenderer.invoke('jobs:list'),
   cancelJob: (id) => ipcRenderer.invoke('jobs:cancel', String(id)),
   retranscribeJob: (id) => ipcRenderer.invoke('jobs:retranscribe', String(id)),
+  liveList: () => ipcRenderer.invoke('live:list'),
+  liveCreate: (url, settings, ack) => ipcRenderer.invoke('live:create', String(url), settings ?? {}, ack === true),
+  livePause: (id) => ipcRenderer.invoke('live:pause', String(id)),
+  liveResume: (id) => ipcRenderer.invoke('live:resume', String(id)),
+  liveStop: (id) => ipcRenderer.invoke('live:stop', String(id)),
+  liveRemove: (id) => ipcRenderer.invoke('live:remove', String(id)),
+  onLiveUpdate: (cb) => subscribe<import('../shared/live').LiveMonitor>('live:update', cb),
   retryJobFrom: (id, stage) => ipcRenderer.invoke('jobs:retryFrom', String(id), String(stage)),
   retryJob: (id) => ipcRenderer.invoke('jobs:retry', String(id)),
   deleteJob: (id) => ipcRenderer.invoke('jobs:delete', String(id)),
