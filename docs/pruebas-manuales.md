@@ -2,6 +2,10 @@
 
 Guía corta para comprobar las funciones que dependen de vídeo real. Los tests automáticos (`npm test`) cubren la lógica, pero no estas pruebas.
 
+> **Datos aislados (sólo desarrollo).** Para no tocar `%APPDATA%\Clip Clip`, arranca con una carpeta de datos de prueba:
+> `$env:CLIP_CLIP_DATA_DIR = "C:uta\de\prueba"; npm run dev`.
+> La app instalada ignora esta variable.
+
 ## 1. Vídeo normal (sin facecam)
 1. Inicio → pega la URL de un vídeo autorizado de 3–10 min → clips de 30 s → Crear.
 2. En **Trabajos** deben verse las 9 tarjetas: la actual en azul/violeta con porcentaje y tiempo, las anteriores en verde y las siguientes en gris. Ninguna en rojo salvo que falle.

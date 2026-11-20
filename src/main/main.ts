@@ -22,6 +22,8 @@ protocol.registerSchemesAsPrivileged([
 
 if (!app.requestSingleInstanceLock()) app.quit();
 
+// Sólo en desarrollo: carpeta de datos aislada para pruebas manuales (nunca en la app instalada).
+if (!app.isPackaged && process.env.CLIP_CLIP_DATA_DIR) app.setPath('userData', process.env.CLIP_CLIP_DATA_DIR);
 const paths = buildAppPaths(app.getPath('userData'));
 // Los datos de «ClipsVirales» ya no se migran en silencio: al abrir, el renderer pregunta (modal) qué hacer.
 for (const d of [paths.jobsDir, paths.dataDir, paths.logsDir]) fs.mkdirSync(d, { recursive: true });
