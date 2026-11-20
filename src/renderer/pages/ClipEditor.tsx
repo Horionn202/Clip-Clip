@@ -392,7 +392,7 @@ export function EditClipModal({ open, onClose, job, clip, onError, onInfo }: { o
           </div>
           <ol className="cue-list">
             {cues.map((c, i) => (
-              <li key={`${i}-${c.start}`} className={i === sel ? 'on' : ''} onFocus={() => setSel(i)}>
+              <li key={i} className={i === sel ? 'on' : ''} onFocus={() => setSel(i)}>
                 <div className="row">
                   <input className="cue-time" type="number" step={0.05} min={0} aria-label={`Inicio del subtítulo ${i + 1}`} value={c.start} onChange={(e) => setCue(i, { start: Number(e.target.value) })} />
                   <span aria-hidden="true">→</span>
