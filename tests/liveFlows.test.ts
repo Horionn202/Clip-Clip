@@ -341,4 +341,23 @@ describe('flujos del monitor', () => {
     expect(fs.existsSync(path.join(w.jobDirs, 'job-0', 'source.mp4'))).toBe(true);
     lm.shutdown();
   });
+
+  it('al reabrir, un bloque que quedó «procesando» en un monitor detenido se cierra según su trabajo', async () => {
+    const lm = new LiveManager(deps());
+    const m = lm.create('https://www.youtube.com/watch?v=x', {}, true);
+    await until(() => w.recorderStarts.length === 1);
+    seg(m, 0);
+    seg(m, 1);
+    await lm.tick(m.id);
+    lm.stop(m.id);
+    lm.shutdown();
+    // Al cerrar, el trabajo interrumpido pasa a «fallido» (JobStore.recoverInterrupted).
+    w.jobs.set('job-0', { ...w.jobs.get('job-0')!, status: 'failed', error: 'La aplicación se cerró.' } as unknown as Job);
+    const again = new LiveManager(deps());
+    await again.tick(m.id);
+    const b = again.list().monitors[0].blocks[0];
+    expect(b.status).toBe('error');
+    expect(again.list().monitors[0].gaps.some((g) => /Bloque 1 sin procesar/.test(g.reason))).toBe(true);
+    again.shutdown();
+  });
 });

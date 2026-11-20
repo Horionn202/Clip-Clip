@@ -87,6 +87,9 @@ export class LiveManager {
     // Tras un cierre: los monitores activos quedan en pausa (reanudables) y se registra el hueco.
     for (const m of saved.monitors ?? []) this.monitors.set(m.id, recoverMonitor(m, now));
     this.flush();
+    // Bloques que quedaron «procesando» (incluso en monitores detenidos o pausados): se vuelve a revisar su
+    // trabajo para cerrarlos (procesado o error reintentable) y limpiar; nunca se quedan colgados.
+    for (const m of this.monitors.values()) if (m.blocks.some((b) => b.status === 'procesando')) this.ensureTick(m.id);
   }
 
   private run(cmd: string, args: string[], opts: { signal?: AbortSignal; timeoutMs?: number; cwd?: string }): Promise<RunResult> {
@@ -444,6 +447,7 @@ export class LiveManager {
         this.finishBlock(id, running.index, job);
         m = this.monitors.get(id)!;
         if (m.status === 'detenido' || m.status === 'finalizado') {
+          this.recordFailedAsGaps(id);
           this.cleanupSegments(id, true);
           this.stopRuntime(id, true);
           return;
