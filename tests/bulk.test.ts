@@ -154,6 +154,76 @@ describe('borrado masivo en disco', () => {
     expect(() => d.undo(r.batchId)).toThrow();
   });
 
+  it('revisión Codex: si la Papelera falla no se borra nada para siempre y se reintenta al iniciar', async () => {
+    mkJob('job-000001', 100);
+    const e = mkExport('e.mp4', 40);
+    const timers: (() => void)[] = [];
+    let fail = true;
+    const trashed: string[] = [];
+    const store = new Map([['job-000001', job('job-000001', 'completed', [clip('c1', e)])]]);
+    const mk = () =>
+      new BulkDeleter({
+        jobsDir,
+        pendingDir,
+        getJobs: () => [...store.values()],
+        putJob: (j) => store.set(j.id, j),
+        removeJob: (id) => store.delete(id),
+        forgetPublish: () => undefined,
+        trash: async (x) => {
+          if (fail) throw new Error('Papelera no disponible');
+          trashed.push(x);
+          fs.rmSync(x, { recursive: true, force: true });
+        },
+        busy: () => new Set(),
+        setTimer: (fn) => (timers.push(fn), timers.length),
+        clearTimer: () => undefined,
+      });
+    const d = mk();
+    const r = d.delete(['job-000001'], { deleteExports: true });
+    expect(r.deletedIds).toEqual(['job-000001']);
+    await d.finalize(r.batchId);
+    // Nada borrado de forma permanente: la carpeta apartada y el export siguen ahí.
+    expect(fs.existsSync(path.join(pendingDir, r.batchId, 'job-000001', 'source.mp4'))).toBe(true);
+    expect(fs.existsSync(e)).toBe(true);
+    // Próximo inicio (otra instancia, p. ej. tras cerrar la app durante el plazo): se termina con el manifiesto.
+    fail = false;
+    await mk().sweepLeftovers();
+    expect(trashed).toContain(e);
+    expect(fs.existsSync(path.join(pendingDir, r.batchId))).toBe(false);
+  });
+
+  it('revisión Codex: cerrar la app durante el plazo no pierde los exports pendientes de borrar', async () => {
+    mkJob('job-000001', 10);
+    const e = mkExport('e.mp4', 5);
+    const trashed: string[] = [];
+    const { d } = deleter([job('job-000001', 'completed', [clip('c1', e)])], trashed, []);
+    d.delete(['job-000001'], { deleteExports: true });
+    // Sin finalize (cierre brusco): una instancia nueva lo termina desde el disco.
+    const { d: next } = deleter([], trashed, []);
+    await next.sweepLeftovers();
+    expect(trashed).toContain(e);
+  });
+
+  it('revisión Codex: sólo se informan como borrados los trabajos que de verdad se apartaron', () => {
+    mkJob('job-000001', 1);
+    mkJob('job-000002', 1);
+    // Un archivo con el nombre de la carpeta de destino hace fallar el traslado del segundo trabajo.
+    const { d, store } = deleter([job('job-000001', 'completed'), job('job-000002', 'completed')], [], []);
+    const orig = fs.renameSync;
+    (fs as unknown as { renameSync: typeof fs.renameSync }).renameSync = ((a: fs.PathLike, b: fs.PathLike) => {
+      if (String(a).endsWith('job-000002')) throw new Error('EPERM');
+      return orig(a, b);
+    }) as typeof fs.renameSync;
+    try {
+      const r = d.delete(['job-000001', 'job-000002'], { deleteExports: false });
+      expect(r.deletedIds).toEqual(['job-000001']);
+      expect(r.errors.length).toBe(1);
+      expect(store.has('job-000002')).toBe(true);
+    } finally {
+      (fs as unknown as { renameSync: typeof fs.renameSync }).renameSync = orig;
+    }
+  });
+
   it('muchos trabajos exigen escribir BORRAR', () => {
     const jobs = Array.from({ length: 10 }, (_, i) => job(`job-00000${i}x`, 'completed'));
     for (const j of jobs) mkJob(j.id, 1);

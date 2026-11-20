@@ -145,11 +145,13 @@ export class BulkDeleter {
         errors.push(`${pj.title}: ${(e as Error).message}`);
       }
     }
+    // El manifiesto en disco permite terminar el borrado si la app se cierra durante el plazo para deshacer.
+    writeManifest(dest, batch.exports);
     const set = this.d.setTimer ?? ((fn, ms) => setTimeout(fn, ms));
     batch.timer = set(() => void this.finalize(id), UNDO_MS);
     this.batches.set(id, batch);
     this.d.log?.('borrado masivo', { batch: id, jobs: batch.jobs.length, exports: batch.exports.length, errors: errors.length });
-    return { batchId: id, jobs: batch.jobs.length, clips, freedBytes: freed, exportsDeleted: batch.exports.length, undoUntil: new Date(Date.now() + UNDO_MS).toISOString(), errors };
+    return { batchId: id, deletedIds: batch.jobs.map((j) => j.id), jobs: batch.jobs.length, clips, freedBytes: freed, exportsDeleted: batch.exports.length, undoUntil: new Date(Date.now() + UNDO_MS).toISOString(), errors };
   }
 
   /** Recupera un lote apartado (carpetas y entradas del historial). */
@@ -166,6 +168,7 @@ export class BulkDeleter {
       this.d.putJob(j);
     }
     try {
+      fs.rmSync(path.join(src, MANIFEST), { force: true });
       fs.rmdirSync(src);
     } catch {
       /* no vacía: se limpiará en el próximo inicio */
@@ -174,23 +177,56 @@ export class BulkDeleter {
     return b.jobs.length;
   }
 
-  /** Borrado definitivo: carpetas apartadas y exports a la Papelera. */
+  /**
+   * Borrado definitivo: exports y carpeta apartada a la Papelera. Si la Papelera falla, NO se borra de forma
+   * permanente: todo queda apartado y se reintenta en el próximo inicio (el manifiesto en disco lo permite).
+   */
   async finalize(batchId: string): Promise<void> {
     const b = this.batches.get(batchId);
     if (!b) return;
     this.batches.delete(batchId);
     for (const j of b.jobs) this.d.forgetPublish(j.id);
-    for (const p of b.exports) await this.d.trash(p).catch((e) => this.d.log?.('borrado masivo: export', { p, e: String(e) }));
-    const dir = path.join(this.d.pendingDir, batchId);
-    if (isInside(this.d.pendingDir, dir) && dir !== path.resolve(this.d.pendingDir) && fs.existsSync(dir)) await this.d.trash(dir).catch(() => fs.rmSync(dir, { recursive: true, force: true }));
+    await this.finishBatch(batchId, b.exports);
   }
 
-  /** Al cerrar la app: lo pendiente se confirma. */
+  private async finishBatch(batchId: string, exports: string[]): Promise<boolean> {
+    const dir = path.join(this.d.pendingDir, batchId);
+    if (!isInside(this.d.pendingDir, dir) || dir === path.resolve(this.d.pendingDir)) return false;
+    // Un export sólo se borra si sigue siendo borrable y ningún trabajo actual lo usa.
+    const inUse = new Set(this.d.getJobs().flatMap((j) => j.clips.map((c) => c.exportedPath)).filter(Boolean).map((p) => path.resolve(p!).toLowerCase()));
+    let ok = true;
+    const left: string[] = [];
+    for (const p of exports) {
+      if (!deletableExport(p, this.d.jobsDir) || inUse.has(path.resolve(p).toLowerCase())) continue;
+      try {
+        await this.d.trash(p);
+      } catch (e) {
+        ok = false;
+        left.push(p);
+        this.d.log?.('borrado masivo: export no enviado a la Papelera', { p, e: String(e) });
+      }
+    }
+    if (!ok) {
+      writeManifest(dir, left);
+      return false;
+    }
+    if (!fs.existsSync(dir)) return true;
+    try {
+      await this.d.trash(dir);
+      return true;
+    } catch (e) {
+      writeManifest(dir, []);
+      this.d.log?.('borrado masivo: carpeta no enviada a la Papelera; se reintentará', { batch: batchId, e: String(e) });
+      return false;
+    }
+  }
+
+  /** Al cerrar la app: lo pendiente se confirma (y si no da tiempo, el manifiesto permite terminarlo al iniciar). */
   async finalizeAll(): Promise<void> {
     for (const id of [...this.batches.keys()]) await this.finalize(id);
   }
 
-  /** Restos de una sesión anterior que se cerró de golpe: van a la Papelera. */
+  /** Lotes de una sesión anterior (cierre durante el plazo o Papelera que falló): se terminan ahora. */
   async sweepLeftovers(): Promise<void> {
     let entries: string[] = [];
     try {
@@ -200,7 +236,26 @@ export class BulkDeleter {
     }
     for (const e of entries) {
       const p = path.join(this.d.pendingDir, e);
-      if (!this.batches.has(e) && isInside(this.d.pendingDir, p)) await this.d.trash(p).catch(() => undefined);
+      if (this.batches.has(e) || !isInside(this.d.pendingDir, p)) continue;
+      await this.finishBatch(e, readManifest(p));
     }
+  }
+}
+
+const MANIFEST = 'manifest.json';
+function writeManifest(dir: string, exports: string[]): void {
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, MANIFEST), JSON.stringify({ exports }), 'utf8');
+  } catch {
+    /* sin manifiesto, la carpeta se reintenta igualmente */
+  }
+}
+function readManifest(dir: string): string[] {
+  try {
+    const m = JSON.parse(fs.readFileSync(path.join(dir, MANIFEST), 'utf8')) as { exports?: unknown };
+    return Array.isArray(m.exports) ? m.exports.filter((x): x is string => typeof x === 'string') : [];
+  } catch {
+    return [];
   }
 }

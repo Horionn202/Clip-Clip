@@ -308,9 +308,9 @@ export function BulkDeleteModal(props: { ids: string[]; mode: 'history' | 'full'
     try {
       const r = await api().bulkDelete(plan.jobs.map((j) => j.id), { deleteExports }, plan.needsTypedConfirm ? typed : undefined);
       props.onDone(
-        plan.jobs.map((j) => j.id),
+        r.deletedIds,
         r.batchId,
-        `${r.jobs} trabajo${r.jobs === 1 ? '' : 's'} y ${r.clips} clip${r.clips === 1 ? '' : 's'} eliminados · ${humanSize(r.freedBytes)} liberados${r.exportsDeleted ? ` · ${r.exportsDeleted} exportados a la Papelera` : ''}.`,
+        `${r.jobs} trabajo${r.jobs === 1 ? '' : 's'} y ${r.clips} clip${r.clips === 1 ? '' : 's'} eliminados · ${humanSize(r.freedBytes)} liberados${r.exportsDeleted ? ` · ${r.exportsDeleted} exportados a la Papelera` : ''}.${r.errors.length ? ` ${r.errors.length} no se pudieron eliminar: ${r.errors[0]}` : ''}`,
       );
     } catch (e) {
       setErr(errMsg(e));

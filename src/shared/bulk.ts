@@ -65,6 +65,8 @@ export interface BulkPlan {
 
 export interface BulkResult {
   batchId: string;
+  /** Trabajos que de verdad se apartaron (los que fallaron siguen en el historial). */
+  deletedIds: string[];
   jobs: number;
   clips: number;
   freedBytes: number;
