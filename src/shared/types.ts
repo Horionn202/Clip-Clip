@@ -471,6 +471,9 @@ export interface ClipsApi {
   onLiveUpdate(cb: (m: import('./live').LiveMonitor) => void): () => void;
   /** Vuelve a transcribir un trabajo terminado sin descargar ni analizar de nuevo. */
   retranscribeJob(id: string, opts?: { precise?: boolean }): Promise<Job>;
+  bulkPlan(ids: string[], opts: import('./bulk').BulkOptions): Promise<import('./bulk').BulkPlan>;
+  bulkDelete(ids: string[], opts: import('./bulk').BulkOptions, typed?: string): Promise<import('./bulk').BulkResult>;
+  bulkUndo(batchId: string): Promise<number>;
   deleteJob(id: string): Promise<boolean>;
   renameClip(jobId: string, clipId: string, title: string): Promise<Job>;
   updateClip(jobId: string, clipId: string, patch: ClipPatch): Promise<Job>;

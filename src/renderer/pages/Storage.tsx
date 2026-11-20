@@ -9,7 +9,7 @@ const OPTION_ROWS: { key: keyof CleanupOptions; cat: StorageCategory; label: str
   { key: 'frames', cat: 'frames', label: 'Fotogramas de análisis visual' },
   { key: 'temp', cat: 'temp', label: 'Subtítulos ASS y temporales' },
   { key: 'transcript', cat: 'transcript', label: 'Transcripción (opcional)', note: 'Ocupa poco; permite rehacer subtítulos.' },
-  { key: 'internalClips', cat: 'internalClip', label: 'Clips internos', note: 'Sólo los que ya tienen un export verificado.' },
+  { key: 'internalClips', cat: 'internalClip', label: 'Renders internos', note: 'Sólo los clips que ya tienen un export verificado; los pendientes de exportar se conservan.' },
 ];
 
 /** Diálogo «Liberar espacio»: análisis, selección, confirmación explícita y resumen final. */

@@ -9,6 +9,9 @@ import { PublishBadges, PublishModal, usePublish } from './Publish';
 import { PublishedExportAction } from './PublishedExport';
 import { ConfirmModal, Modal } from '../components/Modal';
 import type { ClipPublish } from '../../shared/publish';
+import { Button, EmptyState, Menu, PageHeader, StatusPill } from '../components/ui';
+import { selectionState, setMany, toggle } from '../../shared/bulk';
+import { jobLabel } from './Jobs';
 
 /** Confirmación de exportación (un clip o todos): muestra qué se exporta y a dónde. */
 function ExportConfirm({ open, onClose, what, onConfirm }: { open: boolean; onClose: () => void; what: string; onConfirm: () => Promise<void> }) {
@@ -55,7 +58,7 @@ function ExportConfirm({ open, onClose, what, onConfirm }: { open: boolean; onCl
   );
 }
 
-function ClipCard({ job, clip, pub, onPub, onError, onInfo }: { job: Job; clip: Clip; pub?: ClipPublish; onPub: (d: Record<string, ClipPublish>) => void; onError: (m: string) => void; onInfo: (m: string) => void }) {
+function ClipCard({ job, clip, pub, onPub, onError, onInfo, selecting, selected, onToggle }: { job: Job; clip: Clip; pub?: ClipPublish; onPub: (d: Record<string, ClipPublish>) => void; onError: (m: string) => void; onInfo: (m: string) => void; selecting: boolean; selected: boolean; onToggle: () => void }) {
   const [modal, setModal] = useState<'' | 'edit' | 'publish' | 'export'>('');
   const close = () => setModal('');
 
@@ -68,32 +71,37 @@ function ClipCard({ job, clip, pub, onPub, onError, onInfo }: { job: Job; clip: 
       ? `clip://job/${job.id}/${encodeURIComponent(clip.file)}?v=${encodeURIComponent(job.updatedAt)}`
       : null;
   return (
-    <article className="clip" aria-label={`Clip ${clip.index}`}>
-      {videoSrc ? <video src={videoSrc} controls preload="metadata" /> : <div className="video-ph">{clip.exportDeletedAfterPublish ? 'Export eliminado tras publicación' : 'Sin renderizar'}</div>}
-      <div className="row">
-        <b className="grow clip-title">{clip.title}</b>
-        {clip.dirty && <span className="badge partial">Cambios sin renderizar</span>}
-        {clip.archived && <span className="badge">Archivado · se muestra el export</span>}
-        {clip.exportDeletedAfterPublish && <span className="badge">Export eliminado tras publicación</span>}
-        {clip.composition?.needsReview && <span className="badge partial">Revisar composición</span>}
+    <article className={`clip ${selected ? 'selected' : ''}`} aria-label={`Clip ${clip.index}: ${clip.title}`}>
+      {selecting && (
+        <label className="select-box clip-select">
+          <input type="checkbox" checked={selected} onChange={onToggle} disabled={!clip.file || clip.dirty} aria-label={`Seleccionar el clip ${clip.index}`} />
+        </label>
+      )}
+      {videoSrc ? <video src={videoSrc} controls preload="metadata" /> : <div className="video-ph">{clip.exportDeletedAfterPublish ? 'Exportado eliminado tras publicar' : 'Sin renderizar'}</div>}
+      <div>
+        <div className="clip-title">{clip.title}</div>
+        <div className="muted small">
+          {(clip.end - clip.start).toFixed(1)} s · {formatTime(clip.start)} → {formatTime(clip.end)} · {LAYOUT_LABELS[clip.layout ?? 'gameplay_full']}
+        </div>
       </div>
-      <PublishBadges pub={pub} />
-      {clip.hook && <p className="hook">«{clip.hook}»</p>}
-      <div className="muted small">
-        {formatTime(clip.start)} → {formatTime(clip.end)} · {(clip.end - clip.start).toFixed(1)} s · {LAYOUT_LABELS[clip.layout ?? 'gameplay_full']}
+      <div className="row" style={{ gap: 'var(--s-2)' }}>
+        {clip.exportedPath && <StatusPill tone="ok">Exportado</StatusPill>}
+        {clip.dirty && <StatusPill tone="warn">Pendiente de render</StatusPill>}
+        {clip.archived && <StatusPill>Archivado</StatusPill>}
+        {clip.composition?.needsReview && <StatusPill tone="warn">Revisar cámara</StatusPill>}
+        <PublishBadges pub={pub} />
       </div>
-      {clip.layoutSuggestion && clip.layoutSuggestion !== (clip.layout ?? 'gameplay_full') && <div className="small muted">Hay una sugerencia de plantilla: ábrela en «Editar clip».</div>}
-      <div className="row">
-        <button disabled={!clip.file || clip.dirty} title={clip.dirty ? 'Vuelve a renderizar el clip antes de exportarlo' : undefined} aria-haspopup="dialog" onClick={() => setModal('export')}>
+      {clip.hook && <p className="hook small muted">«{clip.hook}»</p>}
+      <div className="clip-actions">
+        <Button variant="primary" icon="download" disabled={!clip.file || clip.dirty} title={clip.dirty ? 'Vuelve a renderizar el clip antes de exportarlo' : undefined} aria-haspopup="dialog" onClick={() => setModal('export')}>
           Exportar
-        </button>
-        <button className="ghost" aria-haspopup="dialog" onClick={() => setModal('edit')}>
+        </Button>
+        <Button icon="edit" aria-haspopup="dialog" onClick={() => setModal('edit')}>
           Editar clip
-        </button>
-        <button className="ghost" aria-haspopup="dialog" onClick={() => setModal('publish')}>
-          Preparar publicación
-        </button>
-        {clip.exportedPath && <span className="small ok">✓ exportado</span>}
+        </Button>
+        <Button icon="publish" aria-haspopup="dialog" onClick={() => setModal('publish')}>
+          Publicar
+        </Button>
       </div>
       <PublishedExportAction job={job} clip={clip} pub={pub} onError={onError} onInfo={onInfo} />
 
@@ -124,39 +132,112 @@ export function ResultsPage(props: { jobs: Job[]; selected: string | null; onSel
   const [retrOpen, setRetrOpen] = useState(false);
   const [retrPrecise, setRetrPrecise] = useState(false);
   const [retrBusy, setRetrBusy] = useState(false);
+  const [selecting, setSelecting] = useState(false);
+  const [sel, setSel] = useState<Set<string>>(new Set());
+  const [bulkBusy, setBulkBusy] = useState(false);
+  useEffect(() => setSel(new Set()), [job?.id]);
 
   if (!job)
     return (
       <section className="page">
-        <h1>Resultados</h1>
-        <div className="empty">Todavía no hay clips. Cuando un trabajo termine, aparecerán aquí.</div>
+        <PageHeader title="Resultados" />
+        <EmptyState icon="results" title="Todavía no hay clips.">
+          Cuando un trabajo termine, sus clips aparecerán aquí.
+        </EmptyState>
       </section>
     );
   const { ready, total } = readyCount(job.clips);
+  const exportable = job.clips.filter((c) => c.file && !c.dirty).map((c) => c.id);
+  const selState = selectionState(sel, exportable);
 
   return (
     <section className="page">
-      <div className="row">
-        <h1 className="grow">Resultados</h1>
-        <select aria-label="Trabajo" value={job.id} onChange={(e) => props.onSelect(e.target.value)}>
-          {done.map((j) => (
-            <option key={j.id} value={j.id}>
-              {(j.sourceTitle || j.url).slice(0, 60)}
-            </option>
-          ))}
-        </select>
-      </div>
-      <p className="ready-count" role="status">
-        <b>
-          {ready}/{total} clips listos
-        </b>
-        {ready < total && ' · hay clips con cambios sin renderizar'}
-      </p>
-      <div className="row toolbar">
-        <button onClick={() => api().openJobFolder(job.id).catch((e) => setMsg({ kind: 'error', text: errMsg(e) }))}>Abrir carpeta de resultados</button>
-        <button aria-haspopup="dialog" onClick={() => setExportAllOpen(true)}>
-          Exportar todos
-        </button>
+      <PageHeader
+        title="Resultados"
+        subtitle={
+          <span role="status">
+            <b>
+              {ready}/{total} clips listos
+            </b>
+            {ready < total && ' · hay clips con cambios sin renderizar'}
+          </span>
+        }
+        actions={
+          <>
+            <select aria-label="Trabajo" value={job.id} onChange={(e) => props.onSelect(e.target.value)} style={{ maxWidth: 320 }}>
+              {done.map((j) => (
+                <option key={j.id} value={j.id}>
+                  {jobLabel(j).slice(0, 70)}
+                </option>
+              ))}
+            </select>
+            <Button variant="ghost" aria-pressed={selecting} onClick={() => (setSelecting((v) => !v), setSel(new Set()))}>
+              {selecting ? 'Terminar selección' : 'Seleccionar'}
+            </Button>
+            <Button icon="download" aria-haspopup="dialog" onClick={() => setExportAllOpen(true)}>
+              Exportar todos
+            </Button>
+            <Menu
+              label="Más"
+              items={[
+                { label: 'Abrir carpeta de resultados', onSelect: () => void api().openJobFolder(job.id).catch((e) => setMsg({ kind: 'error', text: errMsg(e) })) },
+                { label: 'Abrir carpeta de exportación', onSelect: () => void api().openExportFolder() },
+                { label: 'Reprocesar transcripción…', onSelect: () => setRetrOpen(true) },
+              ]}
+            />
+          </>
+        }
+      />
+      {selecting && sel.size > 0 && (
+        <div className="bulk-bar" role="toolbar" aria-label="Acciones con los clips seleccionados">
+          <span className="bulk-count" aria-live="polite">
+            {sel.size} clip{sel.size === 1 ? '' : 's'} seleccionado{sel.size === 1 ? '' : 's'}
+          </span>
+          <Button
+            variant="primary"
+            icon="download"
+            loading={bulkBusy}
+            onClick={async () => {
+              setBulkBusy(true);
+              let n = 0;
+              let fail = '';
+              for (const id of sel) {
+                try {
+                  await api().exportClip(job.id, id);
+                  n++;
+                } catch (e) {
+                  fail = errMsg(e);
+                }
+              }
+              setBulkBusy(false);
+              setSel(new Set());
+              setMsg(fail ? { kind: 'error', text: `${n} exportados; error: ${fail}` } : { kind: 'info', text: `${n} clip${n === 1 ? '' : 's'} exportado${n === 1 ? '' : 's'}.` });
+            }}
+          >
+            Exportar seleccionados
+          </Button>
+          <Button variant="ghost" onClick={() => setSel(new Set())}>
+            Deseleccionar
+          </Button>
+        </div>
+      )}
+      {selecting && (
+        <div className="list-toolbar">
+          <label className="check">
+            <input
+              type="checkbox"
+              checked={selState === 'all'}
+              ref={(el) => {
+                if (el) el.indeterminate = selState === 'some';
+              }}
+              onChange={(e) => setSel((x) => setMany(x, exportable, e.target.checked))}
+            />
+            <span>Seleccionar todos los clips listos ({exportable.length})</span>
+          </label>
+          <span className="small muted">Para borrar trabajos completos usa «Seleccionar» en Trabajos.</span>
+        </div>
+      )}
+      <div style={{ display: 'contents' }}>
         <ExportConfirm
           open={exportAllOpen}
           onClose={() => setExportAllOpen(false)}
@@ -170,12 +251,6 @@ export function ResultsPage(props: { jobs: Job[]; selected: string | null; onSel
             }
           }}
         />
-        <button className="ghost" onClick={() => api().openExportFolder()}>
-          Abrir carpeta de exportación
-        </button>
-        <button className="ghost" aria-haspopup="dialog" onClick={() => setRetrOpen(true)}>
-          Reprocesar sólo transcripción
-        </button>
         <ConfirmModal
           open={retrOpen}
           title="Reprocesar sólo transcripción"
@@ -222,7 +297,7 @@ export function ResultsPage(props: { jobs: Job[]; selected: string | null; onSel
       )}
       <div className="gallery">
         {job.clips.map((c) => (
-          <ClipCard key={c.id} job={job} clip={c} pub={pub[c.id]} onPub={(d) => setPub(job.id, d)} onError={(t) => setMsg({ kind: 'error', text: t })} onInfo={(t) => setMsg({ kind: 'info', text: t })} />
+          <ClipCard key={c.id} job={job} clip={c} selecting={selecting} selected={sel.has(c.id)} onToggle={() => setSel((x) => toggle(x, c.id))} pub={pub[c.id]} onPub={(d) => setPub(job.id, d)} onError={(t) => setMsg({ kind: 'error', text: t })} onInfo={(t) => setMsg({ kind: 'info', text: t })} />
         ))}
       </div>
     </section>
