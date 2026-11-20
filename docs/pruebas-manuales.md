@@ -3,7 +3,7 @@
 Guía corta para comprobar las funciones que dependen de vídeo real. Los tests automáticos (`npm test`) cubren la lógica, pero no estas pruebas.
 
 > **Datos aislados (sólo desarrollo).** Para no tocar `%APPDATA%\Clip Clip`, arranca con una carpeta de datos de prueba:
-> `$env:CLIP_CLIP_DATA_DIR = "C:uta\de\prueba"; npm run dev`.
+> `$env:CLIP_CLIP_DATA_DIR = "C:\ClipClipPruebas"; npm run dev`.
 > La app instalada ignora esta variable.
 
 ## 1. Vídeo normal (sin facecam)
