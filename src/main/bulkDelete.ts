@@ -132,8 +132,25 @@ export class BulkDeleter {
       const job = all.get(pj.id)!;
       try {
         const dir = safeJobDir(this.d.jobsDir, job.id);
-        if (fs.existsSync(dir)) fs.renameSync(dir, path.join(dest, job.id));
-        this.d.removeJob(job.id);
+        const staged = path.join(dest, job.id);
+        if (fs.existsSync(dir)) fs.renameSync(dir, staged);
+        try {
+          this.d.removeJob(job.id);
+        } catch (e) {
+          // No se pudo guardar el historial: todo vuelve a su sitio (ni borrado a medias ni carpeta perdida).
+          try {
+            if (fs.existsSync(staged) && !fs.existsSync(dir)) fs.renameSync(staged, dir);
+          } catch {
+            /* si tampoco se puede mover, se queda apartada y el trabajo sigue en el lote recuperable */
+          }
+          try {
+            this.d.putJob(job);
+          } catch {
+            /* ignorar */
+          }
+          if (fs.existsSync(staged)) batch.jobs.push(job);
+          throw e;
+        }
         batch.jobs.push(job);
         freed += pj.bytes;
         clips += pj.clips;
@@ -155,7 +172,7 @@ export class BulkDeleter {
   }
 
   /** Recupera un lote apartado (carpetas y entradas del historial). */
-  undo(batchId: string): number {
+  undo(batchId: string): { restored: number; pending: number } {
     const b = this.batches.get(batchId);
     if (!b) throw new UserFacingError('Ya no se puede deshacer: el plazo terminó.');
     const src = path.join(this.d.pendingDir, batchId);
@@ -180,7 +197,7 @@ export class BulkDeleter {
       b.jobs = pending;
       this.d.log?.('borrado masivo: deshacer incompleto', { batch: batchId, restored, pending: pending.length, e: lastErr });
       if (!restored) throw new UserFacingError(`No se pudo recuperar ningún trabajo todavía (${lastErr}). Vuelve a intentarlo.`);
-      return restored;
+      return { restored, pending: pending.length };
     }
     (this.d.clearTimer ?? ((t) => clearTimeout(t as NodeJS.Timeout)))(b.timer);
     this.batches.delete(batchId);
@@ -191,7 +208,7 @@ export class BulkDeleter {
       /* no vacía: se limpiará en el próximo inicio */
     }
     this.d.log?.('borrado masivo deshecho', { batch: batchId, jobs: restored });
-    return restored;
+    return { restored, pending: 0 };
   }
 
   /**

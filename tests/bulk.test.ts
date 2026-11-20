@@ -130,7 +130,7 @@ describe('borrado masivo en disco', () => {
     expect(r).toMatchObject({ jobs: 1, clips: 1, freedBytes: 100, exportsDeleted: 0 });
     expect(store.size).toBe(0);
     expect(fs.existsSync(path.join(jobsDir, 'job-000001'))).toBe(false);
-    expect(d.undo(r.batchId)).toBe(1);
+    expect(d.undo(r.batchId)).toEqual({ restored: 1, pending: 0 });
     expect(store.has('job-000001')).toBe(true);
     expect(fs.existsSync(path.join(jobsDir, 'job-000001', 'source.mp4'))).toBe(true);
     expect(() => d.undo(r.batchId)).toThrow(/plazo/);
@@ -236,17 +236,42 @@ describe('borrado masivo en disco', () => {
       return orig(a, b);
     }) as typeof fs.renameSync;
     try {
-      expect(d.undo(r.batchId)).toBe(1);
+      expect(d.undo(r.batchId)).toEqual({ restored: 1, pending: 1 });
       expect(store.has('job-000001')).toBe(true);
       expect(store.has('job-000002')).toBe(false);
       block = false;
       // Mismo plazo: el segundo intento recupera el que faltaba.
-      expect(d.undo(r.batchId)).toBe(1);
+      expect(d.undo(r.batchId)).toEqual({ restored: 1, pending: 0 });
       expect(store.has('job-000002')).toBe(true);
       expect(fs.existsSync(path.join(jobsDir, 'job-000002', 'source.mp4'))).toBe(true);
     } finally {
       (fs as unknown as { renameSync: typeof fs.renameSync }).renameSync = orig;
     }
+  });
+
+  it('revisión Codex: si falla guardar el historial, la carpeta vuelve a su sitio y el trabajo sigue', () => {
+    mkJob('job-000001', 1);
+    const store = new Map([['job-000001', job('job-000001', 'completed')]]);
+    const d = new BulkDeleter({
+      jobsDir,
+      pendingDir,
+      getJobs: () => [...store.values()],
+      putJob: (j) => store.set(j.id, j),
+      removeJob: (id) => {
+        store.delete(id);
+        throw new Error('ENOSPC: disco lleno');
+      },
+      forgetPublish: () => undefined,
+      trash: async () => undefined,
+      busy: () => new Set(),
+      setTimer: () => 0,
+      clearTimer: () => undefined,
+    });
+    const r = d.delete(['job-000001'], { deleteExports: false });
+    expect(r.deletedIds).toEqual([]);
+    expect(r.errors[0]).toMatch(/ENOSPC/);
+    expect(store.has('job-000001')).toBe(true);
+    expect(fs.existsSync(path.join(jobsDir, 'job-000001', 'source.mp4'))).toBe(true);
   });
 
   it('muchos trabajos exigen escribir BORRAR', () => {

@@ -139,7 +139,8 @@ export interface ToastData {
   id: number;
   text: ReactNode;
   kind?: 'info' | 'error';
-  action?: { label: string; run: () => void };
+  /** `run` devuelve false (o falla) si el aviso debe quedarse con su acción (p. ej. «Deshacer» incompleto). */
+  action?: { label: string; run: () => void | boolean | Promise<void | boolean> };
   /** ms hasta cerrarse sola (0 = no se cierra sola). */
   ttl?: number;
   /** Hora absoluta (ms) a la que caduca: no se reinicia aunque la app se vuelva a pintar. */
@@ -157,6 +158,7 @@ export function ToastHost({ toasts, onDismiss }: { toasts: ToastData[]; onDismis
 }
 
 function ToastItem({ t, onDismiss }: { t: ToastData; onDismiss: (id: number) => void }) {
+  const [busy, setBusy] = useState(false);
   const dismissRef = useRef(onDismiss);
   dismissRef.current = onDismiss;
   // El plazo se fija una vez (por id): los repintados de la app no lo reinician.
@@ -174,9 +176,13 @@ function ToastItem({ t, onDismiss }: { t: ToastData; onDismiss: (id: number) => 
         <Button
           size="sm"
           icon="undo"
+          loading={busy}
           onClick={() => {
-            t.action!.run();
-            onDismiss(t.id);
+            setBusy(true);
+            void Promise.resolve()
+              .then(() => t.action!.run())
+              .then((r) => (r === false ? setBusy(false) : onDismiss(t.id)))
+              .catch(() => setBusy(false));
           }}
         >
           {t.action.label}

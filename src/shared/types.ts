@@ -473,7 +473,7 @@ export interface ClipsApi {
   retranscribeJob(id: string, opts?: { precise?: boolean }): Promise<Job>;
   bulkPlan(ids: string[], opts: import('./bulk').BulkOptions): Promise<import('./bulk').BulkPlan>;
   bulkDelete(ids: string[], opts: import('./bulk').BulkOptions, typed?: string): Promise<import('./bulk').BulkResult>;
-  bulkUndo(batchId: string): Promise<number>;
+  bulkUndo(batchId: string): Promise<{ restored: number; pending: number }>;
   deleteJob(id: string): Promise<boolean>;
   renameClip(jobId: string, clipId: string, title: string): Promise<Job>;
   updateClip(jobId: string, clipId: string, patch: ClipPatch): Promise<Job>;

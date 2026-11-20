@@ -613,10 +613,14 @@ export function JobsPage(props: {
             action: {
               label: 'Deshacer',
               run: () =>
-                void api()
+                api()
                   .bulkUndo(batchId)
-                  .then((n) => (props.onRestored(), props.toast({ text: `${n} trabajo${n === 1 ? '' : 's'} recuperado${n === 1 ? '' : 's'}.` })))
-                  .catch((e) => props.toast({ kind: 'error', text: errMsg(e) })),
+                  .then(({ restored: n, pending }) => {
+                    props.onRestored();
+                    props.toast({ kind: pending ? 'error' : 'info', text: `${n} trabajo${n === 1 ? '' : 's'} recuperado${n === 1 ? '' : 's'}.${pending ? ` Faltan ${pending}: vuelve a pulsar «Deshacer».` : ''}` });
+                    return pending === 0; // con pendientes, el aviso sigue con su botón
+                  })
+                  .catch((e) => (props.toast({ kind: 'error', text: errMsg(e) }), false)),
             },
           });
         }}
