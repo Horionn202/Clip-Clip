@@ -221,3 +221,41 @@ export function pipelineCards(job: Job, now: number): PipelineCard[] {
     return card;
   });
 }
+
+// ---------- Reintentar desde un paso ----------
+
+export type ReuseKind = 'source' | 'audio' | 'transcript' | 'clips';
+export const REUSE_LABELS: Record<ReuseKind, string> = { source: 'vídeo', audio: 'audio', transcript: 'transcripción', clips: 'selección de momentos' };
+export const RETRY_STAGES: MetricStage[] = ['validating', 'downloading', 'extractingAudio', 'transcribing', 'analyzing', 'rendering'];
+
+export interface RetryOption {
+  ok: boolean;
+  reuse: ReuseKind[];
+  reason?: string;
+}
+
+/**
+ * Qué reutiliza un reintento desde cada paso según los archivos que SIGUEN en la carpeta del trabajo.
+ * Nunca se ofrece reutilizar algo que no existe; un bloque de directo sólo se puede reintentar con su vídeo.
+ */
+export function retryOptions(job: Pick<Job, 'localSource' | 'clips' | 'analysis'>, files: string[]): Record<string, RetryOption> {
+  const has = {
+    source: files.some((f) => /^source\.(mp4|mkv|webm|mov)$/i.test(f)),
+    audio: files.includes('audio.wav'),
+    transcript: files.includes('transcript.json'),
+    clips: job.clips.length > 0 && !!job.analysis,
+  };
+  const out: Record<string, RetryOption> = {};
+  RETRY_STAGES.forEach((st, i) => {
+    const reuse: ReuseKind[] = [];
+    if ((i > 1 || job.localSource) && has.source) reuse.push('source');
+    if (i > 2 && has.audio) reuse.push('audio');
+    if (i > 3 && has.transcript) reuse.push('transcript');
+    if (st === 'rendering' && has.transcript && has.clips) reuse.push('clips');
+    let reason: string | undefined;
+    if (job.localSource && !has.source) reason = 'El vídeo de este bloque del directo ya no existe; no se puede reintentar.';
+    else if (i >= 4 && !has.transcript && !has.audio && !has.source) reason = 'Ya no queda vídeo, audio ni transcripción de este trabajo: usa «Reintentar» para empezar de cero.';
+    out[st] = { ok: !reason, reuse, reason };
+  });
+  return out;
+}

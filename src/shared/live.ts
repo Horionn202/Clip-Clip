@@ -89,7 +89,11 @@ export function liveCheckUrl(raw: string): string {
 export type LiveState = 'live' | 'upcoming' | 'ended' | 'not-live';
 
 /** Interpreta el JSON de `yt-dlp -J` (live_status / is_live). */
-export function parseLiveStatus(raw: string): { state: LiveState; title?: string; dvr?: boolean } {
+/**
+ * Nota: yt-dlp no expone de forma fiable si el directo permite DVR (retroceder), así que la app no lo afirma:
+ * el monitor graba sólo hacia adelante (ver ADR 0003).
+ */
+export function parseLiveStatus(raw: string): { state: LiveState; title?: string } {
   let j: Record<string, unknown> = {};
   try {
     j = JSON.parse(raw) as Record<string, unknown>;
@@ -99,7 +103,7 @@ export function parseLiveStatus(raw: string): { state: LiveState; title?: string
   const ls = typeof j.live_status === 'string' ? j.live_status : j.is_live ? 'is_live' : '';
   const title = typeof j.title === 'string' ? j.title : undefined;
   const state: LiveState = ls === 'is_live' ? 'live' : ls === 'is_upcoming' ? 'upcoming' : ls === 'was_live' || ls === 'post_live' ? 'ended' : 'not-live';
-  return { state, title, dvr: typeof j.is_live === 'boolean' ? undefined : undefined };
+  return { state, title };
 }
 
 /** Errores de yt-dlp que significan «ahora no hay directo» (no un fallo real). */

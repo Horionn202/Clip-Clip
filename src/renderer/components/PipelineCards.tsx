@@ -1,7 +1,12 @@
 import { useState } from 'react';
 import type { Job } from '../../shared/types';
-import { fmtMs, pipelineCards, type PipelineCard } from '../../shared/jobView';
+import { REUSE_LABELS, fmtMs, pipelineCards, type PipelineCard, type RetryOption } from '../../shared/jobView';
 import { Modal } from './Modal';
+
+/** Oculta la carpeta personal del usuario en los logs mostrados (C:\Users\nombre → %USERPROFILE%). */
+export function redactPaths(s: string): string {
+  return s.replace(/[A-Za-z]:[\\/]Users[\\/][^\\/\s]+/gi, '%USERPROFILE%');
+}
 
 const STATE_LABEL: Record<PipelineCard['state'], string> = { pendiente: 'Pendiente', activo: 'En curso', completado: 'Completado', error: 'Error', cancelado: 'Cancelado' };
 
@@ -9,7 +14,7 @@ const STATE_LABEL: Record<PipelineCard['state'], string> = { pendiente: 'Pendien
  * Progreso del trabajo como tarjetas grandes (una por paso). Pendiente = gris discreto, activo = azul/violeta,
  * completado = verde, error = rojo (sólo el paso que falló), cancelado = ámbar.
  */
-export function PipelineCards({ job, now, onRetryFrom, details }: { job: Job; now: number; onRetryFrom?: (stage: NonNullable<PipelineCard['stage']>) => void; details?: React.ReactNode }) {
+export function PipelineCards({ job, now, onRetryFrom, retry, details }: { job: Job; now: number; onRetryFrom?: (stage: NonNullable<PipelineCard['stage']>) => void; retry?: Record<string, RetryOption>; details?: React.ReactNode }) {
   const [open, setOpen] = useState<PipelineCard | null>(null);
   const cards = pipelineCards(job, now);
   return (
@@ -45,11 +50,17 @@ export function PipelineCards({ job, now, onRetryFrom, details }: { job: Job; no
                 <button className="link" aria-haspopup="dialog" onClick={() => setOpen(c)}>
                   {c.state === 'error' ? 'Ver error' : 'Ver detalles'}
                 </button>
-                {c.state === 'error' && onRetryFrom && (
-                  <button className="link" onClick={() => onRetryFrom(c.stage!)}>
-                    Reintentar desde este paso
-                  </button>
-                )}
+                {c.state === 'error' && onRetryFrom && (() => {
+                  const o = retry?.[c.stage!];
+                  if (!o) return null;
+                  return o.ok ? (
+                    <button className="link" onClick={() => onRetryFrom(c.stage!)} title={o.reuse.length ? `Reutiliza: ${o.reuse.map((r) => REUSE_LABELS[r]).join(', ')}` : 'Empieza desde cero'}>
+                      Reintentar desde este paso{o.reuse.length ? ` (reutiliza ${o.reuse.map((r) => REUSE_LABELS[r]).join(', ')})` : ''}
+                    </button>
+                  ) : (
+                    <span className="small muted">{o.reason}</span>
+                  );
+                })()}
               </div>
             )}
           </li>
@@ -62,7 +73,7 @@ export function PipelineCards({ job, now, onRetryFrom, details }: { job: Job; no
               Estado: <b>{STATE_LABEL[open.state]}</b>
               {open.elapsedMs !== undefined ? ` · ${fmtMs(open.elapsedMs)}` : ''}
             </p>
-            {open.state === 'error' && job.error && <pre className="log-box">{job.error}</pre>}
+            {open.state === 'error' && job.error && <pre className="log-box">{redactPaths(job.error)}</pre>}
             {open.state !== 'error' && job.message && <p className="small muted">{job.message}</p>}
             {details}
           </>

@@ -5,7 +5,7 @@ import type { Clip, Settings } from '../shared/types';
 import { UserFacingError, safeFileName } from '../shared/validation';
 import { buildAss, type Word } from './media';
 import { layoutFilter, layoutRenderArgs, previewArgs, type LayoutInput } from './layoutRender';
-import { compositionOf, cornerRect, outputSize } from '../shared/composition';
+import { compositionErrors, compositionOf, cornerRect, outputSize } from '../shared/composition';
 import { runProcess } from './proc';
 
 export interface RenderEnv {
@@ -46,6 +46,9 @@ export function clipFileName(clip: Clip): string {
 
 /** Renderiza el clip y devuelve el nombre del MP4. Si cambia el nombre, borra el anterior (archivo creado por la app). */
 export async function renderClip(clip: Clip, env: RenderEnv, onProgress?: (fraction: number) => void): Promise<string> {
+  // Composición inválida (p. ej. «Personalizado» sin cámara): error claro, sin llegar a FFmpeg ni tocar el MP4 actual.
+  const errs = compositionErrors(compositionOf(clip));
+  if (errs.length) throw new UserFacingError(errs[0]);
   const assName = `${String(clip.index).padStart(2, '0')}.ass`;
   fs.writeFileSync(path.join(env.clipsDir, assName), buildAss(env.words, clip.start, clip.end, env.settings.subtitleFontSize, clip.subtitleCues, outputSize(compositionOf(clip).outputAspectRatio)), 'utf8');
   const out = clipFileName(clip);
@@ -84,6 +87,8 @@ export async function renderClip(clip: Clip, env: RenderEnv, onProgress?: (fract
 
 /** Fotograma de vista previa (360×640) con el layout aplicado. */
 export async function renderPreview(env: Omit<RenderEnv, 'words'>, clip: Clip, framesDir: string, outName: string): Promise<string> {
+  const errs = compositionErrors(compositionOf(clip));
+  if (errs.length) throw new UserFacingError(errs[0]);
   fs.mkdirSync(framesDir, { recursive: true });
   const filter = layoutFilter(layoutInputFor(clip, env.srcW, env.srcH, env.settings.cropOffsetX));
   const r = await (env.run ?? runProcess)(env.ffmpeg, previewArgs({ source: env.sourcePath, at: (clip.start + clip.end) / 2, filter, output: path.join(framesDir, outName) }), {

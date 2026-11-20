@@ -452,12 +452,14 @@ export interface ClipsApi {
   retryJob(id: string): Promise<Job>;
   /** Reintenta desde un paso reutilizando lo producido antes (vídeo, audio, transcripción). */
   retryJobFrom(id: string, stage: MetricStage): Promise<Job>;
+  retryOptions(id: string): Promise<Record<string, import('./jobView').RetryOption>>;
   liveList(): Promise<{ ack: boolean; monitors: import('./live').LiveMonitor[] }>;
   liveCreate(url: string, settings: Partial<import('./live').LiveSettings>, acknowledged: boolean): Promise<import('./live').LiveMonitor>;
   livePause(id: string): Promise<import('./live').LiveMonitor>;
   liveResume(id: string): Promise<import('./live').LiveMonitor>;
   liveStop(id: string): Promise<import('./live').LiveMonitor>;
   liveRemove(id: string): Promise<void>;
+  liveRetryBlock(id: string, index: number): Promise<import('./live').LiveMonitor>;
   onLiveUpdate(cb: (m: import('./live').LiveMonitor) => void): () => void;
   /** Vuelve a transcribir un trabajo terminado sin descargar ni analizar de nuevo. */
   retranscribeJob(id: string): Promise<Job>;

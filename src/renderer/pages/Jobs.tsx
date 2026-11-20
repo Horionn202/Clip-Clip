@@ -7,6 +7,7 @@ import { JobReport } from './Performance';
 import { FreeSpaceDialog } from './Storage';
 import { ConfirmModal, Modal } from '../components/Modal';
 import { PipelineCards } from '../components/PipelineCards';
+import type { RetryOption } from '../../shared/jobView';
 import { TEMP_ONLY, humanSize } from '../../shared/storage';
 
 export function DeviceBadge({ job }: { job: Job }) {
@@ -103,6 +104,10 @@ function HistoryCard(props: { job: Job; onOpen: (id: string) => void; onDeleted:
   const j = props.job;
   const got = j.clips.filter((c) => c.file).length;
   const [modal, setModal] = useState<'' | 'temp' | 'report'>('');
+  const [retry, setRetry] = useState<Record<string, RetryOption> | undefined>();
+  useEffect(() => {
+    if (j.status === 'failed' || j.status === 'cancelled') void api().retryOptions(j.id).then(setRetry).catch(() => setRetry(undefined));
+  }, [j.id, j.status]);
   const [temp, setTemp] = useState(0);
   const act = async (fn: () => Promise<unknown>) => {
     try {
@@ -192,7 +197,7 @@ function HistoryCard(props: { job: Job; onOpen: (id: string) => void; onDeleted:
         </button>
       </div>
       {(j.status === 'failed' || j.status === 'cancelled') && (
-        <PipelineCards job={j} now={Date.now()} details={<JobReport job={j} />} onRetryFrom={(stage) => act(async () => (await api().retryJobFrom(j.id, stage), props.onRetry()))} />
+        <PipelineCards job={j} now={Date.now()} retry={retry} details={<JobReport job={j} />} onRetryFrom={(stage) => act(async () => (await api().retryJobFrom(j.id, stage), props.onRetry()))} />
       )}
       <button className="link small" aria-haspopup="dialog" onClick={() => setModal('report')}>
         {j.status === 'failed' ? 'Ver errores y diagnóstico' : 'Ver informe del trabajo'}

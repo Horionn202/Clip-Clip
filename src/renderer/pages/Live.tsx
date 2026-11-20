@@ -144,7 +144,7 @@ export function LivePage({ onOpenResults }: { onOpenResults: () => void }) {
         <p>Usa esta función sólo con <b>directos propios, autorizados o con derechos de uso</b>.</p>
         <ul className="small">
           <li>Se graba desde que empiezas a vigilar, en bloques; nunca se descarga el directo completo ni lo anterior.</li>
-          <li>Sin DVR, lo emitido mientras el monitor está pausado o la app cerrada no se puede recuperar: se marca como hueco.</li>
+          <li>Se graba sólo hacia adelante: lo emitido antes de empezar, durante una pausa o con la app cerrada no se recupera y se marca como hueco. La app no puede saber si el directo permite retroceder (DVR), así que no lo intenta.</li>
           <li>Los temporales de cada bloque se borran al procesarlo; los clips se conservan.</li>
         </ul>
       </ConfirmModal>
@@ -182,6 +182,11 @@ export function LivePage({ onOpenResults }: { onOpenResults: () => void }) {
                   Bloque {b.index + 1} · {dur(b.startSec)}–{dur(b.endSec)} · {b.status}
                   {b.clips ? ` · ${b.clips} clips` : ''}
                   {b.error ? ` · ${b.error}` : ''}
+                  {b.status === 'error' && (
+                    <button className="link" onClick={() => act(() => api().liveRetryBlock(shown.id, b.index))}>
+                      Reintentar bloque
+                    </button>
+                  )}
                 </li>
               ))}
             </ol>

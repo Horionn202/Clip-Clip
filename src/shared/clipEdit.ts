@@ -47,6 +47,8 @@ export function applyClipPatch(clipId: string, patch: ClipPatch, ctx: EditContex
   }
   if (patch.composition !== undefined) {
     if (patch.composition === null) {
+      // Volver a la automática sólo cuenta como cambio si había una composición guardada.
+      if (next.composition) needsRender = true;
       next.composition = undefined;
     } else {
       const merged = compositionOf({ ...next, composition: { ...next.composition, ...patch.composition } });
@@ -56,8 +58,8 @@ export function applyClipPatch(clipId: string, patch: ClipPatch, ctx: EditContex
       // layout/camRect se mantienen sincronizados (compatibilidad con el resto de la app).
       next.layout = merged.template;
       next.camRect = merged.facecamRect;
+      needsRender = true;
     }
-    needsRender = true;
   }
   // Subtítulos editados a mano y nuevo tramo: se desplazan para seguir pegados a las mismas palabras del vídeo.
   if (patch.subtitleCues === undefined && next.subtitleCues && (next.start !== cur.start || next.end !== cur.end)) {
@@ -65,8 +67,9 @@ export function applyClipPatch(clipId: string, patch: ClipPatch, ctx: EditContex
     next.subtitleCues = sanitizeCues(next.subtitleCues.map((c) => ({ ...c, start: c.start + shift, end: c.end + shift })).filter((c) => c.end > 0), next.end - next.start);
   }
   if (patch.subtitleCues !== undefined) {
+    const before = JSON.stringify(cur.subtitleCues ?? null);
     next.subtitleCues = patch.subtitleCues === null ? undefined : sanitizeCues(patch.subtitleCues, next.end - next.start);
-    needsRender = true;
+    if (JSON.stringify(next.subtitleCues ?? null) !== before) needsRender = true;
   }
   if ((NEEDS_CAM.includes(next.layout ?? 'gameplay_full') || next.layout === 'custom') && !next.camRect) {
     throw new UserFacingError('Este layout necesita la posición de la facecam: ajústala antes de aplicarlo.');

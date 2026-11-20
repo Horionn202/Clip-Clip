@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { lastStage, pipelineCards } from '../src/shared/jobView';
+import { lastStage, pipelineCards, retryOptions } from '../src/shared/jobView';
+import { redactPaths } from '../src/renderer/components/PipelineCards';
 import { whisperLang } from '../src/main/pipeline';
 import { migrateSettings, defaultSettings } from '../src/main/store';
 import type { Job } from '../src/shared/types';
@@ -43,5 +44,28 @@ describe('idioma de transcripción', () => {
     expect(defaultSettings('x').whisperLanguage).toBe('es');
     expect(migrateSettings(defaultSettings('x'), { whisperLanguage: '' }).whisperLanguage).toBe('es');
     expect(migrateSettings(defaultSettings('x'), { whisperLanguage: 'auto' }).whisperLanguage).toBe('auto');
+  });
+});
+
+describe('reintentar desde un paso', () => {
+  const j = (p: Partial<Job> = {}) => ({ clips: [], ...p }) as unknown as Job;
+  it('sólo ofrece reutilizar lo que existe', () => {
+    const o = retryOptions(j(), ['source.mp4', 'transcript.json']);
+    expect(o.downloading.reuse).toEqual([]);
+    expect(o.transcribing.reuse).toEqual(['source']);
+    expect(o.analyzing.reuse).toEqual(['source', 'transcript']);
+    expect(o.rendering.reuse).toEqual(['source', 'transcript']);
+    expect(retryOptions(j({ clips: [{} as never], analysis: {} as never }), ['source.mp4', 'transcript.json']).rendering.reuse).toContain('clips');
+  });
+  it('bloque de directo: siempre con su vídeo; si ya no existe, la acción se desactiva con motivo', () => {
+    expect(retryOptions(j({ localSource: 'x' }), ['source.mp4']).validating).toMatchObject({ ok: true, reuse: ['source'] });
+    expect(retryOptions(j({ localSource: 'x' }), []).validating).toMatchObject({ ok: false, reason: expect.stringMatching(/ya no existe/) });
+  });
+  it('sin material: análisis y render desactivados con motivo', () => {
+    expect(retryOptions(j(), []).rendering.ok).toBe(false);
+    expect(retryOptions(j(), []).validating.ok).toBe(true);
+  });
+  it('los logs ocultan la carpeta personal', () => {
+    expect(redactPaths(String.raw`falló C:\Users\Ana\AppData\x.json`)).toBe(String.raw`falló %USERPROFILE%\AppData\x.json`);
   });
 });

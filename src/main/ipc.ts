@@ -16,6 +16,8 @@ import { benchmarkModel, chatJson, listModels, pullModel, unloadModel } from './
 import { PublishStore } from './publishStore';
 import { retranscribeJob } from './retranscribe';
 import { LiveManager } from './liveMonitor';
+import { retryOptions } from '../shared/jobView';
+import { availability, isModelCached, selectEngine } from './transcribe';
 import { compositionErrors, compositionOf } from '../shared/composition';
 import { readState, runLegacyMigration, scanLegacy, writeState, type LegacyPaths } from './legacy';
 import { deletePublishedExports, findPublishedExports, markExportDeleted, recoverableBytes } from './publishedExports';
@@ -573,6 +575,15 @@ export function registerIpc(ctx: IpcContext): void {
       emitJob(next);
     },
     onChange: (m) => broadcast('live:update', m),
+    // Antes de grabar: debe haber motor de transcripción y su modelo descargado (los bloques no descargan modelos).
+    preflight: async () => {
+      const s = ctx.settings.get();
+      const gpu = await ctx.gpuInfo(false);
+      const plan = selectEngine({ choice: s.transcriptionEngine, model: s.whisperModel, precision: s.whisperPrecision, vramMB: gpu.vramMB, gpuName: gpu.nvidiaGpu, avail: availability(gpu, !!ctx.tools().whisper) });
+      if (!plan) return 'No hay ningún motor de transcripción disponible para procesar el directo.';
+      if (!isModelCached(plan.engine, plan.model, gpu)) return `El modelo de Whisper «${plan.model}» no está descargado y los bloques del directo no lo descargan. Descárgalo en Configuración → Modelos.`;
+      return null;
+    },
     log: (msg, x) => (log.info(msg, x), event('live', { msg, ...(x as object) })),
   });
   ctx.onShutdown?.(() => live.shutdown());
@@ -590,6 +601,7 @@ export function registerIpc(ctx: IpcContext): void {
   h('live:resume', (id: unknown) => live.resume(idSchema.parse(id)));
   h('live:stop', (id: unknown) => live.stop(idSchema.parse(id)));
   h('live:remove', (id: unknown) => live.remove(idSchema.parse(id)));
+  h('live:retryBlock', (id: unknown, index: unknown) => live.retryBlock(idSchema.parse(id), z.number().int().min(0).max(1_000_000).parse(index)));
 
   // Reintentar desde un paso: el trabajo nuevo reutiliza (enlace duro o copia) lo ya producido antes de ese paso.
   h('jobs:retryFrom', async (id: unknown, stage: unknown) => {
@@ -598,34 +610,42 @@ export function registerIpc(ctx: IpcContext): void {
     return retryFromStage(prev, z.enum(['validating', 'downloading', 'extractingAudio', 'transcribing', 'analyzing', 'rendering']).parse(stage));
   });
   async function retryFromStage(prev: Job, st: import('../shared/types').MetricStage): Promise<Job> {
-    const order = ['validating', 'downloading', 'extractingAudio', 'transcribing', 'analyzing', 'rendering'];
-    const i = order.indexOf(st);
     const src = jobDir(ctx.jobsDir, prev.id);
     const files = fs.existsSync(src) ? fs.readdirSync(src) : [];
-    const want: { kind: 'source' | 'audio' | 'transcript'; file?: string }[] = [];
-    // Un bloque de directo siempre reutiliza su vídeo (no hay URL descargable equivalente).
-    if (i > 1 || prev.localSource) want.push({ kind: 'source', file: files.find((f) => /^source\.(mp4|mkv|webm|mov)$/i.test(f)) });
-    if (i > 2) want.push({ kind: 'audio', file: files.includes('audio.wav') ? 'audio.wav' : undefined });
-    if (i > 3) want.push({ kind: 'transcript', file: files.includes('transcript.json') ? 'transcript.json' : undefined });
-    const reuse: ('source' | 'audio' | 'transcript' | 'clips')[] = want.filter((w) => w.file).map((w) => w.kind);
-    // Desde el render: también los momentos ya seleccionados (sin archivos ni exports del trabajo anterior).
-    const keepClips = st === 'rendering' && reuse.includes('transcript') && prev.clips.length > 0 && !!prev.analysis;
-    if (keepClips) reuse.push('clips');
+    const opt = retryOptions(prev, files)[st];
+    if (!opt?.ok) throw new UserFacingError(opt?.reason ?? 'No se puede reintentar desde ese paso.');
+    const reuse = opt.reuse;
+    const fileOf: Record<string, string | undefined> = { source: files.find((f) => /^source\.(mp4|mkv|webm|mov)$/i.test(f)), audio: 'audio.wav', transcript: 'transcript.json' };
+    const keepClips = reuse.includes('clips');
     return enqueueJob(
       { url: prev.url, preset: prev.preset, maxClips: prev.maxClips, allowModelDownload: prev.allowModelDownload },
-      { reuse, resumedFrom: prev.id, ...(keepClips ? { clips: prev.clips.map((c) => ({ id: c.id, index: c.index, start: c.start, end: c.end, title: c.title, hook: c.hook, reason: c.reason, score: c.score })), analysis: prev.analysis } : {}), sourceTitle: prev.sourceTitle, sourceDuration: prev.sourceDuration, localSource: prev.localSource, live: prev.live },
+      {
+        reuse,
+        resumedFrom: prev.id,
+        ...(keepClips ? { clips: prev.clips.map((c) => ({ id: c.id, index: c.index, start: c.start, end: c.end, title: c.title, hook: c.hook, reason: c.reason, score: c.score })), analysis: prev.analysis } : {}),
+        sourceTitle: prev.sourceTitle,
+        sourceDuration: prev.sourceDuration,
+        localSource: prev.localSource,
+        live: prev.live,
+      },
       (dir) => {
-        for (const w of want) {
-          if (!w.file) continue;
+        for (const k of reuse) {
+          const f = fileOf[k];
+          if (!f) continue;
           try {
-            fs.linkSync(path.join(src, w.file), path.join(dir, w.file));
+            fs.linkSync(path.join(src, f), path.join(dir, f));
           } catch {
-            fs.copyFileSync(path.join(src, w.file), path.join(dir, w.file));
+            fs.copyFileSync(path.join(src, f), path.join(dir, f));
           }
         }
       },
     );
   }
+  h('jobs:retryOptions', (id: unknown) => {
+    const job = requireJob(ctx, id);
+    const dir = jobDir(ctx.jobsDir, job.id);
+    return retryOptions(job, fs.existsSync(dir) ? fs.readdirSync(dir) : []);
+  });
   h('jobs:retry', async (id: unknown) => {
     const prev = requireJob(ctx, id);
     if (!TERMINAL.includes(prev.status)) throw new UserFacingError('El trabajo sigue en curso.');
