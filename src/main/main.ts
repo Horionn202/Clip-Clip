@@ -8,7 +8,7 @@ import { legacyPaths } from './legacy';
 import { JobStore, SettingsStore, defaultSettings } from './store';
 import { JobQueue } from './queue';
 import { PublishStore } from './publishStore';
-import { createPipeline, jobDir } from './pipeline';
+import { createPipeline, jobDir, type PipelineContext } from './pipeline';
 import { probeGpu, resolveTools, type ResolvedTools } from './deps';
 import type { GpuInfo } from '../shared/types';
 import { emitJob, registerIpc } from './ipc';
@@ -22,6 +22,8 @@ protocol.registerSchemesAsPrivileged([
 
 if (!app.requestSingleInstanceLock()) app.quit();
 
+// Sólo en desarrollo: carpeta de datos aislada para pruebas manuales (nunca en la app instalada).
+if (!app.isPackaged && process.env.CLIP_CLIP_DATA_DIR) app.setPath('userData', process.env.CLIP_CLIP_DATA_DIR);
 const paths = buildAppPaths(app.getPath('userData'));
 // Los datos de «ClipsVirales» ya no se migran en silencio: al abrir, el renderer pregunta (modal) qué hacer.
 for (const d of [paths.jobsDir, paths.dataDir, paths.logsDir]) fs.mkdirSync(d, { recursive: true });
@@ -53,13 +55,14 @@ function gpuInfo(refresh = false): Promise<GpuInfo> {
   return gpuCache;
 }
 
+const pipelineCtx: PipelineContext = { jobsDir: paths.jobsDir, settings: () => settings.get(), tools: () => tools, gpuInfo: () => gpuInfo(true), fasterScript, trash: (p) => shell.trashItem(p) };
 const queue = new JobQueue({
   get: (id) => jobs.get(id),
   put: (j) => jobs.put(j),
   emit: emitJob,
   concurrency: () => settings.get().maxConcurrentJobs,
   // Cada trabajo re-evalúa la GPU (por si se instaló Torch CUDA mientras la app estaba abierta).
-  runner: createPipeline({ jobsDir: paths.jobsDir, settings: () => settings.get(), tools: () => tools, gpuInfo: () => gpuInfo(true), fasterScript, trash: (p) => shell.trashItem(p) }),
+  runner: createPipeline(pipelineCtx),
   logError: (m, e) => log.error(m, e),
 });
 
@@ -151,6 +154,8 @@ app.whenReady().then(() => {
     logsDir: paths.logsDir,
     probeScript,
     publish,
+    pipelineCtx,
+    onShutdown: (fn) => shutdownTasks.push(fn),
     legacy,
     installDir: path.dirname(app.getPath('exe')),
     appVersion: app.getVersion(),
@@ -186,7 +191,9 @@ app.on('second-instance', () => {
   }
 });
 
+const shutdownTasks: (() => void)[] = [];
 app.on('before-quit', () => {
+  for (const t of shutdownTasks) t();
   queue.cancelAll();
   jobs.flush();
 });

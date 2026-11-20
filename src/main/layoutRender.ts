@@ -95,49 +95,108 @@ export interface LayoutInput {
   srcH: number;
   offsetX: number;
   cam?: NormRect;
+  /** Tamaño de salida (por defecto 1080×1920). */
+  out?: { w: number; h: number };
+  /** Zoom del gameplay (≥ 1) y encuadre dentro de la cámara. */
+  gameZoom?: number;
+  camCrop?: { x: number; y: number; zoom: number };
+  /** Caja de la cámara en la salida (normalizada) para «flotante» y «personalizado». */
+  overlay?: NormRect;
+}
+
+/** Aplica zoom (≥ 1) a un recorte, alrededor de su centro, sin salir del fotograma. */
+export function zoomRect(r: PxRect, zoom: number, srcW: number, srcH: number, panX = 0, panY = 0): PxRect {
+  const z = Math.max(1, Math.min(4, zoom || 1));
+  if (z === 1 && !panX && !panY) return r;
+  const w = r.w / z;
+  const h = r.h / z;
+  const cx = r.x + r.w / 2 + ((r.w - w) / 2) * Math.max(-1, Math.min(1, panX));
+  const cy = r.y + r.h / 2 + ((r.h - h) / 2) * Math.max(-1, Math.min(1, panY));
+  const x = Math.min(Math.max(0, cx - w / 2), srcW - w);
+  const y = Math.min(Math.max(0, cy - h / 2), srcH - h);
+  return { x: evenPos(x), y: evenPos(y), w: even(w), h: even(h) };
 }
 
 /**
- * Filtergraph que produce la etiqueta [v] (1080×1920, SAR 1). Lanza si el layout necesita facecam
+ * Filtergraph que produce la etiqueta [v] (tamaño de salida, SAR 1). Lanza si el layout necesita facecam
  * y no hay rectángulo: nunca se inventa una posición.
  */
 export function layoutFilter(i: LayoutInput): string {
   const { srcW, srcH } = i;
-  if (NEEDS_CAM.includes(i.layout) && !i.cam) throw new Error(`El layout ${i.layout} necesita la posición de la facecam.`);
-  const camPx = i.cam ? toPx(i.cam, srcW, srcH) : undefined;
+  const W = even(i.out?.w ?? OUT_W);
+  const H = even(i.out?.h ?? OUT_H);
+  const gH = even(H * (GAME_H / OUT_H));
+  const cH = H - gH;
+  if ((NEEDS_CAM.includes(i.layout) || i.layout === 'custom') && !i.cam) throw new Error(`El layout ${i.layout} necesita la posición de la facecam.`);
+  const cc = i.camCrop ?? { x: 0, y: 0, zoom: 1 };
+  const camPx = i.cam ? zoomRect(toPx(i.cam, srcW, srcH), cc.zoom, srcW, srcH, cc.x, cc.y) : undefined;
+  const gz = i.gameZoom ?? 1;
   const crop = (r: PxRect) => `crop=${r.w}:${r.h}:${r.x}:${r.y}`;
+  // El desplazamiento también actúa dentro del recorte ampliado (si no, con el mismo aspecto no habría margen para moverlo).
+  const game = (aspect: number, cam?: PxRect) => zoomRect(gameplayCrop(aspect, srcW, srcH, i.offsetX, cam), gz, srcW, srcH, i.offsetX);
+  // Caja de la cámara en la salida (píxeles pares, dentro del lienzo).
+  const box = (r: NormRect) => {
+    const w = even(Math.min(W, r.w * W));
+    const h = even(Math.min(H, r.h * H));
+    return { w, h, x: evenPos(Math.min(W - w, Math.max(0, r.x * W))), y: evenPos(Math.min(H - h, Math.max(0, r.y * H))) };
+  };
   switch (i.layout) {
     case 'gameplay_full': {
-      const g = gameplayCrop(OUT_W / OUT_H, srcW, srcH, i.offsetX);
-      return `[0:v]${crop(g)},scale=${OUT_W}:${OUT_H}:flags=lanczos,setsar=1[v]`;
+      const g = game(W / H);
+      return `[0:v]${crop(g)},scale=${W}:${H}:flags=lanczos,setsar=1[v]`;
     }
     case 'no_facecam':
       // Se ve el vídeo entero (nada se oculta) sobre un fondo difuminado del propio vídeo.
       return (
         `[0:v]split=2[bgsrc][fgsrc];` +
-        `[bgsrc]scale=${OUT_W}:${OUT_H}:force_original_aspect_ratio=increase,crop=${OUT_W}:${OUT_H},boxblur=20:2,setsar=1[bg];` +
-        // Cabe entero en 1080×1920 en ambos ejes (vídeos anchos o más estrechos que 9:16), con dimensiones pares.
-        `[fgsrc]scale=${OUT_W}:${OUT_H}:force_original_aspect_ratio=decrease:force_divisible_by=2:flags=lanczos,setsar=1[fg];` +
+        `[bgsrc]scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},boxblur=20:2,setsar=1[bg];` +
+        `[fgsrc]scale=${W}:${H}:force_original_aspect_ratio=decrease:force_divisible_by=2:flags=lanczos,setsar=1[fg];` +
         `[bg][fg]overlay=(W-w)/2:(H-h)/2[v]`
       );
     case 'game_top_cam_bottom':
     case 'cam_top_game_bottom': {
-      const g = gameplayCrop(OUT_W / GAME_H, srcW, srcH, i.offsetX, camPx);
+      const g = game(W / gH, camPx);
       const top = i.layout === 'game_top_cam_bottom' ? '[g][c]' : '[c][g]';
       return (
         `[0:v]split=2[gsrc][csrc];` +
-        `[gsrc]${crop(g)},scale=${OUT_W}:${GAME_H}:flags=lanczos,setsar=1[g];` +
-        `[csrc]${camChain(camPx!, OUT_W, CAM_H, srcW, srcH)}[c];` +
+        `[gsrc]${crop(g)},scale=${W}:${gH}:flags=lanczos,setsar=1[g];` +
+        `[csrc]${camChain(camPx!, W, cH, srcW, srcH)}[c];` +
         `${top}vstack=inputs=2[v]`
       );
     }
-    case 'game_cam_float': {
-      const g = gameplayCrop(OUT_W / OUT_H, srcW, srcH, i.offsetX, camPx);
+    case 'game_cam_float':
+    case 'custom': {
+      const g = game(W / H, camPx);
+      const def = { x: 1 - 0.4 - 40 / W, y: 140 / H, w: 0.4, h: (0.4 * W * 0.75) / H };
+      const b = box(i.overlay ?? def);
       return (
         `[0:v]split=2[gsrc][csrc];` +
-        `[gsrc]${crop(g)},scale=${OUT_W}:${OUT_H}:flags=lanczos,setsar=1[base];` +
-        `[csrc]${camChain(camPx!, 432, 324, srcW, srcH)}[cam];` +
-        `[base][cam]overlay=W-w-40:140[v]`
+        `[gsrc]${crop(g)},scale=${W}:${H}:flags=lanczos,setsar=1[base];` +
+        `[csrc]${camChain(camPx!, b.w, b.h, srcW, srcH)}[cam];` +
+        `[base][cam]overlay=${b.x}:${b.y}[v]`
+      );
+    }
+    case 'split_horizontal': {
+      // Mitad izquierda del origen arriba y mitad derecha abajo (p. ej. dos jugadores o cámara + juego lado a lado).
+      const half = H / 2;
+      const left = zoomRect(fitAspect({ x: 0, y: 0, w: srcW / 2, h: srcH }, W / half, srcW / 2, srcH), gz, srcW / 2, srcH);
+      const right = { ...left, x: evenPos(left.x + srcW / 2) };
+      return (
+        `[0:v]split=2[a][b];` +
+        `[a]${crop(left)},scale=${W}:${even(half)}:flags=lanczos,setsar=1[top];` +
+        `[b]${crop(right)},scale=${W}:${H - even(half)}:flags=lanczos,setsar=1[bot];` +
+        `[top][bot]vstack=inputs=2[v]`
+      );
+    }
+    case 'split_vertical': {
+      const half = even(W / 2);
+      const l = zoomRect(fitAspect({ x: 0, y: 0, w: srcW / 2, h: srcH }, half / H, srcW / 2, srcH), gz, srcW / 2, srcH);
+      const r = { ...l, x: evenPos(l.x + srcW / 2) };
+      return (
+        `[0:v]split=2[a][b];` +
+        `[a]${crop(l)},scale=${half}:${H}:flags=lanczos,setsar=1[lf];` +
+        `[b]${crop(r)},scale=${W - half}:${H}:flags=lanczos,setsar=1[rt];` +
+        `[lf][rt]hstack=inputs=2[v]`
       );
     }
   }
@@ -185,5 +244,5 @@ export function layoutRenderArgs(p: { source: string; start: number; end: number
 
 /** Un solo fotograma (JPEG pequeño) con el layout aplicado, para la vista previa. */
 export function previewArgs(p: { source: string; at: number; filter: string; output: string }): string[] {
-  return ['-hide_banner', '-y', '-ss', p.at.toFixed(2), '-i', p.source, '-filter_complex', `${p.filter};[v]scale=360:640[vout]`, '-map', '[vout]', '-frames:v', '1', '-q:v', '4', p.output];
+  return ['-hide_banner', '-y', '-ss', p.at.toFixed(2), '-i', p.source, '-filter_complex', `${p.filter};[v]scale=360:-2[vout]`, '-map', '[vout]', '-frames:v', '1', '-q:v', '4', p.output];
 }

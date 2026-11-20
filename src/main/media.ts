@@ -1,3 +1,5 @@
+import { buildCues, type Cue } from '../shared/cues';
+import { SAFE_AREA } from '../shared/composition';
 // Subtítulos ASS, encuadre y construcción de argumentos FFmpeg (funciones puras y testeables).
 
 export interface Word {
@@ -26,29 +28,28 @@ export function assTime(t: number): string {
   return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}.${String(c).padStart(2, '0')}`;
 }
 
-/** Genera un ASS con frases cortas (≤ 3 palabras) relativo al inicio del clip. */
-export function buildAss(words: Word[], clipStart: number, clipEnd: number, fontSize = 72): string {
-  const inRange = words.filter((w) => w.end > clipStart && w.start < clipEnd && w.text.trim());
+/** Genera un ASS con cues cortos por palabra (o los cues editados del clip), relativo al inicio del clip. */
+export function buildAss(words: Word[], clipStart: number, clipEnd: number, fontSize = 72, cues?: Cue[], out: { w: number; h: number } = { w: 1080, h: 1920 }): string {
+  const list = cues ?? buildCues(words, clipStart, clipEnd);
   const lines: string[] = [];
-  for (let i = 0; i < inRange.length; i += 3) {
-    const group = inRange.slice(i, i + 3);
-    const st = Math.max(0, group[0].start - clipStart);
-    const en = Math.min(clipEnd, group[group.length - 1].end) - clipStart;
-    if (en <= st) continue;
-    const txt = escapeAssText(group.map((w) => w.text.trim()).join(' ')).toUpperCase();
-    if (txt) lines.push(`Dialogue: 0,${assTime(st)},${assTime(en)},Default,,0,0,0,,${txt}`);
+  for (const c of list) {
+    const txt = escapeAssText(c.text).toUpperCase();
+    if (txt && c.end > c.start) lines.push(`Dialogue: 0,${assTime(c.start)},${assTime(c.end)},Default,,0,0,0,,${txt}`);
   }
+  // Margen inferior dentro del área segura (por encima de los controles de TikTok/Shorts/Reels).
+  const marginV = Math.round(out.h * SAFE_AREA.bottom + 40);
+  const size = Math.round(fontSize * (out.w / 1080));
   return [
     '[Script Info]',
     'ScriptType: v4.00+',
-    'PlayResX: 1080',
-    'PlayResY: 1920',
+    `PlayResX: ${out.w}`,
+    `PlayResY: ${out.h}`,
     'WrapStyle: 0',
     'ScaledBorderAndShadow: yes',
     '',
     '[V4+ Styles]',
     'Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding',
-    `Style: Default,Arial,${fontSize},&H00FFFFFF,&H0000FFFF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,5,2,2,60,60,420,1`,
+    `Style: Default,Arial,${size},&H00FFFFFF,&H0000FFFF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,5,2,2,60,60,${marginV},1`,
     '',
     '[Events]',
     'Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text',

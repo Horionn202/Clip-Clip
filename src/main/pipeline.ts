@@ -17,6 +17,7 @@ import { analyzeClips } from './analysis';
 import { renderClip, renderThumb, type RenderEnv } from './clipRender';
 import { frameEdgeAnalyzer, sampleFrames } from './visual';
 import { decideLayout } from '../shared/layouts';
+import { autoComposition, combineDetections } from '../shared/composition';
 import { renderedState } from '../shared/clipEdit';
 import { listFiles, locateTranscript, sanitizeArgs, tailLines } from './transcriptOutput';
 import {
@@ -50,6 +51,12 @@ export interface PipelineContext {
   run?: typeof runProcess;
   /** Envía un archivo a la Papelera de reciclaje (Electron shell.trashItem). */
   trash?: (full: string) => Promise<void>;
+}
+
+/** Idioma que se pasa a Whisper: «auto» (elección explícita) = sin --language; vacío (ajuste antiguo) = español. */
+export function whisperLang(l: string): string {
+  if (l === 'auto') return '';
+  return l || 'es';
 }
 
 export function jobDir(jobsDir: string, id: string): string {
@@ -86,7 +93,7 @@ export function createPipeline(ctx: PipelineContext): JobRunner {
       if (curStage) metrics.stagesMs[curStage] = Date.now() - stageStart;
       curStage = stage;
       stageStart = Date.now();
-      update({ status: stage, progress: 0, message, metrics: { ...metrics }, detail: undefined, stageStartedAt: new Date(stageStart).toISOString() });
+      update({ status: stage, stage, progress: 0, message, metrics: { ...metrics }, detail: undefined, stageStartedAt: new Date(stageStart).toISOString() });
     };
     const flushMetrics = () => {
       if (curStage) metrics.stagesMs[curStage] = Date.now() - stageStart;
@@ -109,10 +116,14 @@ export function createPipeline(ctx: PipelineContext): JobRunner {
         throw new UserFacingError(`No hay espacio suficiente en disco (se requieren al menos ${s.minFreeDiskMB} MB libres).`);
       }
       update({ message: 'Consultando información del vídeo…', progress: 0.3 });
-      const info = await readSourceInfo(tools.ytDlp!, job.url, s, signal, () => {
-        log.warn(`[${job.id}] YouTube pidió verificación anti-bot; reintentando con cliente alternativo`);
-        update({ message: 'YouTube pidió verificación; reintentando con un método alternativo…' });
-      });
+      const existingSource = () => fs.readdirSync(dir).find((f) => /^source\.(mp4|mkv|webm|mov)$/i.test(f));
+      const reuseSource = !!job.localSource || (!!job.reuse?.includes('source') && !!existingSource());
+      const info = reuseSource
+        ? { title: job.sourceTitle ?? 'Vídeo', duration: job.sourceDuration ?? 0, clientArgs: [] as string[], filesize: undefined }
+        : await readSourceInfo(tools.ytDlp!, job.url, s, signal, () => {
+            log.warn(`[${job.id}] YouTube pidió verificación anti-bot; reintentando con cliente alternativo`);
+            update({ message: 'YouTube pidió verificación; reintentando con un método alternativo…' });
+          });
       update({ sourceTitle: info.title, sourceDuration: info.duration, progress: 0.6, message: 'Comprobando motor de transcripción…' });
 
       // Plan de transcripción (antes de descargar nada pesado).
@@ -136,8 +147,17 @@ export function createPipeline(ctx: PipelineContext): JobRunner {
       check(signal);
 
       // 2. Descarga
-      enter('downloading', 'Descargando vídeo…');
-      const dl = await runProcess(
+      enter('downloading', reuseSource ? 'Reutilizando el vídeo ya descargado…' : 'Descargando vídeo…');
+      if (job.localSource && !existingSource()) {
+        // Bloque de un directo: el archivo ya está en disco (se enlaza sin copiar si es posible).
+        const dst = path.join(dir, `source${path.extname(job.localSource) || '.mp4'}`);
+        try {
+          fs.linkSync(job.localSource, dst);
+        } catch {
+          fs.copyFileSync(job.localSource, dst);
+        }
+      }
+      const dl = reuseSource ? { code: 0, stderr: '', stdout: '' } : await runProcess(
         tools.ytDlp!,
         [
           '--no-playlist',
@@ -163,8 +183,8 @@ export function createPipeline(ctx: PipelineContext): JobRunner {
           signal,
           timeoutMs: 3 * 60 * 60 * 1000,
           onStdout: (l) => {
-            const m = l.match(/\[download\]\s+([\d.]+)%/);
-            if (m) update({ progress: Math.min(1, parseFloat(m[1]) / 100) });
+            const m = l.match(/\[download\]\s+([\d.]+)%(?:\s+of\s+~?\s*([\d.]+\s*\w+))?(?:\s+at\s+([\d.]+\s*\w+\/s))?/);
+            if (m) update({ progress: Math.min(1, parseFloat(m[1]) / 100), ...(m[2] ? { message: `Descargando ${m[1]} % de ${m[2]}${m[3] ? ` a ${m[3]}` : ''}` } : {}) });
           },
         },
       );
@@ -191,13 +211,18 @@ export function createPipeline(ctx: PipelineContext): JobRunner {
       // 3. Audio
       enter('extractingAudio', 'Extrayendo audio…');
       const audioPath = path.join(dir, 'audio.wav');
-      const ea = await runProcess(tools.ffmpeg!, ['-hide_banner', '-y', '-i', sourcePath, '-vn', '-ac', '1', '-ar', '16000', audioPath], {
+      const reuseAudio = !!job.reuse?.includes('audio') && fs.existsSync(audioPath);
+      if (reuseAudio) update({ message: 'Reutilizando el audio ya extraído…' });
+      const ea = reuseAudio ? { code: 0, stderr: '', stdout: '' } : await runProcess(tools.ffmpeg!, ['-hide_banner', '-y', '-i', sourcePath, '-vn', '-ac', '1', '-ar', '16000', audioPath], {
         signal,
         timeoutMs: 60 * 60 * 1000,
       });
       if (ea.code !== 0) throw new UserFacingError('No se pudo extraer el audio.', ea.stderr);
       check(signal);
 
+      const tPath = path.join(dir, 'transcript.json');
+      const reuseTranscript = !!job.reuse?.includes('transcript') && fs.existsSync(tPath);
+      const runTranscription = async () => {
       // 4. Transcripción (con alternativa segura si la GPU falla)
       if (plan.device === 'cuda' && (await unloadModel(s.ollamaHost, s.ollamaModel))) {
         log.info(`[${job.id}] modelo de Ollama liberado de la VRAM antes de transcribir en GPU`);
@@ -216,7 +241,7 @@ export function createPipeline(ctx: PipelineContext): JobRunner {
         }
         update({ engine: p });
         const tAttempt = Date.now();
-        const r = await transcribe(ctx, tools, p, audioPath, dir, s.whisperLanguage, duration, !!job.allowModelDownload, !isModelCached(p.engine, p.model, gpu), signal, (d) =>
+        const r = await transcribe(ctx, tools, p, audioPath, dir, whisperLang(s.whisperLanguage), duration, !!job.allowModelDownload, !isModelCached(p.engine, p.model, gpu), signal, (d) =>
           update({ detail: d, progress: d.audioTotalSec ? Math.min(1, d.audioDoneSec / d.audioTotalSec) : 0, message: formatProgress(d) }),
           gpu.whisperInstalled,
         );
@@ -253,20 +278,39 @@ export function createPipeline(ctx: PipelineContext): JobRunner {
       metrics.engine = usedPlan.engine;
       metrics.device = usedPlan.device;
       metrics.whisperModel = usedPlan.model;
-      const { words, segments } = parseWhisperJson(fs.readFileSync(tFile, 'utf8'));
+      metrics.languageRequested = whisperLang(s.whisperLanguage) || 'auto';
+      try {
+        const lj = JSON.parse(fs.readFileSync(tFile, 'utf8')) as { language?: string };
+        if (typeof lj.language === 'string') metrics.languageDetected = lj.language;
+      } catch {
+        /* el JSON se valida más abajo */
+      }
+      const parsed = parseWhisperJson(fs.readFileSync(tFile, 'utf8'));
+      const { segments } = parsed;
       fs.renameSync(tFile, path.join(dir, 'transcript.json'));
       if (segments.length === 0) throw new UserFacingError('No se detectó voz en el vídeo; no es posible proponer clips.');
       event('transcribed', { job: job.id, engine: usedPlan.engine, device: usedPlan.device, model: usedPlan.model, speed: metrics.transcribeSpeed, audioSec: Math.round(duration) });
+      return parsed;
+      };
+      let words: ReturnType<typeof parseWhisperJson>['words'];
+      let segments: ReturnType<typeof parseWhisperJson>['segments'];
+      if (reuseTranscript) {
+        enter('transcribing', 'Reutilizando la transcripción anterior…');
+        ({ words, segments } = parseWhisperJson(fs.readFileSync(tPath, 'utf8')));
+        if (segments.length === 0) throw new UserFacingError('La transcripción reutilizada no contiene voz.');
+      } else ({ words, segments } = await runTranscription());
       check(signal);
 
       // 5–6. Análisis por rondas + validación
-      enter('analyzing', `Analizando con ${s.ollamaModel}…`);
+      // Reintento desde el render: se reutilizan los momentos ya elegidos (la selección no se repite).
+      const reuseClips = !!job.reuse?.includes('clips') && job.clips.length > 0 && !!job.analysis;
+      enter('analyzing', reuseClips ? 'Reutilizando los momentos ya seleccionados…' : `Analizando con ${s.ollamaModel}…`);
       // Memoria GPU libre antes de cargar el modelo de Ollama (para explicar si no cabe entero).
-      if (tools.nvidiaSmi) {
+      if (tools.nvidiaSmi && !reuseClips) {
         const smi = parseNvidiaSmi((await realGpuProbes.nvidiaSmi(tools.nvidiaSmi)) ?? '');
         if (smi?.freeMB !== undefined) metrics.vramFreeBeforeAnalysisMB = smi.freeMB;
       }
-      const { clips: chosen, report } = await analyzeClips({
+      const { clips: chosen, report } = reuseClips ? { clips: job.clips, report: job.analysis! } : await analyzeClips({
         segments,
         words,
         duration,
@@ -279,7 +323,7 @@ export function createPipeline(ctx: PipelineContext): JobRunner {
         log: (m, extra) => log.info(`[${job.id}] análisis: ${m}`, extra),
       });
       // Dónde se cargó realmente el modelo (nunca se afirma GPU si parte quedó en CPU/RAM).
-      const placement = await modelPlacement(s.ollamaHost, s.ollamaModel);
+      const placement = reuseClips ? null : await modelPlacement(s.ollamaHost, s.ollamaModel);
       if (placement) metrics.ollamaPlacement = placement;
       update({ analysis: report, metrics: { ...metrics } });
       event('analysis', { job: job.id, ...report });
@@ -311,11 +355,16 @@ export function createPipeline(ctx: PipelineContext): JobRunner {
       for (const [i, clip] of clips.entries()) {
         check(signal);
         update({ message: `Analizando composición: clip ${i + 1} de ${clips.length}…`, progress: (i / clips.length) * 0.1 });
-        const frames = await sampleFrames(tools.ffmpeg!, sourcePath, clip.start, clip.end, framesDir, 6, signal);
-        const visual = frameEdgeAnalyzer.analyze(frames);
+        // Varias ventanas del clip: la cámara debe repetirse en la mayoría (una cara del gameplay no es una facecam).
+        const frames = await sampleFrames(tools.ffmpeg!, sourcePath, clip.start, clip.end, framesDir, 12, signal);
+        const third = Math.floor(frames.length / 3);
+        const windows = frames.length >= 9 ? [frames.slice(0, third), frames.slice(third, 2 * third), frames.slice(2 * third)] : [frames];
+        const { consistency, ...visual } = combineDetections([frameEdgeAnalyzer.analyze(frames), ...windows.map((f) => frameEdgeAnalyzer.analyze(f))]);
         const decision = decideLayout(s.defaultLayout, visual);
         clip.visual = visual;
         clip.camRect = visual.cam;
+        clip.composition = autoComposition(decision.layout, visual);
+        if (consistency < 0.5 && visual.cam) clip.composition.needsReview = true;
         clip.layout = decision.layout;
         clip.layoutSuggestion = decision.suggestion;
         clip.layoutReason = decision.reason;

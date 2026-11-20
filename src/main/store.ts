@@ -24,7 +24,7 @@ export function defaultSettings(exportDir: string): Settings {
     ollamaHost: 'http://127.0.0.1:11434',
     ollamaModel: 'llama3.2:3b',
     whisperModel: 'small',
-    whisperLanguage: '',
+    whisperLanguage: 'es',
     exportDir,
     ffmpegPath: '',
     ffprobePath: '',
@@ -55,6 +55,8 @@ export function defaultSettings(exportDir: string): Settings {
  */
 export function migrateSettings(defaults: Settings, saved: Partial<Settings>): Settings {
   const out: Settings = { ...defaults, ...saved };
+  // Antes '' significaba autodetectar sin que el usuario lo eligiera: ahora el idioma se fuerza (español por defecto).
+  if (!out.whisperLanguage) out.whisperLanguage = 'es';
   if (saved.keepTemp === undefined && saved.deleteTempAfterCompletion !== undefined) {
     out.keepTemp = saved.deleteTempAfterCompletion ? 'tras-completar' : 'siempre';
   }

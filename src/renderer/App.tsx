@@ -9,8 +9,9 @@ import { SettingsPage } from './pages/Settings';
 import { PolicyPage } from './pages/Policy';
 import { ConnectionsPage } from './pages/Publish';
 import { LegacyModal, useLegacyPrompt } from './pages/Legacy';
+import { LivePage } from './pages/Live';
 
-export type Page = 'home' | 'jobs' | 'results' | 'connections' | 'settings' | 'policy';
+export type Page = 'home' | 'jobs' | 'live' | 'results' | 'connections' | 'settings' | 'policy';
 
 export function App() {
   const [page, setPage] = useState<Page>('home');
@@ -61,6 +62,7 @@ export function App() {
   const nav: [Page, string][] = [
     ['home', 'Inicio'],
     ['jobs', active ? `Trabajos (${active})` : 'Trabajos'],
+    ['live', 'Directos'],
     ['results', 'Resultados'],
     ['connections', 'Conexiones'],
     ['settings', 'Configuración'],
@@ -107,6 +109,7 @@ export function App() {
         {page === 'settings' && settings && (
           <SettingsPage settings={settings} onChange={setSettings} diag={diag} refreshDiag={refreshDiag} jobs={jobs} />
         )}
+        {page === 'live' && <LivePage onOpenResults={() => setPage('results')} />}
         {page === 'policy' && <PolicyPage />}
         {page === 'connections' && <ConnectionsPage />}
       </main>

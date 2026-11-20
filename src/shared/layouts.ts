@@ -1,6 +1,6 @@
 // Layouts verticales (gameplay + facecam) y decisión segura a partir del análisis visual. Puro.
 
-export const LAYOUT_IDS = ['gameplay_full', 'game_top_cam_bottom', 'cam_top_game_bottom', 'game_cam_float', 'no_facecam'] as const;
+export const LAYOUT_IDS = ['gameplay_full', 'game_top_cam_bottom', 'cam_top_game_bottom', 'game_cam_float', 'no_facecam', 'split_horizontal', 'split_vertical', 'custom'] as const;
 export type LayoutId = (typeof LAYOUT_IDS)[number];
 export type LayoutChoice = 'auto' | LayoutId;
 
@@ -10,6 +10,9 @@ export const LAYOUT_LABELS: Record<LayoutId, string> = {
   cam_top_game_bottom: 'Facecam arriba + gameplay abajo',
   game_cam_float: 'Gameplay vertical + facecam flotante',
   no_facecam: 'Sin facecam (vídeo entero con fondo difuminado)',
+  split_horizontal: 'División horizontal (mitad izquierda arriba, derecha abajo)',
+  split_vertical: 'División vertical (dos columnas)',
+  custom: 'Personalizado (cámara donde quieras)',
 };
 
 /** Layouts que necesitan saber dónde está la facecam. */
@@ -59,7 +62,7 @@ export interface LayoutDecision {
  */
 export function decideLayout(pref: LayoutChoice, v: VisualResult | undefined): LayoutDecision {
   if (pref !== 'auto') {
-    if (NEEDS_CAM.includes(pref) && !v?.cam) {
+    if ((NEEDS_CAM.includes(pref) || pref === 'custom') && !v?.cam) {
       return { layout: 'gameplay_full', suggestion: pref, reason: 'Tu layout preferido necesita la posición de la facecam y no se detectó: ajústala a mano.' };
     }
     return { layout: pref, reason: 'Layout preferido.' };

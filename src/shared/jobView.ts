@@ -128,3 +128,134 @@ export function simpleCause(error: string | undefined): string {
   if (/interrumpi/i.test(e)) return 'La app se cerró mientras trabajaba.';
   return 'El trabajo no pudo terminar.';
 }
+
+// ---------- Tarjetas grandes del pipeline ----------
+
+export type CardState = 'pendiente' | 'activo' | 'completado' | 'error' | 'cancelado';
+
+export interface PipelineCard {
+  key: string;
+  /** Etapa real del pipeline (para «Reintentar desde este paso»); ausente en las tarjetas finales. */
+  stage?: MetricStage;
+  icon: string;
+  label: string;
+  state: CardState;
+  /** 0–100 sólo si el proceso lo informa. */
+  percent?: number;
+  elapsedMs?: number;
+  etaMs?: number;
+  message?: string;
+  /** Datos concretos: tamaño/velocidad, minutos procesados y modelo, candidatos/objetivo… */
+  facts: string[];
+}
+
+const CARD_DEFS: { key: string; stage?: MetricStage; icon: string; label: string }[] = [
+  { key: 'validating', stage: 'validating', icon: '🔎', label: 'Validando fuente' },
+  { key: 'downloading', stage: 'downloading', icon: '⬇️', label: 'Descargando vídeo' },
+  { key: 'extractingAudio', stage: 'extractingAudio', icon: '🎵', label: 'Extrayendo audio' },
+  { key: 'transcribing', stage: 'transcribing', icon: '📝', label: 'Transcribiendo' },
+  { key: 'analyzing', stage: 'analyzing', icon: '🧠', label: 'Analizando con IA' },
+  { key: 'selecting', stage: 'analyzing', icon: '🎯', label: 'Seleccionando momentos' },
+  { key: 'rendering', stage: 'rendering', icon: '🎬', label: 'Renderizando clips' },
+  { key: 'publishing', icon: '📣', label: 'Preparando publicación' },
+  { key: 'done', icon: '✅', label: 'Finalizado' },
+];
+
+/** Etapa en la que estaba el trabajo (también si falló o se canceló). Trabajos antiguos: la última con tiempo medido. */
+export function lastStage(job: Job): MetricStage | undefined {
+  if (ORDER.includes(job.status as MetricStage)) return job.status as MetricStage;
+  if (job.stage) return job.stage;
+  const measured = ORDER.filter((s) => job.metrics?.stagesMs[s] !== undefined);
+  return measured[measured.length - 1];
+}
+
+const mmss = (sec: number) => `${Math.floor(sec / 60)}:${String(Math.round(sec % 60)).padStart(2, '0')}`;
+
+export function pipelineCards(job: Job, now: number): PipelineCard[] {
+  const done = job.status === 'completed';
+  const failed = job.status === 'failed';
+  const cancelled = job.status === 'cancelled';
+  const stage = lastStage(job);
+  const curIdx = stage ? ORDER.indexOf(stage) : -1;
+  const selecting = stage === 'analyzing' && /ronda [2-9]|seleccionad/i.test(job.message);
+  const elapsedNow = job.stageStartedAt ? now - Date.parse(job.stageStartedAt) : undefined;
+  return CARD_DEFS.map((d) => {
+    const card: PipelineCard = { key: d.key, stage: d.stage, icon: d.icon, label: d.label, state: 'pendiente', facts: [] };
+    const i = d.stage ? ORDER.indexOf(d.stage) : ORDER.length;
+    // Analizar/seleccionar comparten etapa: «seleccionar» empieza cuando el análisis entra en sus rondas finales.
+    const sub = d.key === 'selecting' ? (selecting ? 0 : -1) : d.key === 'analyzing' && selecting ? 1 : 0;
+    if (done) card.state = 'completado';
+    else if (d.key === 'publishing' || d.key === 'done') card.state = cancelled ? 'cancelado' : 'pendiente';
+    else if (i < curIdx || sub === 1) card.state = 'completado';
+    else if (i === curIdx && sub === 0) card.state = failed ? 'error' : cancelled ? 'cancelado' : 'activo';
+    else card.state = cancelled ? 'cancelado' : 'pendiente';
+
+    const measured = d.stage && d.key !== 'selecting' ? job.metrics?.stagesMs[d.stage] : undefined;
+    if (card.state === 'activo') {
+      card.elapsedMs = elapsedNow;
+      card.message = job.message;
+      if (job.progress > 0 && job.progress <= 1) card.percent = Math.round(job.progress * 100);
+      const eta = currentEta(job, elapsedNow);
+      if (eta !== null) card.etaMs = eta;
+    } else if (card.state === 'completado' && measured !== undefined) card.elapsedMs = measured;
+    else if (card.state === 'error') card.message = simpleCause(job.error);
+
+    const m = job.metrics;
+    if (d.key === 'downloading' && card.state === 'activo') {
+      const sz = job.message.match(/de ([\d.]+\s*\w+)(?: a ([\d.]+\s*\w+\/s))?/);
+      if (sz) card.facts.push(`Tamaño ${sz[1]}`, ...(sz[2] ? [`Velocidad ${sz[2]}`] : []));
+    }
+    if (d.key === 'transcribing') {
+      if (card.state === 'activo' && job.detail?.audioTotalSec) card.facts.push(`${mmss(job.detail.audioDoneSec)} de ${mmss(job.detail.audioTotalSec)} de audio`);
+      const plan = job.engine;
+      if (plan && card.state !== 'pendiente') card.facts.push(`${plan.model} · ${plan.device === 'cuda' ? 'GPU' : 'CPU'}`);
+      if (m?.transcribeSpeed && card.state === 'completado') card.facts.push(`${m.transcribeSpeed.toFixed(1)}× tiempo real`);
+      if (m?.languageRequested && card.state === 'completado') card.facts.push(`Idioma ${m.languageRequested === 'auto' ? `auto (${m.languageDetected ?? '?'})` : m.languageRequested}`);
+    }
+    if ((d.key === 'analyzing' || d.key === 'selecting') && job.analysis) card.facts.push(`${job.analysis.obtained} de ${job.analysis.effectiveTarget} clips objetivo`);
+    if (d.key === 'rendering' && card.state === 'activo') {
+      const c = renderCounter(job);
+      if (c) card.facts.push(c);
+    }
+    if (d.key === 'rendering' && card.state === 'completado' && job.clips.length) card.facts.push(`${job.clips.filter((c) => c.file).length} clips`);
+    return card;
+  });
+}
+
+// ---------- Reintentar desde un paso ----------
+
+export type ReuseKind = 'source' | 'audio' | 'transcript' | 'clips';
+export const REUSE_LABELS: Record<ReuseKind, string> = { source: 'vídeo', audio: 'audio', transcript: 'transcripción', clips: 'selección de momentos' };
+export const RETRY_STAGES: MetricStage[] = ['validating', 'downloading', 'extractingAudio', 'transcribing', 'analyzing', 'rendering'];
+
+export interface RetryOption {
+  ok: boolean;
+  reuse: ReuseKind[];
+  reason?: string;
+}
+
+/**
+ * Qué reutiliza un reintento desde cada paso según los archivos que SIGUEN en la carpeta del trabajo.
+ * Nunca se ofrece reutilizar algo que no existe; un bloque de directo sólo se puede reintentar con su vídeo.
+ */
+export function retryOptions(job: Pick<Job, 'localSource' | 'clips' | 'analysis'>, files: string[]): Record<string, RetryOption> {
+  const has = {
+    source: files.some((f) => /^source\.(mp4|mkv|webm|mov)$/i.test(f)),
+    audio: files.includes('audio.wav'),
+    transcript: files.includes('transcript.json'),
+    clips: job.clips.length > 0 && !!job.analysis,
+  };
+  const out: Record<string, RetryOption> = {};
+  RETRY_STAGES.forEach((st, i) => {
+    const reuse: ReuseKind[] = [];
+    if ((i > 1 || job.localSource) && has.source) reuse.push('source');
+    if (i > 2 && has.audio) reuse.push('audio');
+    if (i > 3 && has.transcript) reuse.push('transcript');
+    if (st === 'rendering' && has.transcript && has.clips) reuse.push('clips');
+    let reason: string | undefined;
+    if (job.localSource && !has.source) reason = 'El vídeo de este bloque del directo ya no existe; no se puede reintentar.';
+    else if (i >= 4 && !has.transcript && !has.audio && !has.source) reason = 'Ya no queda vídeo, audio ni transcripción de este trabajo: usa «Reintentar» para empezar de cero.';
+    out[st] = { ok: !reason, reuse, reason };
+  });
+  return out;
+}

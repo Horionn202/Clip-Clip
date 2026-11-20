@@ -1,6 +1,8 @@
 // Edición individual de un clip con validación (rango, duración del preset, solapes, facecam). Puro.
 import type { Clip, ClipPatch, DurationPreset, RenderedState } from './types';
 import { NEEDS_CAM } from './layouts';
+import { compositionErrors, compositionOf } from './composition';
+import { sanitizeCues } from './cues';
 import { UserFacingError, overlaps, presetRange } from './validation';
 
 export interface EditContext {
@@ -43,7 +45,33 @@ export function applyClipPatch(clipId: string, patch: ClipPatch, ctx: EditContex
     next.layout = patch.layout;
     needsRender = true;
   }
-  if (NEEDS_CAM.includes(next.layout ?? 'gameplay_full') && !next.camRect) {
+  if (patch.composition !== undefined) {
+    if (patch.composition === null) {
+      // Volver a la automática sólo cuenta como cambio si había una composición guardada.
+      if (next.composition) needsRender = true;
+      next.composition = undefined;
+    } else {
+      const merged = compositionOf({ ...next, composition: { ...next.composition, ...patch.composition } });
+      const errs = compositionErrors(merged);
+      if (errs.length) throw new UserFacingError(errs[0]);
+      next.composition = { ...merged, manualOverride: true, source: 'user-edited', needsReview: false };
+      // layout/camRect se mantienen sincronizados (compatibilidad con el resto de la app).
+      next.layout = merged.template;
+      next.camRect = merged.facecamRect;
+      needsRender = true;
+    }
+  }
+  // Subtítulos editados a mano y nuevo tramo: se desplazan para seguir pegados a las mismas palabras del vídeo.
+  if (patch.subtitleCues === undefined && next.subtitleCues && (next.start !== cur.start || next.end !== cur.end)) {
+    const shift = cur.start - next.start;
+    next.subtitleCues = sanitizeCues(next.subtitleCues.map((c) => ({ ...c, start: c.start + shift, end: c.end + shift })).filter((c) => c.end > 0), next.end - next.start);
+  }
+  if (patch.subtitleCues !== undefined) {
+    const before = JSON.stringify(cur.subtitleCues ?? null);
+    next.subtitleCues = patch.subtitleCues === null ? undefined : sanitizeCues(patch.subtitleCues, next.end - next.start);
+    if (JSON.stringify(next.subtitleCues ?? null) !== before) needsRender = true;
+  }
+  if ((NEEDS_CAM.includes(next.layout ?? 'gameplay_full') || next.layout === 'custom') && !next.camRect) {
     throw new UserFacingError('Este layout necesita la posición de la facecam: ajústala antes de aplicarlo.');
   }
   // El hook no está en el vídeo (los subtítulos salen de la transcripción): sólo cambian datos.
@@ -54,12 +82,21 @@ export function applyClipPatch(clipId: string, patch: ClipPatch, ctx: EditContex
 
 /** Instantánea de lo que se renderiza (se guarda al terminar cada render). */
 export function renderedState(c: Clip): RenderedState {
-  return { start: c.start, end: c.end, layout: c.layout ?? 'gameplay_full', camRect: c.camRect };
+  return { start: c.start, end: c.end, layout: c.layout ?? 'gameplay_full', camRect: c.camRect, composition: compositionKey(c), cues: c.subtitleCues ? JSON.stringify(c.subtitleCues) : undefined };
+}
+
+/** Huella de lo que afecta al render en la composición (sin confianza ni origen). */
+export function compositionKey(c: Clip): string | undefined {
+  if (!c.composition) return undefined;
+  const k = compositionOf(c);
+  return JSON.stringify([k.template, k.facecamRect, k.facecamCrop, k.facecamPosition, k.overlayRect, k.gameplayCrop, k.outputAspectRatio, !!k.manualOverride]);
 }
 
 export function differsFromRendered(c: Clip, r: RenderedState): boolean {
   const layout = c.layout ?? 'gameplay_full';
   if (c.start !== r.start || c.end !== r.end || layout !== r.layout) return true;
+  if ((compositionKey(c) ?? '') !== (r.composition ?? '')) return true;
+  if ((c.subtitleCues ? JSON.stringify(c.subtitleCues) : '') !== (r.cues ?? '')) return true;
   // La facecam sólo importa si el layout la usa.
   return NEEDS_CAM.includes(layout) && JSON.stringify(c.camRect ?? null) !== JSON.stringify(r.camRect ?? null);
 }

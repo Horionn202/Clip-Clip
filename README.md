@@ -58,6 +58,17 @@ Tres etapas, todo local:
 
 **Resultados → Editar clip**: cambiar título, hook, inicio/fin (validado: dentro del vídeo, duración del preset y sin solapes), plantilla y recuadro de la facecam sobre el fotograma real (deslizadores accesibles por teclado), **Vista previa** (un fotograma con la plantilla) y **Guardar y volver a renderizar** sólo ese clip. Los clips con cambios sin renderizar no se exportan y el contador muestra `N/N clips listos`. El re-render necesita el vídeo original: si activas «Borrar el vídeo original al completar», no estará disponible.
 
+## Editor de clip, subtítulos y directos
+- **Editar clip** (modal) tiene tres pestañas:
+  - **Composición:** 8 plantillas, caja de cámara arrastrable y redimensionable, zoom y encuadre, posición, formato 9:16, 1:1 o 16:9, guías de área segura, vista previa rápida y «Restablecer detección automática».
+  - **Subtítulos:** cues editables con tiempos, dividir y unir, reproducir desde un cue y restablecer.
+  - **Título y tramo.**
+  - Renderizar un clip no vuelve a descargar ni a transcribir. Ver [ADR 0002](docs/adr/0002-composicion-no-destructiva.md).
+- **Subtítulos por palabra:** cues de 2–5 palabras que respetan el tiempo de cada palabra. El idioma se fuerza en Whisper (español por defecto) y «Detectar automáticamente» es una opción explícita. **Reprocesar sólo transcripción** está en Resultados. Ver [ADR 0004](docs/adr/0004-subtitulos-por-palabra.md).
+- **Progreso con tarjetas:** 9 pasos con estado, porcentaje, tiempo, ETA y datos concretos. **Ver detalles** abre los logs técnicos, y **Reintentar desde este paso** reutiliza el vídeo, el audio y la transcripción ya producidos.
+- **Directos:** vigila un directo de YouTube propio o autorizado y genera clips por bloques con solape, deduplicados. Se puede pausar, reanudar y detener, y se reanuda tras cerrar la app. No hay DVR: los huecos se muestran. Ver [ADR 0003](docs/adr/0003-monitor-de-directos.md).
+- Guía de pruebas con vídeo normal, gameplay con facecam y directo: [docs/pruebas-manuales.md](docs/pruebas-manuales.md).
+
 ## Aceleración por GPU (NVIDIA CUDA)
 
 **«GPU NVIDIA detectada» no es lo mismo que «CUDA habilitado»**. La app comprueba ambas cosas por separado en Configuración → *GPU y motor de transcripción*:

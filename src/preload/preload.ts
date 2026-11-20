@@ -3,7 +3,7 @@ import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron';
 import type { ClipsApi, Job, PullProgress } from '../shared/types';
 import type { SetupState } from '../shared/gpuSetup';
 
-const subscribe = <T>(channel: 'job:update' | 'ollama:pullProgress' | 'gpu:setupProgress' | 'publish:update', cb: (v: T) => void) => {
+const subscribe = <T>(channel: 'job:update' | 'ollama:pullProgress' | 'gpu:setupProgress' | 'publish:update' | 'live:update', cb: (v: T) => void) => {
   const listener = (_e: IpcRendererEvent, v: T) => cb(v);
   ipcRenderer.on(channel, listener);
   return () => {
@@ -42,12 +42,24 @@ const api: ClipsApi = {
   createJob: (req) => ipcRenderer.invoke('jobs:create', req),
   listJobs: () => ipcRenderer.invoke('jobs:list'),
   cancelJob: (id) => ipcRenderer.invoke('jobs:cancel', String(id)),
+  retranscribeJob: (id) => ipcRenderer.invoke('jobs:retranscribe', String(id)),
+  liveList: () => ipcRenderer.invoke('live:list'),
+  liveCreate: (url, settings, ack) => ipcRenderer.invoke('live:create', String(url), settings ?? {}, ack === true),
+  livePause: (id) => ipcRenderer.invoke('live:pause', String(id)),
+  liveResume: (id) => ipcRenderer.invoke('live:resume', String(id)),
+  liveStop: (id) => ipcRenderer.invoke('live:stop', String(id)),
+  liveRetryBlock: (id, index) => ipcRenderer.invoke('live:retryBlock', String(id), Number(index)),
+  liveRemove: (id) => ipcRenderer.invoke('live:remove', String(id)),
+  onLiveUpdate: (cb) => subscribe<import('../shared/live').LiveMonitor>('live:update', cb),
+  retryOptions: (id) => ipcRenderer.invoke('jobs:retryOptions', String(id)),
+  retryJobFrom: (id, stage) => ipcRenderer.invoke('jobs:retryFrom', String(id), String(stage)),
   retryJob: (id) => ipcRenderer.invoke('jobs:retry', String(id)),
   deleteJob: (id) => ipcRenderer.invoke('jobs:delete', String(id)),
   renameClip: (jobId, clipId, title) => ipcRenderer.invoke('clips:rename', String(jobId), String(clipId), String(title)),
   updateClip: (jobId, clipId, patch) => ipcRenderer.invoke('clips:update', String(jobId), String(clipId), patch),
   rerenderClip: (jobId, clipId) => ipcRenderer.invoke('clips:rerender', String(jobId), String(clipId)),
-  previewLayout: (jobId, clipId, layout, camRect, range) => ipcRenderer.invoke('clips:preview', String(jobId), String(clipId), String(layout), camRect, range ?? null),
+  clipWords: (jobId, clipId, range) => ipcRenderer.invoke('clips:words', String(jobId), String(clipId), range ?? null),
+  previewLayout: (jobId, clipId, layout, camRect, range, composition) => ipcRenderer.invoke('clips:preview', String(jobId), String(clipId), String(layout), camRect, range ?? null, composition ?? null),
   exportClip: (jobId, clipId) => ipcRenderer.invoke('clips:export', String(jobId), String(clipId)),
   exportAll: (jobId) => ipcRenderer.invoke('clips:exportAll', String(jobId)),
   openJobFolder: (jobId) => ipcRenderer.invoke('shell:openJobFolder', String(jobId)),

@@ -5,8 +5,8 @@ import { randomUUID } from 'node:crypto';
 import { BrowserWindow, clipboard, dialog, ipcMain, shell, type IpcMainInvokeEvent } from 'electron';
 import type { ClipPatch, GpuInfo, GpuSetupInfo, Job, Settings } from '../shared/types';
 import { MAX_CLIPS } from '../shared/types';
-import { UserFacingError } from '../shared/validation';
-import { platformSchema, publishMetaSchema, publishStatusSchema, publishUrlSchema } from './ipcSchemas';
+import { UserFacingError, validateVideoUrl } from '../shared/validation';
+import { compositionSchema, platformSchema, publishMetaSchema, publishStatusSchema, publishUrlSchema } from './ipcSchemas';
 import { cleanupOptionsSchema, clipPatchSchema, previewRangeSchema, createJobSchema, idSchema, layoutIdSchema, modelNameSchema, normRectSchema, probeUrlSchema, renameClipSchema, rendererSettingsPatchSchema } from './ipcSchemas';
 import { readSourceInfo } from './source';
 import { isInside } from './paths';
@@ -14,6 +14,11 @@ import { log } from './logger';
 import { runDiagnostics, type ResolvedTools } from './deps';
 import { benchmarkModel, chatJson, listModels, pullModel, unloadModel } from './ollama';
 import { PublishStore } from './publishStore';
+import { retranscribeJob } from './retranscribe';
+import { LiveManager } from './liveMonitor';
+import { retryOptions } from '../shared/jobView';
+import { availability, isModelCached, selectEngine } from './transcribe';
+import { compositionErrors, compositionOf } from '../shared/composition';
 import { readState, runLegacyMigration, scanLegacy, writeState, type LegacyPaths } from './legacy';
 import { deletePublishedExports, findPublishedExports, markExportDeleted, recoverableBytes } from './publishedExports';
 import { listConnections } from './publishers';
@@ -65,7 +70,7 @@ let setupCtrl: AbortController | null = null;
 let setupState: SetupState | null = null;
 import type { JobQueue } from './queue';
 import type { JobStore, SettingsStore } from './store';
-import { jobDir } from './pipeline';
+import { jobDir, type PipelineContext } from './pipeline';
 
 export interface IpcContext {
   jobsDir: string;
@@ -82,10 +87,13 @@ export interface IpcContext {
   probeScript: string;
   takeStartupNotice: () => { kind: 'info' | 'error'; text: string } | null;
   publish: PublishStore;
+  pipelineCtx: PipelineContext;
   legacy: LegacyPaths;
   installDir: string;
   appVersion: string;
   reloadStores: () => void;
+  /** Registra una tarea de cierre (p. ej. detener grabaciones de directos). */
+  onShutdown?: (fn: () => void) => void;
 }
 
 const MAX_ACTIVE_JOBS = 10;
@@ -372,7 +380,7 @@ export function registerIpc(ctx: IpcContext): void {
   h('ollama:benchmark', async (name: unknown) => {
     const model = modelNameSchema.parse(name);
     // No compite con un trabajo en curso por la GPU: se espera a que termine.
-    if (ctx.queue.activeCount > 0) throw new UserFacingError('Hay un trabajo en curso; ejecuta el benchmark cuando termine.');
+    if (ctx.queue.activeCount > 0 || retranscribing) throw new UserFacingError('Hay un trabajo o una transcripción en curso; ejecuta el benchmark cuando termine.');
     if (benchCtrl) throw new UserFacingError('Ya hay un benchmark en curso.');
     benchCtrl = new AbortController();
     benchModel = model;
@@ -433,7 +441,7 @@ export function registerIpc(ctx: IpcContext): void {
   h('gpu:setupStart', async (mode: unknown) => {
     const m = mode === 'verify' ? 'verify' : 'install';
     if (setupCtrl) throw new UserFacingError('Ya hay una instalación o verificación en curso.');
-    if (ctx.queue.activeCount > 0) throw new UserFacingError('Hay un trabajo en curso; espera a que termine para usar la GPU.');
+    if (ctx.queue.activeCount > 0 || retranscribing) throw new UserFacingError('Hay un trabajo o una transcripción en curso; espera a que termine para usar la GPU.');
     // El bloqueo se reserva antes de cualquier await: dos peticiones simultáneas no pueden arrancar a la vez.
     const ctrl = new AbortController();
     setupCtrl = ctrl;
@@ -503,14 +511,158 @@ export function registerIpc(ctx: IpcContext): void {
 
   h('jobs:create', async (req: unknown) => enqueueJob(createJobSchema.parse(req)));
   // Reintentar = trabajo nuevo con la misma URL, duración y meta (el original se conserva en el historial).
+  let retranscribing = false;
+  let retranscribeCtrl: AbortController | null = null;
+  // Al cerrar la app se aborta la retranscripción (sin procesos de Whisper huérfanos).
+  ctx.onShutdown?.(() => retranscribeCtrl?.abort());
+  h('jobs:retranscribe', async (id: unknown) => {
+    const job = requireJob(ctx, id);
+    if (job.status !== 'completed') throw new UserFacingError('Sólo se puede volver a transcribir un trabajo completado.');
+    // Una sola inferencia pesada a la vez (GPUs de 6 GB): ni con trabajos en curso ni con otra retranscripción.
+    if (retranscribing || ctx.queue.activeCount > 0) throw new UserFacingError('Hay otra transcripción o trabajo en curso; espera a que termine.');
+    if (rerendering.has(job.id)) throw new UserFacingError('Se está renderizando un clip de este trabajo; espera a que termine.');
+    if (cleaning) throw new UserFacingError('Hay una limpieza de almacenamiento en curso; espera a que termine.');
+    if (setupCtrl) throw new UserFacingError('Se está instalando o verificando la aceleración GPU. Espera a que termine.');
+    if (generating) throw new UserFacingError('Se están generando textos de publicación con la IA; espera a que termine.');
+    retranscribing = true;
+    // Como al encolar un trabajo: el benchmark se cancela y se espera a que suelte la GPU.
+    if (benchCtrl) {
+      const benched = benchModel;
+      benchCtrl.abort();
+      await benchRun;
+      if (benched) await unloadModel(ctx.settings.get().ollamaHost, benched);
+    }
+    // Mientras tanto el trabajo cuenta como ocupado: «Liberar espacio» no toca su vídeo ni su audio y no se edita.
+    rerendering.add(job.id);
+    try {
+      const r = await retranscribeJob(job, ctx.pipelineCtx, ctx.settings.get(), ctx.tools(), await ctx.gpuInfo(true), (retranscribeCtrl = new AbortController()).signal, (m) => emitJob({ ...job, message: m }));
+      const cur = ctx.jobs.get(job.id) ?? job;
+      const next = { ...cur, clips: r.job.clips, metrics: r.job.metrics, message: `Transcripción rehecha (${r.model}, ${r.device === 'cuda' ? 'GPU' : 'CPU'}, idioma ${r.language || 'auto'}). Vuelve a renderizar los clips para aplicar los subtítulos.` };
+      ctx.jobs.put(next);
+      emitJob(next);
+      event('retranscribe', { job: job.id, model: r.model, device: r.device, words: r.words });
+      return next;
+    } finally {
+      retranscribing = false;
+      retranscribeCtrl = null;
+      rerendering.delete(job.id);
+    }
+  });
+  // ---- Directos: monitor persistente; cada bloque es un trabajo normal con vídeo local ----
+  const live = new LiveManager({
+    dataDir: path.join(ctx.userDataDir, 'data'),
+    liveDir: path.join(ctx.userDataDir, 'live'),
+    ytDlp: () => ctx.tools().ytDlp,
+    ffmpeg: () => ctx.tools().ffmpeg,
+    ffprobe: () => ctx.tools().ffprobe,
+    enqueueBlock: (m, file, block, offsetSec) =>
+      enqueueJob(
+        { url: m.url, preset: m.settings.preset, maxClips: m.settings.maxClipsPerBlock, allowModelDownload: false },
+        { localSource: file, live: { monitorId: m.id, block, offsetSec }, sourceTitle: `${m.title ?? 'Directo'} · bloque ${block + 1}` },
+        // El trabajo es dueño de su vídeo desde que se encola: el monitor ya puede borrar su bloque sin romper reintentos.
+        (dir) => {
+          const dst = path.join(dir, `source${path.extname(file) || '.mp4'}`);
+          try {
+            fs.linkSync(file, dst);
+          } catch {
+            fs.copyFileSync(file, dst);
+          }
+        },
+      ),
+    getJob: (id) => ctx.jobs.get(id),
+    removeClips: (jobId, ids) => {
+      const job = ctx.jobs.get(jobId);
+      if (!job) return;
+      const dir = path.join(jobDir(ctx.jobsDir, jobId), 'clips');
+      for (const c of job.clips.filter((x) => ids.includes(x.id))) if (c.file && !c.exportedPath) fs.rmSync(path.join(dir, c.file), { force: true });
+      const next = { ...job, clips: job.clips.filter((c) => !ids.includes(c.id) || !!c.exportedPath) };
+      ctx.jobs.put(next);
+      emitJob(next);
+    },
+    onChange: (m) => broadcast('live:update', m),
+    // Antes de grabar: debe haber motor de transcripción y su modelo descargado (los bloques no descargan modelos).
+    preflight: async () => {
+      const s = ctx.settings.get();
+      const gpu = await ctx.gpuInfo(false);
+      const plan = selectEngine({ choice: s.transcriptionEngine, model: s.whisperModel, precision: s.whisperPrecision, vramMB: gpu.vramMB, gpuName: gpu.nvidiaGpu, avail: availability(gpu, !!ctx.tools().whisper) });
+      if (!plan) return 'No hay ningún motor de transcripción disponible para procesar el directo.';
+      if (!isModelCached(plan.engine, plan.model, gpu)) return `El modelo de Whisper «${plan.model}» no está descargado y los bloques del directo no lo descargan. Descárgalo en Configuración → Modelos.`;
+      return null;
+    },
+    log: (msg, x) => (log.info(msg, x), event('live', { msg, ...(x as object) })),
+  });
+  ctx.onShutdown?.(() => live.shutdown());
+  h('live:list', () => live.list());
+  h('live:create', (url: unknown, settings: unknown, ack: unknown) => {
+    const u = validateVideoUrl(url);
+    const st = z.object({ blockSec: z.number().optional(), overlapSec: z.number().optional(), preset: z.number().optional(), maxClipsPerBlock: z.number().optional(), pollSec: z.number().optional(), keepSegments: z.boolean().optional() }).strict().parse(settings ?? {});
+    try {
+      return live.create(u, st as never, ack === true);
+    } catch (e) {
+      throw e instanceof UserFacingError ? e : new UserFacingError((e as Error).message);
+    }
+  });
+  h('live:pause', (id: unknown) => live.pause(idSchema.parse(id)));
+  h('live:resume', (id: unknown) => live.resume(idSchema.parse(id)));
+  h('live:stop', (id: unknown) => live.stop(idSchema.parse(id)));
+  h('live:remove', (id: unknown) => live.remove(idSchema.parse(id)));
+  h('live:retryBlock', (id: unknown, index: unknown) => live.retryBlock(idSchema.parse(id), z.number().int().min(0).max(1_000_000).parse(index)));
+
+  // Reintentar desde un paso: el trabajo nuevo reutiliza (enlace duro o copia) lo ya producido antes de ese paso.
+  h('jobs:retryFrom', async (id: unknown, stage: unknown) => {
+    const prev = requireJob(ctx, id);
+    if (!TERMINAL.includes(prev.status)) throw new UserFacingError('El trabajo sigue en curso.');
+    return retryFromStage(prev, z.enum(['validating', 'downloading', 'extractingAudio', 'transcribing', 'analyzing', 'rendering']).parse(stage));
+  });
+  async function retryFromStage(prev: Job, st: import('../shared/types').MetricStage): Promise<Job> {
+    const src = jobDir(ctx.jobsDir, prev.id);
+    const files = fs.existsSync(src) ? fs.readdirSync(src) : [];
+    const opt = retryOptions(prev, files)[st];
+    if (!opt?.ok) throw new UserFacingError(opt?.reason ?? 'No se puede reintentar desde ese paso.');
+    const reuse = opt.reuse;
+    const fileOf: Record<string, string | undefined> = { source: files.find((f) => /^source\.(mp4|mkv|webm|mov)$/i.test(f)), audio: 'audio.wav', transcript: 'transcript.json' };
+    const keepClips = reuse.includes('clips');
+    return enqueueJob(
+      { url: prev.url, preset: prev.preset, maxClips: prev.maxClips, allowModelDownload: prev.allowModelDownload },
+      {
+        reuse,
+        resumedFrom: prev.id,
+        ...(keepClips ? { clips: prev.clips.map((c) => ({ id: c.id, index: c.index, start: c.start, end: c.end, title: c.title, hook: c.hook, reason: c.reason, score: c.score })), analysis: prev.analysis } : {}),
+        sourceTitle: prev.sourceTitle,
+        sourceDuration: prev.sourceDuration,
+        localSource: prev.localSource,
+        live: prev.live,
+      },
+      (dir) => {
+        for (const k of reuse) {
+          const f = fileOf[k];
+          if (!f) continue;
+          try {
+            fs.linkSync(path.join(src, f), path.join(dir, f));
+          } catch {
+            fs.copyFileSync(path.join(src, f), path.join(dir, f));
+          }
+        }
+      },
+    );
+  }
+  h('jobs:retryOptions', (id: unknown) => {
+    const job = requireJob(ctx, id);
+    const dir = jobDir(ctx.jobsDir, job.id);
+    return retryOptions(job, fs.existsSync(dir) ? fs.readdirSync(dir) : []);
+  });
   h('jobs:retry', async (id: unknown) => {
     const prev = requireJob(ctx, id);
     if (!TERMINAL.includes(prev.status)) throw new UserFacingError('El trabajo sigue en curso.');
+    // Un bloque de directo se reintenta con su vídeo grabado (no con la URL del directo).
+    if (prev.localSource) return retryFromStage(prev, 'validating');
     return enqueueJob({ url: prev.url, preset: prev.preset, maxClips: prev.maxClips, allowModelDownload: prev.allowModelDownload });
   });
-  async function enqueueJob(r: { url: string; preset: Job['preset']; maxClips: number; allowModelDownload?: boolean }): Promise<Job> {
+  async function enqueueJob(r: { url: string; preset: Job['preset']; maxClips: number; allowModelDownload?: boolean }, extra: Partial<Job> = {}, prepare?: (dir: string) => void): Promise<Job> {
     // Mientras se instala o verifica la GPU no se encolan trabajos (tampoco reintentos): competirían por la VRAM y el entorno puede estar cambiando.
     // Durante la migración de ClipsVirales se recarga el historial: un trabajo nuevo se perdería o quedaría como fallido.
+    // Una sola inferencia pesada a la vez: mientras se retranscribe no se encolan trabajos (los bloques de directo se reintentan solos).
+    if (retranscribing) throw new UserFacingError('Se está volviendo a transcribir un trabajo; espera a que termine.');
     if (migratingLegacy) throw new UserFacingError('Se están migrando los datos de ClipsVirales. Espera a que termine para crear trabajos.');
     if (setupCtrl) throw new UserFacingError('Se está instalando o verificando la aceleración GPU. Espera a que termine o cancélala en Configuración → Aceleración.');
     // Un trabajo tiene prioridad: se cancela el benchmark y se espera a que suelte la GPU antes de encolar.
@@ -535,7 +687,13 @@ export function registerIpc(ctx: IpcContext): void {
       clips: [],
       createdAt: now,
       updatedAt: now,
+      ...extra,
     };
+    if (prepare) {
+      const d = jobDir(ctx.jobsDir, job.id);
+      fs.mkdirSync(d, { recursive: true });
+      prepare(d);
+    }
     ctx.jobs.put(job);
     ctx.queue.enqueue(job.id);
     emitJob(job);
@@ -624,7 +782,7 @@ export function registerIpc(ctx: IpcContext): void {
       rerendering.delete(job.id);
     }
   });
-  h('clips:preview', async (jobId: unknown, clipId: unknown, layout: unknown, camRect: unknown, range: unknown) => {
+  h('clips:preview', async (jobId: unknown, clipId: unknown, layout: unknown, camRect: unknown, range: unknown, composition: unknown) => {
     const job = requireJob(ctx, jobId);
     const id = idSchema.parse(clipId);
     const clip = job.clips.find((c) => c.id === id);
@@ -637,7 +795,20 @@ export function registerIpc(ctx: IpcContext): void {
     const draft = r ? applyClipPatch(id, { start: r.start, end: r.end }, { clips: job.clips, preset: job.preset, sourceDuration: job.sourceDuration ?? 0 }) : clip;
     const env = renderEnvFor(ctx, job);
     const name = `${String(clip.index).padStart(2, '0')}_preview_${l}.jpg`;
-    return renderPreview(env, { ...clip, start: draft.start, end: draft.end, layout: l, camRect: cam }, path.join(jobDir(ctx.jobsDir, job.id), 'frames'), name);
+    const comp = composition == null ? undefined : compositionSchema.parse(composition);
+    const errs = comp ? compositionErrors(compositionOf({ ...clip, composition: comp })) : [];
+    if (errs.length) throw new UserFacingError(errs[0]);
+    const view = comp ? { ...clip, composition: { ...clip.composition, ...comp, manualOverride: true }, layout: comp.template, camRect: comp.facecamRect } : { ...clip, composition: undefined, layout: l, camRect: cam };
+    return renderPreview(env, { ...view, start: draft.start, end: draft.end }, path.join(jobDir(ctx.jobsDir, job.id), 'frames'), name);
+  });
+  h('clips:words', (jobId: unknown, clipId: unknown, range: unknown) => {
+    const job = requireJob(ctx, jobId);
+    const id = idSchema.parse(clipId);
+    const clip = job.clips.find((c) => c.id === id);
+    if (!clip) throw new UserFacingError('El clip no existe.');
+    // Tramo en edición (sin guardar): las palabras deben cubrirlo entero.
+    const r = range == null ? { start: clip.start, end: clip.end } : previewRangeSchema.parse(range);
+    return transcriptWords(ctx, job.id).filter((w) => w.end > r.start - 1 && w.start < r.end + 1);
   });
   h('clips:export', async (jobId: unknown, clipId: unknown) => {
     const job = requireJob(ctx, jobId);
@@ -678,12 +849,14 @@ export function registerIpc(ctx: IpcContext): void {
     const { job, clip } = pubClip(jobId, clipId);
     const o = z.object({ tone: z.enum(TONES as [string, ...string[]]).optional(), niche: z.string().max(40).optional() }).strict().optional().parse(options) ?? {};
     if (generating) throw new UserFacingError('Ya se están generando metadatos; espera a que termine.');
+    // Una sola inferencia pesada a la vez: no se carga Ollama mientras Whisper retranscribe en la GPU.
+    if (retranscribing) throw new UserFacingError('Se está volviendo a transcribir un trabajo; espera a que termine para generar textos.');
     generating = true;
     try {
       const s = ctx.settings.get();
       const words = transcriptWords(ctx, job.id).filter((w) => w.end > clip.start && w.start < clip.end);
       // Contexto editorial limpio: sin URL, rutas, nombres de archivo, IDs ni metadata técnica (ni siquiera el título del vídeo de origen).
-      const ectx = buildEditorialContext(clip, words.map((w) => w.text).join(' '), { tone: o.tone as never, niche: o.niche, language: s.whisperLanguage || undefined });
+      const ectx = buildEditorialContext(clip, words.map((w) => w.text).join(' '), { tone: o.tone as never, niche: o.niche, language: s.whisperLanguage && s.whisperLanguage !== 'auto' ? s.whisperLanguage : undefined });
       const ask = (system: string, user: string) => chatJson(s.ollamaHost, s.ollamaModel, system, user, new AbortController().signal, { schema: editorialSchema(), numPredict: 1400, temperature: 0.5, timeoutMs: 3 * 60 * 1000 });
       const out = await generateEditorial(ectx, ask);
       // El trabajo o el clip pudieron borrarse mientras Ollama respondía: no se recrean sus datos.

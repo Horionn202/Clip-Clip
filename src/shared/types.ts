@@ -77,6 +77,10 @@ export interface Clip {
   exportVerified?: boolean;
   /** El clip interno se borró al liberar espacio; se usa el export. */
   archived?: boolean;
+  /** Composición no destructiva (plantilla, cámara, zoom, aspecto). Ausente en clips antiguos: se deriva de layout/camRect. */
+  composition?: Partial<import('./composition').ClipLayout>;
+  /** Subtítulos editados a mano (tiempos relativos al clip). Ausente = automáticos desde las palabras. */
+  subtitleCues?: import('./cues').Cue[];
   /** Fecha en que se envió a la Papelera el export tras publicarlo (se conserva toda la metadata). */
   exportDeletedAfterPublish?: string;
 }
@@ -119,6 +123,9 @@ export interface RenderedState {
   end: number;
   layout: LayoutId;
   camRect?: NormRect;
+  /** Huella de la composición y de los subtítulos editados con los que se renderizó. */
+  composition?: string;
+  cues?: string;
 }
 
 export interface ClipPatch {
@@ -128,6 +135,10 @@ export interface ClipPatch {
   end?: number;
   layout?: LayoutId;
   camRect?: NormRect | null;
+  /** Composición completa (null = volver a la automática). */
+  composition?: Partial<import('./composition').ClipLayout> | null;
+  /** Subtítulos editados (null = volver a los automáticos). */
+  subtitleCues?: import('./cues').Cue[] | null;
 }
 
 /** Motores de transcripción soportados. */
@@ -165,6 +176,9 @@ export interface JobMetrics {
   clipsFinal?: number;
   /** Segundos de audio procesados por segundo real (2 = 2× tiempo real). */
   transcribeSpeed?: number;
+  /** Idioma pedido a Whisper ('auto' = autodetección) y el que devolvió el motor. */
+  languageRequested?: string;
+  languageDetected?: string;
   modelDownloadMs?: number;
   /** Cada intento de transcripción (incluidos los reintentos) con su resultado. */
   transcribeAttempts?: TranscribeAttempt[];
@@ -243,6 +257,15 @@ export interface Job {
   detail?: TranscribeProgress;
   /** Momento en que empezó la etapa actual (para tiempo transcurrido y ETA en la UI). */
   stageStartedAt?: string;
+  /** Última etapa en la que entró (se conserva al fallar: «Reintentar desde este paso»). */
+  stage?: MetricStage;
+  /** Material reutilizado de un trabajo anterior (reintento desde un paso). */
+  reuse?: ('source' | 'audio' | 'transcript' | 'clips')[];
+  resumedFrom?: string;
+  /** Vídeo local ya descargado (bloques de un directo): no se usa yt-dlp. */
+  localSource?: string;
+  /** Bloque de un monitor de directo. */
+  live?: { monitorId: string; block: number; offsetSec: number };
 }
 
 export interface TranscribeProgress {
@@ -300,7 +323,8 @@ export interface Settings {
   ollamaHost: string;
   ollamaModel: string;
   whisperModel: string;
-  whisperLanguage: string; // '' = autodetectar
+  /** Código ISO ('es' por defecto). 'auto' = autodetectar, sólo si el usuario lo elige. '' (ajustes antiguos) se migra a 'es'. */
+  whisperLanguage: string;
   exportDir: string;
   ffmpegPath: string; // '' = autodetectar
   ffprobePath: string;
@@ -426,11 +450,26 @@ export interface ClipsApi {
   listJobs(): Promise<Job[]>;
   cancelJob(id: string): Promise<void>;
   retryJob(id: string): Promise<Job>;
+  /** Reintenta desde un paso reutilizando lo producido antes (vídeo, audio, transcripción). */
+  retryJobFrom(id: string, stage: MetricStage): Promise<Job>;
+  retryOptions(id: string): Promise<Record<string, import('./jobView').RetryOption>>;
+  liveList(): Promise<{ ack: boolean; monitors: import('./live').LiveMonitor[] }>;
+  liveCreate(url: string, settings: Partial<import('./live').LiveSettings>, acknowledged: boolean): Promise<import('./live').LiveMonitor>;
+  livePause(id: string): Promise<import('./live').LiveMonitor>;
+  liveResume(id: string): Promise<import('./live').LiveMonitor>;
+  liveStop(id: string): Promise<import('./live').LiveMonitor>;
+  liveRemove(id: string): Promise<void>;
+  liveRetryBlock(id: string, index: number): Promise<import('./live').LiveMonitor>;
+  onLiveUpdate(cb: (m: import('./live').LiveMonitor) => void): () => void;
+  /** Vuelve a transcribir un trabajo terminado sin descargar ni analizar de nuevo. */
+  retranscribeJob(id: string): Promise<Job>;
   deleteJob(id: string): Promise<boolean>;
   renameClip(jobId: string, clipId: string, title: string): Promise<Job>;
   updateClip(jobId: string, clipId: string, patch: ClipPatch): Promise<Job>;
   rerenderClip(jobId: string, clipId: string): Promise<Job>;
-  previewLayout(jobId: string, clipId: string, layout: LayoutId, camRect: NormRect | null, range?: { start: number; end: number } | null): Promise<string>;
+  previewLayout(jobId: string, clipId: string, layout: LayoutId, camRect: NormRect | null, range?: { start: number; end: number } | null, composition?: Partial<import('./composition').ClipLayout> | null): Promise<string>;
+  /** Palabras de la transcripción en el tramo del clip (para el editor de subtítulos). */
+  clipWords(jobId: string, clipId: string, range?: { start: number; end: number } | null): Promise<{ start: number; end: number; text: string }[]>;
   exportClip(jobId: string, clipId: string): Promise<string>;
   exportAll(jobId: string): Promise<number>;
   listPublishedExports(platforms?: import('./publish').Platform[], jobId?: string, clipId?: string): Promise<{ items: PublishedExportInfo[]; totalBytes: number }>;
