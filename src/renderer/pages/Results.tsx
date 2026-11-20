@@ -1,57 +1,14 @@
 import { useEffect, useState } from 'react';
-import type { Clip, ClipPatch, Job } from '../../shared/types';
+import type { Clip, Job } from '../../shared/types';
 import { formatTime } from '../../shared/validation';
-import { LAYOUT_IDS, LAYOUT_LABELS, NEEDS_CAM, VISUAL_LABELS, type LayoutId, type NormRect } from '../../shared/layouts';
+import { LAYOUT_LABELS } from '../../shared/layouts';
+import { EditClipModal } from './ClipEditor';
 import { readyCount } from '../../shared/clipEdit';
 import { api, errMsg } from '../api';
 import { PublishBadges, PublishModal, usePublish } from './Publish';
 import { PublishedExportAction } from './PublishedExport';
-import { Modal } from '../components/Modal';
+import { ConfirmModal, Modal } from '../components/Modal';
 import type { ClipPublish } from '../../shared/publish';
-
-const DEFAULT_CAM: NormRect = { x: 0.7, y: 0.6, w: 0.28, h: 0.36 };
-
-/** Editor manual de la facecam sobre el fotograma real del clip (accesible por teclado con los deslizadores). */
-function CamEditor({ job, clip, value, onChange }: { job: Job; clip: Clip; value: NormRect; onChange: (r: NormRect) => void }) {
-  const set = (k: keyof NormRect, v: number) => {
-    const r = { ...value, [k]: v / 100 };
-    // Mantener dentro de la imagen.
-    r.w = Math.min(r.w, 1 - r.x);
-    r.h = Math.min(r.h, 1 - r.y);
-    onChange(r);
-  };
-  const pct = (n: number) => Math.round(n * 100);
-  return (
-    <div className="cam-editor">
-      {/* El marco usa el aspecto real del origen y la imagen entera (sin recortes), así las coordenadas coinciden con el render. */}
-      <div
-        className="cam-frame"
-        style={
-          job.sourceVideo
-            ? {
-                aspectRatio: `${job.sourceVideo.width} / ${job.sourceVideo.height}`,
-                // Vídeos verticales: se limita el ancho para no pasar de 420 px de alto sin deformar.
-                width: `min(100%, calc(420px * ${job.sourceVideo.width} / ${job.sourceVideo.height}))`,
-              }
-            : { aspectRatio: '16 / 9' }
-        }
-      >
-        {clip.thumb ? <img src={`clip://frame/${job.id}/${clip.thumb}`} alt="Fotograma del clip" /> : <div className="video-ph">Sin fotograma</div>}
-        <div
-          className="cam-box"
-          style={{ left: `${value.x * 100}%`, top: `${value.y * 100}%`, width: `${value.w * 100}%`, height: `${value.h * 100}%` }}
-          aria-hidden="true"
-        />
-      </div>
-      {(['x', 'y', 'w', 'h'] as const).map((k) => (
-        <label key={k} className="slider">
-          <span>{{ x: 'Izquierda', y: 'Arriba', w: 'Ancho', h: 'Alto' }[k]}: {pct(value[k])} %</span>
-          <input type="range" min={k === 'w' || k === 'h' ? 3 : 0} max={100} value={pct(value[k])} onChange={(e) => set(k, Number(e.target.value))} />
-        </label>
-      ))}
-    </div>
-  );
-}
 
 /** Confirmación de exportación (un clip o todos): muestra qué se exporta y a dónde. */
 function ExportConfirm({ open, onClose, what, onConfirm }: { open: boolean; onClose: () => void; what: string; onConfirm: () => Promise<void> }) {
@@ -98,171 +55,6 @@ function ExportConfirm({ open, onClose, what, onConfirm }: { open: boolean; onCl
   );
 }
 
-/** Editar clip (título, hook, tramo y layout gameplay/facecam). Sólo se guarda con «Guardar» o «Guardar y volver a renderizar». */
-function EditClipModal({ open, onClose, job, clip, onError, onInfo }: { open: boolean; onClose: () => void; job: Job; clip: Clip; onError: (m: string) => void; onInfo: (m: string) => void }) {
-  const [title, setTitle] = useState(clip.title);
-  const [hook, setHook] = useState(clip.hook);
-  const [start, setStart] = useState(clip.start.toFixed(2));
-  const [end, setEnd] = useState(clip.end.toFixed(2));
-  const [layout, setLayout] = useState<LayoutId>(clip.layout ?? 'gameplay_full');
-  const [cam, setCam] = useState<NormRect | null>(clip.camRect ?? null);
-  const [preview, setPreview] = useState<string | null>(null);
-  const [busy, setBusy] = useState<'' | 'preview' | 'save' | 'render'>('');
-  const [err, setErr] = useState('');
-
-  // Al abrir, los borradores parten del clip guardado actual.
-  useEffect(() => {
-    if (!open) return;
-    setTitle(clip.title);
-    setHook(clip.hook);
-    setStart(clip.start.toFixed(2));
-    setEnd(clip.end.toFixed(2));
-    setLayout(clip.layout ?? 'gameplay_full');
-    setCam(clip.camRect ?? null);
-    setPreview(null);
-    setErr('');
-  }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  const needsCam = NEEDS_CAM.includes(layout);
-  const patch = (): ClipPatch => ({ title: title.trim(), hook: hook.trim(), start: Number(start), end: Number(end), layout, camRect: cam });
-  const dirty =
-    title.trim() !== clip.title ||
-    hook.trim() !== clip.hook ||
-    Number(start) !== Number(clip.start.toFixed(2)) ||
-    Number(end) !== Number(clip.end.toFixed(2)) ||
-    layout !== (clip.layout ?? 'gameplay_full') ||
-    JSON.stringify(cam) !== JSON.stringify(clip.camRect ?? null);
-  const run = async (kind: 'preview' | 'save' | 'render', fn: () => Promise<void>, close = false) => {
-    setBusy(kind);
-    setErr('');
-    try {
-      await fn();
-      if (close) onClose();
-    } catch (e) {
-      setErr(errMsg(e));
-    } finally {
-      setBusy('');
-    }
-  };
-
-  return (
-    <Modal
-      open={open}
-      onClose={onClose}
-      dirty={dirty}
-      size="lg"
-      title={`Editar clip ${clip.index}`}
-      footer={
-        <>
-          <button disabled={!!busy} onClick={() => run('preview', async () => setPreview(await api().previewLayout(job.id, clip.id, layout, needsCam ? cam : null, { start: Number(start), end: Number(end) })))}>
-            {busy === 'preview' ? 'Generando…' : 'Vista previa'}
-          </button>
-          <span className="grow" />
-          <button className="ghost" onClick={onClose}>
-            Cancelar
-          </button>
-          <button disabled={!!busy || !dirty} onClick={() => run('save', async () => (await api().updateClip(job.id, clip.id, patch()), onInfo(`Clip ${clip.index} actualizado.`)), true)}>
-            {busy === 'save' ? 'Guardando…' : 'Guardar'}
-          </button>
-          <button
-            className="primary"
-            disabled={!!busy}
-            onClick={() =>
-              run(
-                'render',
-                async () => {
-                  await api().updateClip(job.id, clip.id, patch());
-                  await api().rerenderClip(job.id, clip.id);
-                  onInfo(`Clip ${clip.index} re-renderizado.`);
-                },
-                true,
-              )
-            }
-          >
-            {busy === 'render' ? 'Renderizando…' : 'Guardar y volver a renderizar'}
-          </button>
-        </>
-      }
-    >
-      {err && (
-        <div className="banner error small" role="alert">
-          {err}
-        </div>
-      )}
-      <div className="pub-cols">
-        <div>
-          <label className="field">
-            <span>Título</span>
-            <input value={title} maxLength={100} onChange={(e) => setTitle(e.target.value)} />
-          </label>
-          <label className="field">
-            <span>Hook</span>
-            <input value={hook} maxLength={200} onChange={(e) => setHook(e.target.value)} />
-          </label>
-          <div className="grid2">
-            <label className="field">
-              <span>Inicio (s)</span>
-              <input type="number" step="0.1" min={0} value={start} onChange={(e) => setStart(e.target.value)} />
-            </label>
-            <label className="field">
-              <span>Fin (s)</span>
-              <input type="number" step="0.1" min={0} value={end} onChange={(e) => setEnd(e.target.value)} />
-            </label>
-          </div>
-          <label className="field">
-            <span>Plantilla vertical (gameplay / facecam)</span>
-            <select
-              value={layout}
-              onChange={(e) => {
-                const l = e.target.value as LayoutId;
-                setLayout(l);
-                setPreview(null);
-                if (NEEDS_CAM.includes(l) && !cam) setCam(clip.visual?.cam ?? DEFAULT_CAM);
-              }}
-            >
-              {LAYOUT_IDS.map((l) => (
-                <option key={l} value={l}>
-                  {LAYOUT_LABELS[l]}
-                </option>
-              ))}
-            </select>
-          </label>
-          {clip.layoutSuggestion && clip.layoutSuggestion !== layout && (
-            <p className="small muted">
-              Sugerencia: {LAYOUT_LABELS[clip.layoutSuggestion]}. {clip.layoutReason}
-            </p>
-          )}
-          {clip.visual && (
-            <details className="diagnostic">
-              <summary className="small">Diagnóstico</summary>
-              <p className="small muted">
-                Análisis visual (experimental): {VISUAL_LABELS[clip.visual.cls]} · confianza {Math.round(clip.visual.confidence * 100)} %
-              </p>
-            </details>
-          )}
-        </div>
-        <div>
-          {needsCam && cam && (
-            <>
-              <p className="small muted">Ajusta el recuadro a la cámara si la detección falló.</p>
-              <CamEditor
-                job={job}
-                clip={clip}
-                value={cam}
-                onChange={(r) => {
-                  setCam(r);
-                  setPreview(null);
-                }}
-              />
-            </>
-          )}
-          {preview && <img className="layout-preview" src={`clip://frame/${job.id}/${preview}?t=${Date.now()}`} alt="Vista previa del layout" />}
-        </div>
-      </div>
-    </Modal>
-  );
-}
-
 function ClipCard({ job, clip, pub, onPub, onError, onInfo }: { job: Job; clip: Clip; pub?: ClipPublish; onPub: (d: Record<string, ClipPublish>) => void; onError: (m: string) => void; onInfo: (m: string) => void }) {
   const [modal, setModal] = useState<'' | 'edit' | 'publish' | 'export'>('');
   const close = () => setModal('');
@@ -283,6 +75,7 @@ function ClipCard({ job, clip, pub, onPub, onError, onInfo }: { job: Job; clip: 
         {clip.dirty && <span className="badge partial">Cambios sin renderizar</span>}
         {clip.archived && <span className="badge">Archivado · se muestra el export</span>}
         {clip.exportDeletedAfterPublish && <span className="badge">Export eliminado tras publicación</span>}
+        {clip.composition?.needsReview && <span className="badge partial">Revisar composición</span>}
       </div>
       <PublishBadges pub={pub} />
       {clip.hook && <p className="hook">«{clip.hook}»</p>}
@@ -328,6 +121,8 @@ export function ResultsPage(props: { jobs: Job[]; selected: string | null; onSel
   const [msg, setMsg] = useState<{ kind: 'error' | 'info'; text: string } | null>(null);
   const [pub, setPub] = usePublish(job?.id);
   const [exportAllOpen, setExportAllOpen] = useState(false);
+  const [retrOpen, setRetrOpen] = useState(false);
+  const [retrBusy, setRetrBusy] = useState(false);
 
   if (!job)
     return (
@@ -377,6 +172,31 @@ export function ResultsPage(props: { jobs: Job[]; selected: string | null; onSel
         <button className="ghost" onClick={() => api().openExportFolder()}>
           Abrir carpeta de exportación
         </button>
+        <button className="ghost" aria-haspopup="dialog" onClick={() => setRetrOpen(true)}>
+          Reprocesar sólo transcripción
+        </button>
+        <ConfirmModal
+          open={retrOpen}
+          title="Reprocesar sólo transcripción"
+          confirmLabel={retrBusy ? 'Transcribiendo…' : 'Volver a transcribir'}
+          busy={retrBusy}
+          onClose={() => !retrBusy && setRetrOpen(false)}
+          onConfirm={async () => {
+            setRetrBusy(true);
+            try {
+              const j = await api().retranscribeJob(job.id);
+              setMsg({ kind: 'info', text: j.message });
+            } catch (e) {
+              setMsg({ kind: 'error', text: errMsg(e) });
+            } finally {
+              setRetrBusy(false);
+              setRetrOpen(false);
+            }
+          }}
+        >
+          <p>Vuelve a transcribir el audio de este trabajo con el modelo e idioma de Configuración, sin descargar ni analizar de nuevo. La transcripción anterior se conserva.</p>
+          <p className="small muted">Los subtítulos editados a mano no se tocan. Después, vuelve a renderizar los clips para aplicar los subtítulos nuevos.</p>
+        </ConfirmModal>
       </div>
       {job.resultSummary && (
         <div className={`banner ${job.analysis && job.analysis.obtained < job.analysis.effectiveTarget ? 'warn' : 'info'}`}>{job.resultSummary}</div>

@@ -93,7 +93,7 @@ export function createPipeline(ctx: PipelineContext): JobRunner {
       if (curStage) metrics.stagesMs[curStage] = Date.now() - stageStart;
       curStage = stage;
       stageStart = Date.now();
-      update({ status: stage, progress: 0, message, metrics: { ...metrics }, detail: undefined, stageStartedAt: new Date(stageStart).toISOString() });
+      update({ status: stage, stage, progress: 0, message, metrics: { ...metrics }, detail: undefined, stageStartedAt: new Date(stageStart).toISOString() });
     };
     const flushMetrics = () => {
       if (curStage) metrics.stagesMs[curStage] = Date.now() - stageStart;
@@ -116,10 +116,14 @@ export function createPipeline(ctx: PipelineContext): JobRunner {
         throw new UserFacingError(`No hay espacio suficiente en disco (se requieren al menos ${s.minFreeDiskMB} MB libres).`);
       }
       update({ message: 'Consultando información del vídeo…', progress: 0.3 });
-      const info = await readSourceInfo(tools.ytDlp!, job.url, s, signal, () => {
-        log.warn(`[${job.id}] YouTube pidió verificación anti-bot; reintentando con cliente alternativo`);
-        update({ message: 'YouTube pidió verificación; reintentando con un método alternativo…' });
-      });
+      const existingSource = () => fs.readdirSync(dir).find((f) => /^source\.(mp4|mkv|webm|mov)$/i.test(f));
+      const reuseSource = !!job.localSource || (!!job.reuse?.includes('source') && !!existingSource());
+      const info = reuseSource
+        ? { title: job.sourceTitle ?? 'Vídeo', duration: job.sourceDuration ?? 0, clientArgs: [] as string[], filesize: undefined }
+        : await readSourceInfo(tools.ytDlp!, job.url, s, signal, () => {
+            log.warn(`[${job.id}] YouTube pidió verificación anti-bot; reintentando con cliente alternativo`);
+            update({ message: 'YouTube pidió verificación; reintentando con un método alternativo…' });
+          });
       update({ sourceTitle: info.title, sourceDuration: info.duration, progress: 0.6, message: 'Comprobando motor de transcripción…' });
 
       // Plan de transcripción (antes de descargar nada pesado).
@@ -143,8 +147,17 @@ export function createPipeline(ctx: PipelineContext): JobRunner {
       check(signal);
 
       // 2. Descarga
-      enter('downloading', 'Descargando vídeo…');
-      const dl = await runProcess(
+      enter('downloading', reuseSource ? 'Reutilizando el vídeo ya descargado…' : 'Descargando vídeo…');
+      if (job.localSource && !existingSource()) {
+        // Bloque de un directo: el archivo ya está en disco (se enlaza sin copiar si es posible).
+        const dst = path.join(dir, `source${path.extname(job.localSource) || '.mp4'}`);
+        try {
+          fs.linkSync(job.localSource, dst);
+        } catch {
+          fs.copyFileSync(job.localSource, dst);
+        }
+      }
+      const dl = reuseSource ? { code: 0, stderr: '', stdout: '' } : await runProcess(
         tools.ytDlp!,
         [
           '--no-playlist',
@@ -170,8 +183,8 @@ export function createPipeline(ctx: PipelineContext): JobRunner {
           signal,
           timeoutMs: 3 * 60 * 60 * 1000,
           onStdout: (l) => {
-            const m = l.match(/\[download\]\s+([\d.]+)%/);
-            if (m) update({ progress: Math.min(1, parseFloat(m[1]) / 100) });
+            const m = l.match(/\[download\]\s+([\d.]+)%(?:\s+of\s+~?\s*([\d.]+\s*\w+))?(?:\s+at\s+([\d.]+\s*\w+\/s))?/);
+            if (m) update({ progress: Math.min(1, parseFloat(m[1]) / 100), ...(m[2] ? { message: `Descargando ${m[1]} % de ${m[2]}${m[3] ? ` a ${m[3]}` : ''}` } : {}) });
           },
         },
       );
@@ -198,13 +211,18 @@ export function createPipeline(ctx: PipelineContext): JobRunner {
       // 3. Audio
       enter('extractingAudio', 'Extrayendo audio…');
       const audioPath = path.join(dir, 'audio.wav');
-      const ea = await runProcess(tools.ffmpeg!, ['-hide_banner', '-y', '-i', sourcePath, '-vn', '-ac', '1', '-ar', '16000', audioPath], {
+      const reuseAudio = !!job.reuse?.includes('audio') && fs.existsSync(audioPath);
+      if (reuseAudio) update({ message: 'Reutilizando el audio ya extraído…' });
+      const ea = reuseAudio ? { code: 0, stderr: '', stdout: '' } : await runProcess(tools.ffmpeg!, ['-hide_banner', '-y', '-i', sourcePath, '-vn', '-ac', '1', '-ar', '16000', audioPath], {
         signal,
         timeoutMs: 60 * 60 * 1000,
       });
       if (ea.code !== 0) throw new UserFacingError('No se pudo extraer el audio.', ea.stderr);
       check(signal);
 
+      const tPath = path.join(dir, 'transcript.json');
+      const reuseTranscript = !!job.reuse?.includes('transcript') && fs.existsSync(tPath);
+      const runTranscription = async () => {
       // 4. Transcripción (con alternativa segura si la GPU falla)
       if (plan.device === 'cuda' && (await unloadModel(s.ollamaHost, s.ollamaModel))) {
         log.info(`[${job.id}] modelo de Ollama liberado de la VRAM antes de transcribir en GPU`);
@@ -267,10 +285,20 @@ export function createPipeline(ctx: PipelineContext): JobRunner {
       } catch {
         /* el JSON se valida más abajo */
       }
-      const { words, segments } = parseWhisperJson(fs.readFileSync(tFile, 'utf8'));
+      const parsed = parseWhisperJson(fs.readFileSync(tFile, 'utf8'));
+      const { segments } = parsed;
       fs.renameSync(tFile, path.join(dir, 'transcript.json'));
       if (segments.length === 0) throw new UserFacingError('No se detectó voz en el vídeo; no es posible proponer clips.');
       event('transcribed', { job: job.id, engine: usedPlan.engine, device: usedPlan.device, model: usedPlan.model, speed: metrics.transcribeSpeed, audioSec: Math.round(duration) });
+      return parsed;
+      };
+      let words: ReturnType<typeof parseWhisperJson>['words'];
+      let segments: ReturnType<typeof parseWhisperJson>['segments'];
+      if (reuseTranscript) {
+        enter('transcribing', 'Reutilizando la transcripción anterior…');
+        ({ words, segments } = parseWhisperJson(fs.readFileSync(tPath, 'utf8')));
+        if (segments.length === 0) throw new UserFacingError('La transcripción reutilizada no contiene voz.');
+      } else ({ words, segments } = await runTranscription());
       check(signal);
 
       // 5–6. Análisis por rondas + validación

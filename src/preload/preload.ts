@@ -43,6 +43,7 @@ const api: ClipsApi = {
   listJobs: () => ipcRenderer.invoke('jobs:list'),
   cancelJob: (id) => ipcRenderer.invoke('jobs:cancel', String(id)),
   retranscribeJob: (id) => ipcRenderer.invoke('jobs:retranscribe', String(id)),
+  retryJobFrom: (id, stage) => ipcRenderer.invoke('jobs:retryFrom', String(id), String(stage)),
   retryJob: (id) => ipcRenderer.invoke('jobs:retry', String(id)),
   deleteJob: (id) => ipcRenderer.invoke('jobs:delete', String(id)),
   renameClip: (jobId, clipId, title) => ipcRenderer.invoke('clips:rename', String(jobId), String(clipId), String(title)),

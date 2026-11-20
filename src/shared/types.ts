@@ -257,6 +257,15 @@ export interface Job {
   detail?: TranscribeProgress;
   /** Momento en que empezó la etapa actual (para tiempo transcurrido y ETA en la UI). */
   stageStartedAt?: string;
+  /** Última etapa en la que entró (se conserva al fallar: «Reintentar desde este paso»). */
+  stage?: MetricStage;
+  /** Material reutilizado de un trabajo anterior (reintento desde un paso). */
+  reuse?: ('source' | 'audio' | 'transcript')[];
+  resumedFrom?: string;
+  /** Vídeo local ya descargado (bloques de un directo): no se usa yt-dlp. */
+  localSource?: string;
+  /** Bloque de un monitor de directo. */
+  live?: { monitorId: string; block: number; offsetSec: number };
 }
 
 export interface TranscribeProgress {
@@ -441,6 +450,8 @@ export interface ClipsApi {
   listJobs(): Promise<Job[]>;
   cancelJob(id: string): Promise<void>;
   retryJob(id: string): Promise<Job>;
+  /** Reintenta desde un paso reutilizando lo producido antes (vídeo, audio, transcripción). */
+  retryJobFrom(id: string, stage: MetricStage): Promise<Job>;
   /** Vuelve a transcribir un trabajo terminado sin descargar ni analizar de nuevo. */
   retranscribeJob(id: string): Promise<Job>;
   deleteJob(id: string): Promise<boolean>;

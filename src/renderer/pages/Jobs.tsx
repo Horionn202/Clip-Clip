@@ -6,6 +6,7 @@ import { api, errMsg } from '../api';
 import { JobReport } from './Performance';
 import { FreeSpaceDialog } from './Storage';
 import { ConfirmModal, Modal } from '../components/Modal';
+import { PipelineCards } from '../components/PipelineCards';
 import { TEMP_ONLY, humanSize } from '../../shared/storage';
 
 export function DeviceBadge({ job }: { job: Job }) {
@@ -86,17 +87,7 @@ function ActiveCard({ job, now, onError }: { job: Job; now: number; onError: (m:
           <p>¿Cancelar este trabajo? Lo procesado hasta ahora no se usará.</p>
         </ConfirmModal>
       </div>
-      <div className="progress" role="progressbar" aria-valuenow={pct} aria-valuemin={0} aria-valuemax={100} aria-label="Progreso de la etapa">
-        <div style={{ width: `${pct}%` }} />
-      </div>
-      <ol className="timeline">
-        {stages.map((s) => (
-          <li key={s.key} className={`tl-${s.state}`}>
-            <span aria-hidden="true">{s.state === 'hecho' ? '✓' : s.state === 'en-curso' ? '◐' : '○'}</span> {s.label}
-            {s.elapsedMs !== undefined && s.state !== 'pendiente' && <span className="muted"> · {fmtMs(s.elapsedMs)}</span>}
-          </li>
-        ))}
-      </ol>
+      <PipelineCards job={job} now={now} details={<JobReport job={job} />} />
       <button className="link small" aria-haspopup="dialog" onClick={() => setModal('detail')}>
         Ver detalle técnico
       </button>
@@ -200,6 +191,9 @@ function HistoryCard(props: { job: Job; onOpen: (id: string) => void; onDeleted:
           Eliminar
         </button>
       </div>
+      {(j.status === 'failed' || j.status === 'cancelled') && (
+        <PipelineCards job={j} now={Date.now()} details={<JobReport job={j} />} onRetryFrom={(stage) => act(async () => (await api().retryJobFrom(j.id, stage), props.onRetry()))} />
+      )}
       <button className="link small" aria-haspopup="dialog" onClick={() => setModal('report')}>
         {j.status === 'failed' ? 'Ver errores y diagnóstico' : 'Ver informe del trabajo'}
       </button>

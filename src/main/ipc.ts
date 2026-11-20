@@ -526,12 +526,41 @@ export function registerIpc(ctx: IpcContext): void {
       retranscribing = false;
     }
   });
+  // Reintentar desde un paso: el trabajo nuevo reutiliza (enlace duro o copia) lo ya producido antes de ese paso.
+  h('jobs:retryFrom', async (id: unknown, stage: unknown) => {
+    const prev = requireJob(ctx, id);
+    if (!TERMINAL.includes(prev.status)) throw new UserFacingError('El trabajo sigue en curso.');
+    const st = z.enum(['validating', 'downloading', 'extractingAudio', 'transcribing', 'analyzing', 'rendering']).parse(stage);
+    const order = ['validating', 'downloading', 'extractingAudio', 'transcribing', 'analyzing', 'rendering'];
+    const i = order.indexOf(st);
+    const src = jobDir(ctx.jobsDir, prev.id);
+    const files = fs.existsSync(src) ? fs.readdirSync(src) : [];
+    const want: { kind: 'source' | 'audio' | 'transcript'; file?: string }[] = [];
+    if (i > 1) want.push({ kind: 'source', file: files.find((f) => /^source\.(mp4|mkv|webm|mov)$/i.test(f)) });
+    if (i > 2) want.push({ kind: 'audio', file: files.includes('audio.wav') ? 'audio.wav' : undefined });
+    if (i > 3) want.push({ kind: 'transcript', file: files.includes('transcript.json') ? 'transcript.json' : undefined });
+    const reuse = want.filter((w) => w.file).map((w) => w.kind);
+    return enqueueJob(
+      { url: prev.url, preset: prev.preset, maxClips: prev.maxClips, allowModelDownload: prev.allowModelDownload },
+      { reuse, resumedFrom: prev.id, sourceTitle: prev.sourceTitle, sourceDuration: prev.sourceDuration, localSource: prev.localSource, live: prev.live },
+      (dir) => {
+        for (const w of want) {
+          if (!w.file) continue;
+          try {
+            fs.linkSync(path.join(src, w.file), path.join(dir, w.file));
+          } catch {
+            fs.copyFileSync(path.join(src, w.file), path.join(dir, w.file));
+          }
+        }
+      },
+    );
+  });
   h('jobs:retry', async (id: unknown) => {
     const prev = requireJob(ctx, id);
     if (!TERMINAL.includes(prev.status)) throw new UserFacingError('El trabajo sigue en curso.');
     return enqueueJob({ url: prev.url, preset: prev.preset, maxClips: prev.maxClips, allowModelDownload: prev.allowModelDownload });
   });
-  async function enqueueJob(r: { url: string; preset: Job['preset']; maxClips: number; allowModelDownload?: boolean }): Promise<Job> {
+  async function enqueueJob(r: { url: string; preset: Job['preset']; maxClips: number; allowModelDownload?: boolean }, extra: Partial<Job> = {}, prepare?: (dir: string) => void): Promise<Job> {
     // Mientras se instala o verifica la GPU no se encolan trabajos (tampoco reintentos): competirían por la VRAM y el entorno puede estar cambiando.
     // Durante la migración de ClipsVirales se recarga el historial: un trabajo nuevo se perdería o quedaría como fallido.
     if (migratingLegacy) throw new UserFacingError('Se están migrando los datos de ClipsVirales. Espera a que termine para crear trabajos.');
@@ -558,7 +587,13 @@ export function registerIpc(ctx: IpcContext): void {
       clips: [],
       createdAt: now,
       updatedAt: now,
+      ...extra,
     };
+    if (prepare) {
+      const d = jobDir(ctx.jobsDir, job.id);
+      fs.mkdirSync(d, { recursive: true });
+      prepare(d);
+    }
     ctx.jobs.put(job);
     ctx.queue.enqueue(job.id);
     emitJob(job);
