@@ -302,4 +302,21 @@ describe('flujos del monitor', () => {
     expect(w.jobs.get('job-0')!.live!.offsetSec).toBe(0);
     lm.shutdown();
   });
+
+  it('si no se puede medir el segmento anterior, el bloque no declara un solape que no tiene', async () => {
+    const d = deps();
+    const base = d.run!;
+    d.run = async (cmd, args, opts) => (cmd === 'ffprobe' && args[args.length - 1].endsWith('seg_00000.ts') && w.jobs.has('job-0') ? { code: 1, stdout: '', stderr: 'x' } : base(cmd, args, opts));
+    const lm = new LiveManager(d);
+    const m = lm.create('https://www.youtube.com/watch?v=x', {}, true);
+    await until(() => w.recorderStarts.length === 1);
+    seg(m, 0);
+    seg(m, 1);
+    seg(m, 2);
+    await lm.tick(m.id);
+    w.jobs.set('job-0', { ...w.jobs.get('job-0')!, status: 'completed', clips: [] } as unknown as Job);
+    await lm.tick(m.id);
+    expect(w.jobs.get('job-1')!.live!.offsetSec).toBe(60);
+    lm.shutdown();
+  });
 });

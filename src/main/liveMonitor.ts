@@ -491,7 +491,18 @@ export class LiveManager {
     }
     const bytes = fs.statSync(segPath).size;
     const prev = files.find((f) => segmentIndex(f) === index - 1);
-    const win = blockWindow(index, startSec, dur, m.settings.overlapSec, !!prev);
+    // Solape REAL: sólo si se puede medir el segmento anterior y es más largo que el solape. Si no, el bloque
+    // empieza en su propio segmento y sus tiempos (offset, tramo útil) lo reflejan.
+    let prevDur = 0;
+    if (prev) {
+      try {
+        prevDur = await this.probeDuration(path.join(dir, prev));
+      } catch {
+        prevDur = 0;
+      }
+    }
+    const planned = blockWindow(index, startSec, dur, m.settings.overlapSec, !!prev);
+    const win = planned.overlap > 0 && prevDur > planned.overlap ? planned : blockWindow(index, startSec, dur, 0, false);
     const hash = blockHash(index, bytes, dur);
     // El bloque útil incluye el solape: sólo se omite si, aun con él, no cabe un clip del preset elegido.
     const usable = dur + win.overlap;
@@ -504,15 +515,7 @@ export class LiveManager {
     const blockFile = path.join(dir, `block_${String(index).padStart(5, '0')}.mp4`);
     const list = path.join(dir, `block_${index}.txt`);
     const lines = [];
-    if (prev && win.overlap > 0) {
-      let prevDur = 0;
-      try {
-        prevDur = await this.probeDuration(path.join(dir, prev));
-      } catch {
-        prevDur = 0;
-      }
-      if (prevDur > win.overlap) lines.push(`file '${prev}'`, `inpoint ${(prevDur - win.overlap).toFixed(2)}`);
-    }
+    if (prev && win.overlap > 0) lines.push(`file '${prev}'`, `inpoint ${(prevDur - win.overlap).toFixed(2)}`);
     lines.push(`file '${segName}'`);
     fs.writeFileSync(list, lines.join('\n'), 'utf8');
     const r = await this.run(ff, ['-hide_banner', '-y', '-f', 'concat', '-safe', '0', '-i', path.basename(list), '-c', 'copy', '-movflags', '+faststart', path.basename(blockFile)], { cwd: dir, timeoutMs: 10 * 60_000 }).catch(
