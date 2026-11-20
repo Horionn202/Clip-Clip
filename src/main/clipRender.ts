@@ -4,7 +4,7 @@ import path from 'node:path';
 import type { Clip, Settings } from '../shared/types';
 import { UserFacingError, safeFileName } from '../shared/validation';
 import { buildAss, type Word } from './media';
-import { layoutFilter, layoutRenderArgs, previewArgs, type LayoutInput } from './layoutRender';
+import { GAME_H, OUT_H, layoutFilter, layoutRenderArgs, previewArgs, type LayoutInput } from './layoutRender';
 import { compositionErrors, compositionOf, cornerRect, outputSize } from '../shared/composition';
 import { runProcess } from './proc';
 
@@ -15,7 +15,7 @@ export interface RenderEnv {
   srcW: number;
   srcH: number;
   words: Word[];
-  settings: Pick<Settings, 'cropOffsetX' | 'subtitleFontSize'> & Partial<Pick<Settings, 'subtitleStyle' | 'subtitleActiveColor'>>;
+  settings: Pick<Settings, 'cropOffsetX' | 'subtitleFontSize'> & Partial<Pick<Settings, 'subtitleStyle' | 'subtitleActiveColor' | 'subtitlePositionY'>>;
   signal?: AbortSignal;
   run?: typeof runProcess;
 }
@@ -44,7 +44,19 @@ export function layoutInputFor(clip: Clip, srcW: number, srcH: number, offsetX: 
     gameZoom: c.gameplayCrop.zoom,
     camCrop: c.facecamCrop,
     outputCam,
+    camFit: c.facecamFit ?? 'cover',
   };
+}
+
+/**
+ * Centro vertical de los subtítulos: el valor manual (1–99 %) o, en automático (0), la separación entre cámara y
+ * gameplay en los apilados (como en un Short) y, si no, el tercio inferior por encima de los controles de las apps.
+ */
+export function subtitlePosY(template: string, manualPct = 0): number {
+  if (manualPct > 0) return manualPct / 100;
+  if (template === 'cam_top_game_bottom') return 1 - GAME_H / OUT_H;
+  if (template === 'game_top_cam_bottom') return GAME_H / OUT_H;
+  return 0.7;
 }
 
 export function clipFileName(clip: Clip): string {
@@ -57,7 +69,7 @@ export async function renderClip(clip: Clip, env: RenderEnv, onProgress?: (fract
   const errs = compositionErrors(compositionOf(clip));
   if (errs.length) throw new UserFacingError(errs[0]);
   const assName = `${String(clip.index).padStart(2, '0')}.ass`;
-  fs.writeFileSync(path.join(env.clipsDir, assName), buildAss(env.words, clip.start, clip.end, env.settings.subtitleFontSize, clip.subtitleCues, outputSize(compositionOf(clip).outputAspectRatio), { style: env.settings.subtitleStyle, activeColor: env.settings.subtitleActiveColor }), 'utf8');
+  fs.writeFileSync(path.join(env.clipsDir, assName), buildAss(env.words, clip.start, clip.end, env.settings.subtitleFontSize, clip.subtitleCues, outputSize(compositionOf(clip).outputAspectRatio), { style: env.settings.subtitleStyle, activeColor: env.settings.subtitleActiveColor, posY: subtitlePosY(compositionOf(clip).template, env.settings.subtitlePositionY) }), 'utf8');
   const out = clipFileName(clip);
   const tmp = `${out}.part.mp4`;
   const filter = layoutFilter(layoutInputFor(clip, env.srcW, env.srcH, env.settings.cropOffsetX));

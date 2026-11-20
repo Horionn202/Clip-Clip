@@ -58,7 +58,7 @@ function renderEnvFor(ctx: IpcContext, job: Job): RenderEnv {
     srcW: job.sourceVideo.width,
     srcH: job.sourceVideo.height,
     words: words as Word[],
-    settings: { cropOffsetX: s.cropOffsetX, subtitleFontSize: s.subtitleFontSize, subtitleStyle: s.subtitleStyle, subtitleActiveColor: s.subtitleActiveColor },
+    settings: { cropOffsetX: s.cropOffsetX, subtitleFontSize: s.subtitleFontSize, subtitleStyle: s.subtitleStyle, subtitleActiveColor: s.subtitleActiveColor, subtitlePositionY: s.subtitlePositionY },
   };
 }
 import { CancelledError, runProcess } from './proc';

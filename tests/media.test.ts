@@ -9,7 +9,7 @@ describe('subtítulos ASS', () => {
   });
   it('genera eventos relativos al clip', () => {
     const ass = buildAss([{ start: 10, end: 10.5, text: ' hola' }, { start: 10.5, end: 11, text: ' {mundo}' }], 10, 40);
-    expect(ass).toContain('Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,HOLA ｛MUNDO｝');
+    expect(ass).toContain('Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,{\\an5\\pos(540,1344)}HOLA ｛MUNDO｝');
     expect(ass).toContain('PlayResY: 1920');
   });
   it('assTime', () => {

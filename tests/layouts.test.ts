@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { decideLayout, validRect, AUTO_CONFIDENCE, type VisualResult } from '../src/shared/layouts';
 import { classify, frameEdgeAnalyzer, ANALYSIS_W, ANALYSIS_H, type GrayFrame } from '../src/main/visual';
-import { CAM_H, GAME_H, OUT_H, camChain, fitAspect, gameplayCrop, layoutFilter, layoutRenderArgs } from '../src/main/layoutRender';
+import { CAM_H, GAME_H, OUT_H, blurFor, camChain, coverRect, fitAspect, gameplayCrop, layoutFilter, layoutRenderArgs } from '../src/main/layoutRender';
 
 // Generador determinista (sin Math.random) para fixtures reproducibles.
 function rng(seed: number) {
@@ -63,12 +63,12 @@ describe('decisión de layout (fallback seguro)', () => {
   const cam = { x: 0.7, y: 0.6, w: 0.28, h: 0.35 };
   const sure: VisualResult = { cls: 'facecam_inferior', confidence: 0.8, cam, engine: 't' };
   const unsure: VisualResult = { ...sure, confidence: 0.4 };
-  it('auto + confianza alta → gameplay arriba y facecam abajo', () => {
-    expect(decideLayout('auto', sure).layout).toBe('game_top_cam_bottom');
+  it('auto + confianza alta → cámara arriba y gameplay abajo (como un Short), esté donde esté la cámara', () => {
+    expect(decideLayout('auto', sure).layout).toBe('cam_top_game_bottom');
     expect(decideLayout('auto', { ...sure, cls: 'facecam_superior' }).layout).toBe('cam_top_game_bottom');
   });
   it('auto + poca confianza → gameplay completo con sugerencia (no decide solo)', () => {
-    expect(decideLayout('auto', unsure)).toMatchObject({ layout: 'gameplay_full', suggestion: 'game_top_cam_bottom' });
+    expect(decideLayout('auto', unsure)).toMatchObject({ layout: 'gameplay_full', suggestion: 'cam_top_game_bottom' });
     expect(decideLayout('auto', undefined).layout).toBe('gameplay_full');
   });
   it('preferencia con facecam sin rectángulo → recorte seguro y sugerencia', () => {
@@ -124,22 +124,69 @@ describe('LayoutStrategy: recortes y filtergraph', () => {
   });
 });
 
-describe('facecam: se recorta EXACTAMENTE la selección del vídeo original', () => {
-  it('selección alta: la cámara entera con bandas negras (sin cortar ni añadir gameplay)', () => {
-    const chain = camChain({ x: 100, y: 500, w: 500, h: 800 }, 1080, CAM_H, 1080, 1920);
+describe('facecam: cover (por defecto) y contain a partir de sourceFacecamRect', () => {
+  it('cover: el recorte tiene exactamente el aspecto del panel (sin deformar) y está dentro de la selección', () => {
+    const sel = { x: 1440, y: 700, w: 400, h: 300 };
+    for (const [tw, th] of [[1080, CAM_H], [1080, 1080], [400, 600]]) {
+      const r = coverRect(sel, tw / th, 1920, 1080);
+      expect(Math.abs(r.w / r.h / (tw / th) - 1)).toBeLessThan(0.02);
+      expect(r.x).toBeGreaterThanOrEqual(sel.x);
+      expect(r.y).toBeGreaterThanOrEqual(sel.y);
+      expect(r.x + r.w).toBeLessThanOrEqual(sel.x + sel.w);
+      expect(r.y + r.h).toBeLessThanOrEqual(sel.y + sel.h);
+      expect(r.w % 2 + r.h % 2 + r.x % 2 + r.y % 2).toBe(0);
+    }
+  });
+  it('cover: nunca pad ni barras; el filtro sólo recorta y escala', () => {
+    const chain = camChain({ x: 1440, y: 700, w: 400, h: 300 }, 1080, CAM_H, 1920, 1080);
+    expect(chain).toMatch(/^\[csrc\]crop=\d+:\d+:\d+:\d+,scale=1080:768:flags=lanczos,setsar=1\[c\]$/);
+    expect(chain).not.toContain('pad=');
+  });
+  it('cover: zoom y encuadre se aplican dentro de la selección sin salir de ella', () => {
+    const sel = { x: 1000, y: 500, w: 800, h: 450 };
+    const c0 = coverRect(sel, 1, 1920, 1080);
+    const z2 = coverRect(sel, 1, 1920, 1080, { x: 0, y: 0, zoom: 2 });
+    expect(z2.w).toBeLessThan(c0.w);
+    const left = coverRect(sel, 1, 1920, 1080, { x: -1, y: 0, zoom: 1 });
+    const right = coverRect(sel, 1, 1920, 1080, { x: 1, y: 0, zoom: 1 });
+    // Encuadre al extremo: pegado al borde de la selección (menos el 1 % de margen de limpieza).
+    expect(left.x).toBeLessThanOrEqual(sel.x + sel.w * 0.01 + 2);
+    expect(right.x + right.w).toBeGreaterThanOrEqual(sel.x + sel.w * 0.99 - 2);
+    expect(left.x).toBeGreaterThanOrEqual(sel.x);
+    expect(right.x + right.w).toBeLessThanOrEqual(sel.x + sel.w);
+    const down = coverRect(sel, 1, 1920, 1080, { x: 0, y: 1, zoom: 2 });
+    expect(down.y + down.h).toBeLessThanOrEqual(sel.y + sel.h);
+  });
+  it('contain: cámara completa sobre fondo desenfocado de la propia cámara (nunca pad negro)', () => {
+    const chain = camChain({ x: 100, y: 500, w: 500, h: 800 }, 1080, CAM_H, 1080, 1920, 'csrc', 'c', 'contain');
     expect(chain).toContain('crop=500:800:100:500');
+    expect(chain).toContain('boxblur');
     expect(chain).toContain('force_original_aspect_ratio=decrease');
-    expect(chain).toContain('pad=1080:704');
+    expect(chain).not.toContain('color=black');
   });
-  it('4:3 en el hueco apilado: recorte exacto (nunca se amplía con gameplay de alrededor)', () => {
-    const chain = camChain({ x: 1380, y: 670, w: 500, h: 360 }, 1080, CAM_H, 1920, 1080);
-    expect(chain).toMatch(/^\[csrc\]crop=500:360:1380:670,/);
-  });
-  it('misma proporción: escalado directo', () => {
-    expect(camChain({ x: 0, y: 0, w: 640, h: 360 }, 1280, 720, 1920, 1080)).toBe('[csrc]crop=640:360:0:0,scale=1280:720:flags=lanczos,setsar=1[c]');
+  it('revisión Codex: el desenfoque de contain nunca supera lo que admite un panel pequeño', () => {
+    // Panel mínimo permitido (5 % de 1080 = 54 px): croma de 27 px → radio máximo 13.
+    expect(blurFor(54, 40)).toBe('boxblur=luma_radius=18:luma_power=2:chroma_radius=9:chroma_power=2');
+    expect(blurFor(1080, 768)).toBe('boxblur=luma_radius=18:luma_power=2:chroma_radius=18:chroma_power=2');
+    expect(blurFor(6, 6)).toBe('boxblur=luma_radius=2:luma_power=2:chroma_radius=0:chroma_power=2');
+    expect(camChain({ x: 1440, y: 700, w: 400, h: 300 }, 54, 60, 1920, 1080, 'csrc', 'cam', 'contain')).toContain('chroma_radius=12');
   });
   it('una selección que se sale del fotograma se limita a él', () => {
-    expect(camChain({ x: 1800, y: 1000, w: 400, h: 300 }, 400, 300, 1920, 1080)).toContain('crop=120:80:1800:1000');
+    // Se limita al fotograma (1800+120 = 1920, 1000+80 = 1080) y nunca lo sobrepasa.
+    const m = camChain({ x: 1800, y: 1000, w: 400, h: 300 }, 120, 80, 1920, 1080).match(/crop=(\d+):(\d+):(\d+):(\d+)/)!.slice(1).map(Number);
+    expect(m[2]).toBeGreaterThanOrEqual(1800);
+    expect(m[0] + m[2]).toBeLessThanOrEqual(1920);
+    expect(m[1] + m[3]).toBeLessThanOrEqual(1080);
+  });
+  it('sourceFacecamRect (origen) y outputFacecamRect (salida) son independientes', () => {
+    const base = { layout: 'custom' as const, srcW: 1920, srcH: 1080, offsetX: 0, sourceCam: { x: 0.75, y: 0.65, w: 0.2, h: 0.28 } };
+    const a = layoutFilter({ ...base, outputCam: { x: 0.05, y: 0.1, w: 0.5, h: 0.3 } });
+    const b = layoutFilter({ ...base, outputCam: { x: 0.4, y: 0.5, w: 0.5, h: 0.3 } });
+    // Mover la cámara en la salida no cambia qué se recorta del original…
+    const srcCrop = (f: string) => f.match(/\[csrc\]crop=[^,]+/)![0];
+    expect(srcCrop(a)).toBe(srcCrop(b));
+    // …sólo dónde se superpone.
+    expect(a.match(/overlay=\d+:\d+/)![0]).not.toBe(b.match(/overlay=\d+:\d+/)![0]);
   });
   it('«Personalizado» por defecto sin facecam detectada cae al recorte seguro', () => {
     expect(decideLayout('custom', undefined).layout).toBe('gameplay_full');

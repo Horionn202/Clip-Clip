@@ -38,6 +38,11 @@ export interface ClipLayout {
   sourceFacecamRect?: NormRect;
   /** Encuadre dentro de la facecam: desplazamiento -1..1 y zoom ≥ 1. */
   facecamCrop: { x: number; y: number; zoom: number };
+  /**
+   * Cómo se encaja la cámara en su panel del resultado: `cover` llena el panel sin barras (por defecto, como un
+   * Short); `contain` muestra la cámara completa sobre un fondo desenfocado de ella misma.
+   */
+  facecamFit: 'cover' | 'contain';
   /** Esquina de la cámara en los modos flotante y personalizado. */
   facecamPosition: CamCorner;
   /**
@@ -59,6 +64,7 @@ export const DEFAULT_COMPOSITION: ClipLayout = {
   mode: 'full-frame',
   template: 'gameplay_full',
   facecamCrop: { x: 0, y: 0, zoom: 1 },
+  facecamFit: 'cover',
   facecamPosition: 'top-right',
   gameplayCrop: { x: 0, zoom: 1 },
   outputAspectRatio: '9:16',
@@ -181,7 +187,7 @@ export function combineDetections(parts: VisualResult[], o: { samples?: number; 
       : shape.factor < 1
         ? shape.reason
         : `Recuadro fijo en ${bestAgree} de ${parts.length} ventanas, cerca del borde y con forma de cámara.`;
-  return { cls: best.cls, confidence, cam, engine: `${engine}×${parts.length}`, consistency, diagnostic: { ...base, consistency, rect: cam, reason } };
+  return { cls: best.cls, confidence, cam, engine: `${engine}×${parts.length}`, consistency, diagnostic: { ...base, consistency, rect: cam, reason, candidates: withCam.map((p) => ({ rect: p.cam!, confidence: p.confidence })) } };
 }
 
 /**

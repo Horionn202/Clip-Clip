@@ -20,10 +20,10 @@ protocol.registerSchemesAsPrivileged([
   { scheme: 'clip', privileges: { standard: true, secure: true, stream: true, supportFetchAPI: true } },
 ]);
 
-if (!app.requestSingleInstanceLock()) app.quit();
-
 // Sólo en desarrollo: carpeta de datos aislada para pruebas manuales (nunca en la app instalada).
+// Va antes del bloqueo de instancia única: así una prueba aislada no choca con la app instalada abierta.
 if (!app.isPackaged && process.env.CLIP_CLIP_DATA_DIR) app.setPath('userData', process.env.CLIP_CLIP_DATA_DIR);
+if (!app.requestSingleInstanceLock()) app.quit();
 const paths = buildAppPaths(app.getPath('userData'));
 // Los datos de «ClipsVirales» ya no se migran en silencio: al abrir, el renderer pregunta (modal) qué hacer.
 for (const d of [paths.jobsDir, paths.dataDir, paths.logsDir]) fs.mkdirSync(d, { recursive: true });

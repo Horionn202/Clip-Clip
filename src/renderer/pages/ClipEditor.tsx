@@ -96,7 +96,7 @@ export function KaraokeLine({ cue, t, karaoke, color }: { cue?: Cue; t: number; 
   return (
     <>
       {ws.map((w, i) => (
-        <span key={i} className={i === active ? 'kw on' : 'kw'} style={i === active ? { color } : undefined}>
+        <span key={i} className={i === active ? 'kw on' : 'kw'} style={{ color: i === active ? color : 'var(--c-ivory)' }}>
           {w.text.toUpperCase()}
           {i < ws.length - 1 ? ' ' : ''}
         </span>
@@ -138,9 +138,9 @@ export function EditClipModal({ open, onClose, job, clip, onError, onInfo }: { o
     };
     requestAnimationFrame(tick);
   };
-  const [subStyle, setSubStyle] = useState<{ style: 'standard' | 'karaoke'; color: string }>({ style: 'karaoke', color: '#3B82F6' });
+  const [subStyle, setSubStyle] = useState<{ style: 'standard' | 'karaoke'; color: string }>({ style: 'karaoke', color: '#00C285' });
   useEffect(() => {
-    if (open) void api().getSettings().then((st) => setSubStyle({ style: st.subtitleStyle ?? 'karaoke', color: st.subtitleActiveColor ?? '#3B82F6' })).catch(() => undefined);
+    if (open) void api().getSettings().then((st) => setSubStyle({ style: st.subtitleStyle ?? 'karaoke', color: st.subtitleActiveColor ?? '#00C285' })).catch(() => undefined);
   }, [open]);
 
   useEffect(() => {
@@ -231,6 +231,7 @@ export function EditClipModal({ open, onClose, job, clip, onError, onInfo }: { o
         sourceFacecamRect: comp.sourceFacecamRect,
         facecamCrop: comp.facecamCrop,
         facecamPosition: comp.facecamPosition,
+        facecamFit: comp.facecamFit,
         outputFacecamRect: usesOverlay ? comp.outputFacecamRect : undefined,
         gameplayCrop: comp.gameplayCrop,
         outputAspectRatio: comp.outputAspectRatio,
@@ -265,6 +266,7 @@ export function EditClipModal({ open, onClose, job, clip, onError, onInfo }: { o
           sourceFacecamRect: comp.sourceFacecamRect,
           facecamCrop: comp.facecamCrop,
           facecamPosition: comp.facecamPosition,
+          facecamFit: comp.facecamFit,
           outputFacecamRect: usesOverlay ? comp.outputFacecamRect : undefined,
           gameplayCrop: comp.gameplayCrop,
           outputAspectRatio: comp.outputAspectRatio,
@@ -382,13 +384,24 @@ export function EditClipModal({ open, onClose, job, clip, onError, onInfo }: { o
             <Slider label="Zoom del gameplay" value={comp.gameplayCrop.zoom} min={1} max={3} step={0.05} fmt={(v) => `${v.toFixed(2)}×`} onChange={(v) => editComp({ gameplayCrop: { ...comp.gameplayCrop, zoom: v } })} />
             {needsCam && (
               <>
-                <Slider label="Zoom dentro de la cámara" value={comp.facecamCrop.zoom} min={1} max={3} step={0.05} fmt={(v) => `${v.toFixed(2)}×`} onChange={(v) => editComp({ facecamCrop: { ...comp.facecamCrop, zoom: v } })} />
-                {comp.facecamCrop.zoom > 1 && (
-                  <>
-                    <Slider label="Encuadre horizontal dentro de la cámara" value={comp.facecamCrop.x} min={-1} max={1} step={0.05} onChange={(v) => editComp({ facecamCrop: { ...comp.facecamCrop, x: v } })} />
-                    <Slider label="Encuadre vertical dentro de la cámara" value={comp.facecamCrop.y} min={-1} max={1} step={0.05} onChange={(v) => editComp({ facecamCrop: { ...comp.facecamCrop, y: v } })} />
-                  </>
-                )}
+                <fieldset className="fit-choice">
+                  <legend className="small">Cámara en su panel</legend>
+                  <label className="check">
+                    <input type="radio" name="fit" checked={comp.facecamFit !== 'contain'} onChange={() => editComp({ facecamFit: 'cover' })} />
+                    <span>
+                      <b>Llenar panel sin barras negras</b> <span className="small muted">(recomendado, como un Short)</span>
+                    </span>
+                  </label>
+                  <label className="check">
+                    <input type="radio" name="fit" checked={comp.facecamFit === 'contain'} onChange={() => editComp({ facecamFit: 'contain' })} />
+                    <span>
+                      Mostrar cámara completa con fondo desenfocado <span className="small muted">(avanzado)</span>
+                    </span>
+                  </label>
+                </fieldset>
+                <Slider label="Zoom de cámara" value={comp.facecamCrop.zoom} min={1} max={3} step={0.05} fmt={(v) => `${v.toFixed(2)}×`} onChange={(v) => editComp({ facecamCrop: { ...comp.facecamCrop, zoom: v } })} />
+                <Slider label="Encuadre horizontal" value={comp.facecamCrop.x} min={-1} max={1} step={0.05} onChange={(v) => editComp({ facecamCrop: { ...comp.facecamCrop, x: v } })} />
+                <Slider label="Encuadre vertical" value={comp.facecamCrop.y} min={-1} max={1} step={0.05} onChange={(v) => editComp({ facecamCrop: { ...comp.facecamCrop, y: v } })} />
               </>
             )}
             {compErr.map((m) => (
@@ -403,7 +416,12 @@ export function EditClipModal({ open, onClose, job, clip, onError, onInfo }: { o
                 <h3 id="src-cam-h" className="small">
                   1 · Cámara en el vídeo original
                 </h3>
-                <p className="small muted">Selecciona toda la ventana de la cámara, incluyendo sus bordes. Es lo único que se recorta del original.</p>
+                <p className="small muted">Selecciona toda la ventana de la cámara. Este recuadro determina qué se extrae del vídeo original.</p>
+                {clip.composition?.needsReview && !compTouched && (
+                  <p className="small warn-text" role="status">
+                    No pudimos confirmar la cámara. Ajusta el recuadro manualmente.
+                  </p>
+                )}
                 <div className="cam-frame" style={{ aspectRatio: `${srcW} / ${srcH}` }}>
                   {frame ? <img src={frame} alt="Fotograma del vídeo original" draggable={false} /> : <div className="video-ph">Sin fotograma</div>}
                   <RectDrag label="Cámara en el vídeo original" lockAspect={lockAspect} value={comp.sourceFacecamRect ?? DEFAULT_CAM} onChange={(r) => editComp({ sourceFacecamRect: r })} />
@@ -418,6 +436,9 @@ export function EditClipModal({ open, onClose, job, clip, onError, onInfo }: { o
                   </button>
                   <button className="ghost" onClick={() => fitSourceTo(4 / 3)}>
                     Ajustar a 4:3
+                  </button>
+                  <button className="ghost" onClick={() => fitSourceTo(1)}>
+                    Ajustar a cuadrado
                   </button>
                 </div>
               </section>
@@ -448,6 +469,17 @@ export function EditClipModal({ open, onClose, job, clip, onError, onInfo }: { o
                       </li>
                     )}
                     <li>Motivo: {diag?.reason ?? clip.layoutReason ?? '—'}</li>
+                    {diag?.candidates && diag.candidates.length > 0 && (
+                      <li>
+                        Candidatos ({diag.candidates.length}):{' '}
+                        {diag.candidates.map((c, i) => (
+                          <span key={i} className="small muted">
+                            {i ? ' · ' : ''}
+                            {Math.round(c.rect.x * 100)},{Math.round(c.rect.y * 100)} {Math.round(c.rect.w * 100)}×{Math.round(c.rect.h * 100)} % ({Math.round(c.confidence * 100)} %)
+                          </span>
+                        ))}
+                      </li>
+                    )}
                     {clip.layoutReason && diag && <li>Decisión: {clip.layoutReason}</li>}
                   </ul>
                 ) : (

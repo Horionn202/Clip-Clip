@@ -44,9 +44,10 @@ export function defaultSettings(exportDir: string): Settings {
     minFreeDiskMB: 2048,
     cropOffsetX: 0,
     defaultLayout: 'auto',
-    subtitleFontSize: 72,
+    subtitleFontSize: 84,
     subtitleStyle: 'karaoke',
-    subtitleActiveColor: '#3B82F6',
+    subtitleActiveColor: '#00C285',
+    subtitlePositionY: 0,
     onboardingDone: false,
   };
 }
@@ -59,6 +60,7 @@ export function migrateSettings(defaults: Settings, saved: Partial<Settings>): S
   const out: Settings = { ...defaults, ...saved };
   // Antes '' significaba autodetectar sin que el usuario lo eligiera: ahora el idioma se fuerza (español por defecto).
   if (!out.whisperLanguage) out.whisperLanguage = 'es';
+  if (saved.subtitleActiveColor === '#3B82F6') out.subtitleActiveColor = '#00C285';
   if (saved.keepTemp === undefined && saved.deleteTempAfterCompletion !== undefined) {
     out.keepTemp = saved.deleteTempAfterCompletion ? 'tras-completar' : 'siempre';
   }

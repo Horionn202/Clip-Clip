@@ -89,7 +89,7 @@ export function renderedState(c: Clip): RenderedState {
 export function compositionKey(c: Clip): string | undefined {
   if (!c.composition) return undefined;
   const k = compositionOf(c);
-  return JSON.stringify([k.template, k.sourceFacecamRect, k.facecamCrop, k.facecamPosition, k.outputFacecamRect, k.gameplayCrop, k.outputAspectRatio, !!k.manualOverride]);
+  return JSON.stringify([k.template, k.sourceFacecamRect, k.facecamCrop, k.facecamPosition, k.outputFacecamRect, k.gameplayCrop, k.outputAspectRatio, !!k.manualOverride, ...(k.facecamFit === 'contain' ? ['contain'] : [])]);
 }
 
 export function differsFromRendered(c: Clip, r: RenderedState): boolean {

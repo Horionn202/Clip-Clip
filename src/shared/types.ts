@@ -362,6 +362,8 @@ export interface Settings {
   subtitleStyle: 'standard' | 'karaoke';
   /** Color de la palabra activa en karaoke (#RRGGBB). */
   subtitleActiveColor: string;
+  /** Centro vertical de los subtítulos en % (0 = automático: en la separación cámara/gameplay). */
+  subtitlePositionY: number;
   onboardingDone: boolean;
   /** Resultados del benchmark local por modelo (sólo los escribe el proceso principal). */
   benchmarks?: Record<string, BenchmarkResult>;

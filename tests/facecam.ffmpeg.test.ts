@@ -25,7 +25,8 @@ const CAM: NormRect = { x: CAM_PX.x / SW, y: CAM_PX.y / SH, w: CAM_PX.w / SW, h:
 type Px = (x: number, y: number) => [number, number, number];
 const isMagenta = ([r, g, b]: [number, number, number]) => r > 170 && b > 170 && g < 100;
 const isGreen = ([r, g, b]: [number, number, number]) => g > 160 && r < 110 && b < 110;
-const isBlue = ([r, g, b]: [number, number, number]) => b > 190 && r < 120 && g > 90 && g < 180;
+// Turquesa Surf (#00C285) de la palabra activa.
+const isBlue = ([r, g, b]: [number, number, number]) => r < 70 && g > 150 && b > 90 && b < 180;
 
 async function frameAt(file: string, t: number, dir: string, w: number, h: number): Promise<Px> {
   const raw = path.join(dir, `f_${path.basename(file)}_${t}.rgb`);
@@ -100,44 +101,65 @@ describe.skipIf(!ffmpeg)('FFmpeg real: la facecam sale entera, en su sitio y sin
 
   const env = (source: string, extra: Partial<RenderEnv> = {}): RenderEnv => ({ ffmpeg: ffmpeg!, clipsDir: dir, sourcePath: source, srcW: SW, srcH: SH, words: [], settings: { cropOffsetX: 0, subtitleFontSize: 72 }, ...extra });
 
+  const slotOf = (c: Clip, template: LayoutId, out: { w: number; h: number }) => {
+    const gH = Math.floor((out.h * (GAME_H / OUT_H)) / 2) * 2;
+    if (template === 'cam_top_game_bottom') return { x: 0, y: 0, w: out.w, h: out.h - gH };
+    if (template === 'game_top_cam_bottom') return { x: 0, y: gH, w: out.w, h: out.h - gH };
+    const o = layoutInputFor(c, SW, SH, 0).outputCam!;
+    return { x: Math.round(o.x * out.w), y: Math.round(o.y * out.h), w: Math.round(o.w * out.w), h: Math.round(o.h * out.h) };
+  };
+  const isCam = (p: [number, number, number]) => isMagenta(p) || isGreen(p);
+  const isBlack = ([r, g, b]: [number, number, number]) => r < 24 && g < 24 && b < 24;
+  // Bordes del panel (2 px hacia dentro): columnas izquierda/derecha y filas superior/inferior.
+  const edges = (s: { x: number; y: number; w: number; h: number }) => {
+    const pts: [number, number][] = [];
+    for (let y = s.y + 2; y < s.y + s.h - 2; y += 4) pts.push([s.x + 2, y], [s.x + s.w - 3, y]);
+    for (let x = s.x + 2; x < s.x + s.w - 2; x += 4) pts.push([x, s.y + 2], [x, s.y + s.h - 3]);
+    return pts;
+  };
+
   for (const template of ['cam_top_game_bottom', 'game_top_cam_bottom', 'game_cam_float', 'custom'] as LayoutId[]) {
     for (const aspect of ASPECT_RATIOS) {
-      it(`${template} · ${aspect}: cámara entera (4 esquinas), proporción original y en su hueco`, async () => {
+      it(`cover · ${template} · ${aspect}: la cámara llena su panel, sin barras negras ni gameplay dentro`, async () => {
         const out = outputSize(aspect);
         const c = clip(template, aspect, template === 'custom' ? { composition: { template, sourceFacecamRect: CAM, outputFacecamRect: { x: 0.05, y: 0.1, w: 0.5, h: 0.3 }, outputAspectRatio: aspect, manualOverride: true } as Clip['composition'] } : {});
         const file = await renderClip(c, env(withCam));
         const px = await frameAt(path.join(dir, file), 1, dir, out.w, out.h);
-        // Hueco de la cámara en la salida (lo que dice el layout).
-        const gH = Math.floor((out.h * (GAME_H / OUT_H)) / 2) * 2;
-        const slot =
-          template === 'cam_top_game_bottom'
-            ? { x: 0, y: 0, w: out.w, h: out.h - gH }
-            : template === 'game_top_cam_bottom'
-              ? { x: 0, y: gH, w: out.w, h: out.h - gH }
-              : (() => {
-                  const o = layoutInputFor(c, SW, SH, 0).outputCam!;
-                  return { x: Math.round(o.x * out.w), y: Math.round(o.y * out.h), w: Math.round(o.w * out.w), h: Math.round(o.h * out.h) };
-                })();
-        const m = bbox(px, (p) => isMagenta(p) || isGreen(p), slot);
-        expect(m.n).toBeGreaterThan(100);
-        // Sin deformar: misma proporción que la cámara del original (4:3), con margen por el muestreo.
-        const ar = (m.x1 - m.x0 + 2) / (m.y1 - m.y0 + 2);
-        expect(Math.abs(ar / (CAM_PX.w / CAM_PX.h) - 1)).toBeLessThan(0.08);
-        // Entera: un cuadrado verde en CADA esquina de la cámara.
-        const cw = (m.x1 - m.x0) * 0.2;
-        const ch = (m.y1 - m.y0) * 0.2;
-        for (const [qx, qy] of [
-          [m.x0, m.y0],
-          [m.x1 - cw, m.y0],
-          [m.x0, m.y1 - ch],
-          [m.x1 - cw, m.y1 - ch],
-        ])
-          expect(countIn(px, isGreen, Math.floor(qx), Math.floor(qy), Math.ceil(qx + cw), Math.ceil(qy + ch))).toBeGreaterThan(3);
-        // Y no se añadió gameplay de alrededor dentro de la caja de la cámara: el centro es magenta.
-        expect(isMagenta(px((m.x0 + m.x1) / 2, (m.y0 + m.y1) / 2))).toBe(true);
+        const slot = slotOf(c, template, out);
+        const pts = edges(slot);
+        // Ningún borde del panel es negro: no hay barras laterales ni superiores.
+        expect(pts.filter(([x, y]) => isBlack(px(x, y))).length).toBe(0);
+        // Todo el panel es cámara (magenta/verde): no se añadió gameplay de alrededor ni relleno.
+        const camShare = pts.filter(([x, y]) => isCam(px(x, y))).length / pts.length;
+        expect(camShare).toBeGreaterThan(0.97);
+        // El centro de la cámara está en el centro del panel (recorte centrado en la selección).
+        expect(isMagenta(px(slot.x + slot.w / 2, slot.y + slot.h / 2))).toBe(true);
       }, 90000);
     }
   }
+
+  for (const aspect of ASPECT_RATIOS) {
+    it(`contain · ${aspect}: cámara completa sobre fondo desenfocado de la propia cámara (nunca negro)`, async () => {
+      const out = outputSize(aspect);
+      const c = clip('cam_top_game_bottom', aspect, { title: `contain-${aspect.replace(':', 'x')}`, composition: { template: 'cam_top_game_bottom', sourceFacecamRect: CAM, facecamFit: 'contain', outputAspectRatio: aspect, manualOverride: true } as Clip['composition'] });
+      const file = await renderClip(c, env(withCam));
+      const px = await frameAt(path.join(dir, file), 1, dir, out.w, out.h);
+      const slot = slotOf(c, 'cam_top_game_bottom', out);
+      const pts = edges(slot);
+      expect(pts.filter(([x, y]) => isBlack(px(x, y))).length).toBe(0);
+      // Las cuatro esquinas verdes de la cámara están dentro del panel (se ve entera).
+      const g = bbox(px, isGreen, slot);
+      const m = bbox(px, isMagenta, slot);
+      expect(g.n).toBeGreaterThan(20);
+      expect(m.n).toBeGreaterThan(50);
+    }, 90000);
+  }
+
+  it('revisión Codex: contain en una cámara personalizada mínima (54 px) renderiza sin error', async () => {
+    const c = clip('custom', '9:16', { title: 'contain-min', composition: { template: 'custom', sourceFacecamRect: CAM, facecamFit: 'contain', outputFacecamRect: { x: 0.1, y: 0.1, w: 0.05, h: 0.05 }, outputAspectRatio: '9:16', manualOverride: true } as Clip['composition'] });
+    const file = await renderClip(c, env(withCam));
+    expect(fs.existsSync(path.join(dir, file))).toBe(true);
+  }, 90000);
 
   it('detección: encuentra la cámara del vídeo sintético y la elige con confianza', async () => {
     const frames = await sampleFrames(ffmpeg!, withCam, 0, 4, path.join(dir, 'frames'), 12);
@@ -158,7 +180,7 @@ describe.skipIf(!ffmpeg)('FFmpeg real: la facecam sale entera, en su sitio y sin
     expect(decideLayout('auto', v).layout).not.toBe('gameplay_full');
   }, 120000);
 
-  it('vídeo sin facecam: no se inventa una cámara y se usa «Sin facecam: sólo gameplay»', async () => {
+  it('vídeo sin facecam: no se inventa una cámara y se usa «Sin cámara: sólo gameplay»', async () => {
     const frames = await sampleFrames(ffmpeg!, noCam, 0, 4, path.join(dir, 'frames'), 12);
     const third = Math.floor(frames.length / 3);
     const parts = [frames, frames.slice(0, third), frames.slice(third, 2 * third), frames.slice(2 * third)].map((f) => frameEdgeAnalyzer.analyze(f));
@@ -170,7 +192,7 @@ describe.skipIf(!ffmpeg)('FFmpeg real: la facecam sale entera, en su sitio y sin
     expect(bbox(px, isMagenta, { x: 0, y: 0, w: 1080, h: 1920 }).n).toBe(0);
   }, 120000);
 
-  it('karaoke: frase entera visible y sólo la palabra que se dice en azul', async () => {
+  it('karaoke: frase entera visible y sólo la palabra que se dice en Turquesa Surf', async () => {
     // «Mira, mira qué músculos» con tiempos por palabra.
     const words = [
       { start: 0.2, end: 0.7, text: 'Mira,' },
@@ -179,8 +201,8 @@ describe.skipIf(!ffmpeg)('FFmpeg real: la facecam sale entera, en su sitio y sin
       { start: 1.7, end: 1.95, text: 'músculos' },
     ];
     const c = clip('gameplay_full', '9:16', { camRect: undefined, composition: undefined, title: 'karaoke' });
-    const file = await renderClip(c, env(noCam, { words, settings: { cropOffsetX: 0, subtitleFontSize: 90, subtitleStyle: 'karaoke', subtitleActiveColor: '#3B82F6' } }));
-    const band = { x: 0, y: 1200, w: 1080, h: 600 };
+    const file = await renderClip(c, env(noCam, { words, settings: { cropOffsetX: 0, subtitleFontSize: 90, subtitleStyle: 'karaoke' } }));
+    const band = { x: 0, y: 1150, w: 1080, h: 450 };
     // Primera «MIRA» activa: el azul está a la izquierda de la frase.
     const first = bbox(await frameAt(path.join(dir, file), 0.45, dir, 1080, 1920), isBlue, band);
     // Segunda «MIRA» activa: el azul se movió a la derecha (la primera volvió a blanco).

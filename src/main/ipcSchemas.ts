@@ -63,6 +63,7 @@ export const settingsPatchSchema = z
     subtitleFontSize: z.number().int().min(30).max(140),
     subtitleStyle: z.enum(['standard', 'karaoke']),
     subtitleActiveColor: z.string().regex(/^#[0-9a-fA-F]{6}$/),
+    subtitlePositionY: z.number().int().min(0).max(85),
     onboardingDone: z.boolean(),
   })
   .partial()
@@ -92,6 +93,7 @@ export const compositionSchema = z
     sourceFacecamRect: normRectSchema.optional(),
     facecamCrop: z.object({ x: unit, y: unit, zoom: z.number().finite().min(1).max(4) }).strict().optional(),
     facecamPosition: z.enum(['top-left', 'top-right', 'bottom-left', 'bottom-right', 'custom']).optional(),
+    facecamFit: z.enum(['cover', 'contain']).optional(),
     outputFacecamRect: normRectSchema.optional(),
     gameplayCrop: z.object({ x: unit, zoom: z.number().finite().min(1).max(4) }).strict().optional(),
     outputAspectRatio: z.enum(['9:16', '1:1', '16:9']).optional(),
