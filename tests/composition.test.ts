@@ -38,6 +38,11 @@ describe('coordenadas normalizadas → filtros FFmpeg', () => {
     const f = layoutFilter({ layout: 'custom', srcW: W, srcH: H, offsetX: 0, cam: CAM, overlay: { x: 0.1, y: 0.5, w: 0.5, h: 0.2 } });
     expect(f).toContain('overlay=108:960');
   });
+  it('con zoom, el desplazamiento mueve el recorte aunque el aspecto coincida', () => {
+    const f = (x: number) => layoutFilter({ layout: 'gameplay_full', srcW: W, srcH: H, offsetX: x, out: outputSize('16:9'), gameZoom: 2 });
+    expect(crops(f(-1))[0]).toEqual([960, 540, 0, 270]);
+    expect(crops(f(1))[0]).toEqual([960, 540, 960, 270]);
+  });
   it('zoom sin salir del fotograma', () => {
     const r = zoomRect({ x: 0, y: 0, w: 1000, h: 1000 }, 2, 1000, 1000, 1, 1);
     expect(r).toEqual({ x: 500, y: 500, w: 500, h: 500 });

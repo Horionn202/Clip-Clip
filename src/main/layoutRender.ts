@@ -132,7 +132,8 @@ export function layoutFilter(i: LayoutInput): string {
   const camPx = i.cam ? zoomRect(toPx(i.cam, srcW, srcH), cc.zoom, srcW, srcH, cc.x, cc.y) : undefined;
   const gz = i.gameZoom ?? 1;
   const crop = (r: PxRect) => `crop=${r.w}:${r.h}:${r.x}:${r.y}`;
-  const game = (aspect: number, cam?: PxRect) => zoomRect(gameplayCrop(aspect, srcW, srcH, i.offsetX, cam), gz, srcW, srcH);
+  // El desplazamiento también actúa dentro del recorte ampliado (si no, con el mismo aspecto no habría margen para moverlo).
+  const game = (aspect: number, cam?: PxRect) => zoomRect(gameplayCrop(aspect, srcW, srcH, i.offsetX, cam), gz, srcW, srcH, i.offsetX);
   // Caja de la cámara en la salida (píxeles pares, dentro del lienzo).
   const box = (r: NormRect) => {
     const w = even(Math.min(W, r.w * W));

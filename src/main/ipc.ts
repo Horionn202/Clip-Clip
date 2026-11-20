@@ -544,6 +544,15 @@ export function registerIpc(ctx: IpcContext): void {
       enqueueJob(
         { url: m.url, preset: m.settings.preset, maxClips: m.settings.maxClipsPerBlock, allowModelDownload: false },
         { localSource: file, live: { monitorId: m.id, block, offsetSec }, sourceTitle: `${m.title ?? 'Directo'} · bloque ${block + 1}` },
+        // El trabajo es dueño de su vídeo desde que se encola: el monitor ya puede borrar su bloque sin romper reintentos.
+        (dir) => {
+          const dst = path.join(dir, `source${path.extname(file) || '.mp4'}`);
+          try {
+            fs.linkSync(file, dst);
+          } catch {
+            fs.copyFileSync(file, dst);
+          }
+        },
       ),
     getJob: (id) => ctx.jobs.get(id),
     removeClips: (jobId, ids) => {
@@ -584,7 +593,8 @@ export function registerIpc(ctx: IpcContext): void {
     const src = jobDir(ctx.jobsDir, prev.id);
     const files = fs.existsSync(src) ? fs.readdirSync(src) : [];
     const want: { kind: 'source' | 'audio' | 'transcript'; file?: string }[] = [];
-    if (i > 1) want.push({ kind: 'source', file: files.find((f) => /^source\.(mp4|mkv|webm|mov)$/i.test(f)) });
+    // Un bloque de directo siempre reutiliza su vídeo (no hay URL descargable equivalente).
+    if (i > 1 || prev.localSource) want.push({ kind: 'source', file: files.find((f) => /^source\.(mp4|mkv|webm|mov)$/i.test(f)) });
     if (i > 2) want.push({ kind: 'audio', file: files.includes('audio.wav') ? 'audio.wav' : undefined });
     if (i > 3) want.push({ kind: 'transcript', file: files.includes('transcript.json') ? 'transcript.json' : undefined });
     const reuse: ('source' | 'audio' | 'transcript' | 'clips')[] = want.filter((w) => w.file).map((w) => w.kind);
