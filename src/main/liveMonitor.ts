@@ -173,6 +173,10 @@ export class LiveManager {
   remove(id: string): void {
     const m = this.must(id);
     if (isActive(m.status)) throw new UserFacingError('Detén el monitor antes de quitarlo.');
+    // Un bloque en cola o en proceso aún necesita su archivo (el trabajo lo enlaza al empezar).
+    if (m.blocks.some((b) => b.status === 'procesando' && b.jobId && !TERMINAL.includes(this.d.getJob(b.jobId)?.status ?? 'completed'))) {
+      throw new UserFacingError('Hay un bloque de este directo pendiente de procesar; espera a que termine para quitarlo.');
+    }
     this.stopRuntime(id, true);
     fs.rmSync(this.dirOf(id), { recursive: true, force: true });
     this.monitors.delete(id);
@@ -452,7 +456,7 @@ export class LiveManager {
       const seg = segmentIndex(f);
       const isBlock = /^block_\d{5}\.mp4$/.test(f);
       const processed = seg !== null && m.blocks.some((b) => b.index === seg && b.status !== 'en-cola' && b.status !== 'procesando');
-      const removable = isBlock ? all || (lastDone !== undefined && f === `block_${String(lastDone).padStart(5, '0')}.mp4`) : seg !== null && processed && (all || (lastDone !== undefined && seg < lastDone));
+      const removable = isBlock ? all || (lastDone !== undefined && f === `block_${String(lastDone).padStart(5, '0')}.mp4`) : seg !== null && (all || (processed && lastDone !== undefined && seg < lastDone));
       if (!removable || (m.settings.keepSegments && !isBlock)) continue;
       // Un bloque cuyo trabajo sigue en cola o en proceso aún se necesita (el trabajo lo enlaza al empezar).
       if (isBlock) {

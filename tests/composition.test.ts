@@ -100,7 +100,9 @@ describe('edición no destructiva', () => {
     expect(n.subtitleCues).toEqual([{ start: 0, end: 1, text: 'hola' }]);
   });
   it('un desplazamiento 0 guardado en el clip manda sobre el ajuste global', () => {
-    expect(layoutInputFor(clip({ composition: { template: 'gameplay_full', gameplayCrop: { x: 0, zoom: 1 } } }), W, H, 0.8).offsetX).toBe(0);
+    expect(layoutInputFor(clip({ composition: { template: 'gameplay_full', gameplayCrop: { x: 0, zoom: 1 }, manualOverride: true } }), W, H, 0.8).offsetX).toBe(0);
+    // Composición automática: se respeta el ajuste global.
+    expect(layoutInputFor(clip({ composition: autoComposition('gameplay_full', undefined) }), W, H, 0.8).offsetX).toBe(0.8);
     expect(layoutInputFor(clip(), W, H, 0.8).offsetX).toBe(0.8);
   });
   it('cambiar el tramo desplaza los subtítulos editados', () => {

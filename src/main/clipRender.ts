@@ -30,7 +30,8 @@ export function layoutInputFor(clip: Clip, srcW: number, srcH: number, offsetX: 
     srcW,
     srcH,
     // El desplazamiento del clip, si se fijó, manda sobre el ajuste global.
-    offsetX: clip.composition?.gameplayCrop?.x !== undefined ? clip.composition.gameplayCrop.x : offsetX,
+    // Sólo un desplazamiento elegido a mano (incluido 0) manda sobre el ajuste global; el automático no.
+    offsetX: clip.composition?.manualOverride && clip.composition.gameplayCrop?.x !== undefined ? clip.composition.gameplayCrop.x : offsetX,
     cam: c.facecamRect,
     out,
     gameZoom: c.gameplayCrop.zoom,
