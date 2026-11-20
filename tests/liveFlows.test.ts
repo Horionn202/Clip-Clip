@@ -326,4 +326,19 @@ describe('flujos del monitor', () => {
     expect(recorderInputs(urls)).toEqual(['-i', 'https://v.example/video.m3u8', '-i', 'https://a.example/audio.m3u8', '-map', '0:v:0', '-map', '1:a:0']);
     expect(recorderInputs(streamUrls('https://c.example/x.m3u8'))).toEqual(['-i', 'https://c.example/x.m3u8', '-map', '0:v:0?', '-map', '0:a:0?']);
   });
+
+  it('un monitor detenido se puede quitar aunque su bloque siga procesándose (el trabajo tiene su propio vídeo)', async () => {
+    const lm = new LiveManager(deps());
+    const m = lm.create('https://www.youtube.com/watch?v=x', {}, true);
+    await until(() => w.recorderStarts.length === 1);
+    seg(m, 0);
+    seg(m, 1);
+    await lm.tick(m.id);
+    lm.stop(m.id);
+    lm.remove(m.id);
+    expect(lm.list().monitors).toHaveLength(0);
+    expect(fs.existsSync(dirOf(m))).toBe(false);
+    expect(fs.existsSync(path.join(w.jobDirs, 'job-0', 'source.mp4'))).toBe(true);
+    lm.shutdown();
+  });
 });

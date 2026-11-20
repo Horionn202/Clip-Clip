@@ -213,10 +213,8 @@ export class LiveManager {
   remove(id: string): void {
     const m = this.must(id);
     if (isActive(m.status)) throw new UserFacingError('Detén el monitor antes de quitarlo.');
-    // Un bloque en cola o en proceso aún necesita su archivo (el trabajo lo enlaza al empezar).
-    if (m.blocks.some((b) => b.status === 'procesando' && b.jobId && !TERMINAL.includes(this.d.getJob(b.jobId)?.status ?? 'completed'))) {
-      throw new UserFacingError('Hay un bloque de este directo pendiente de procesar; espera a que termine para quitarlo.');
-    }
+    // Los bloques en cola o en proceso no dependen de esta carpeta: su trabajo enlazó el vídeo en la suya al
+    // encolarse. Siguen procesándose y sus clips aparecen en Resultados aunque se quite el monitor.
     this.stopRuntime(id, true);
     fs.rmSync(this.dirOf(id), { recursive: true, force: true });
     this.monitors.delete(id);
