@@ -103,10 +103,23 @@ export class LiveManager {
   private runtime(id: string): Runtime {
     let r = this.rt.get(id);
     if (!r) {
-      r = { recorderRunning: false, busy: false, absClips: [], gen: 0 };
+      r = { recorderRunning: false, busy: false, absClips: this.historyOf(id), gen: 0 };
       this.rt.set(id, r);
     }
     return r;
+  }
+
+  /** Clips ya generados por el monitor (tiempos absolutos), reconstruidos desde los trabajos de sus bloques (p. ej. tras reabrir la app). */
+  private historyOf(id: string): AbsClip[] {
+    const m = this.monitors.get(id);
+    if (!m) return [];
+    return m.blocks
+      .filter((b) => b.status === 'procesado' && b.jobId)
+      .flatMap((b) => {
+        const job = this.d.getJob(b.jobId!);
+        const offset = job?.live?.offsetSec ?? b.startSec;
+        return (job?.clips ?? []).map((c) => ({ start: offset + c.start, end: offset + c.end, title: c.title }));
+      });
   }
 
   list(): { ack: boolean; monitors: LiveMonitor[] } {

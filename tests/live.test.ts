@@ -222,4 +222,25 @@ describe('LiveManager (procesos simulados)', () => {
     expect(lm.list().monitors[0]).toMatchObject({ status: 'error' });
     lm.shutdown();
   });
+
+  it('tras reabrir, la deduplicación recuerda los clips de los bloques ya procesados', async () => {
+    const d = deps('live-then-ended');
+    const lm = new LiveManager(d);
+    const m = lm.create('https://www.youtube.com/watch?v=x', {}, true);
+    const dir = path.join(root, 'live', m.id);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'seg_00000.ts'), 'a');
+    fs.writeFileSync(path.join(dir, 'seg_00001.ts'), 'b');
+    for (let i = 0; i < 50 && lm.list().monitors[0].status !== 'finalizando'; i++) await new Promise((r) => setTimeout(r, 10));
+    await lm.tick(m.id);
+    jobs.set('job-0', { ...jobs.get('job-0')!, status: 'completed', clips: [{ id: 'c1', start: 44, end: 59.5, title: 'A' }] } as Job);
+    await lm.tick(m.id); // cierra el 0 y encola el 1
+    lm.shutdown();
+    // Se reabre la app: un monitor nuevo con el mismo almacenamiento.
+    const again = new LiveManager(deps('ended'));
+    jobs.set('job-1', { ...jobs.get('job-1')!, status: 'completed', clips: [{ id: 'd1', start: 0, end: 15, title: 'Otro' }] } as Job);
+    await again.tick(m.id);
+    expect(removed).toEqual(['d1']);
+    again.shutdown();
+  });
 });
