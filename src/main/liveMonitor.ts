@@ -161,8 +161,11 @@ export class LiveManager {
 
   stop(id: string): LiveMonitor {
     const m = this.must(id);
-    this.stopRuntime(id, true);
+    // Si hay un bloque en cola o en proceso, el ciclo sigue vivo hasta que termine para cerrarlo y limpiar su archivo.
+    const pending = m.blocks.some((b) => b.status === 'procesando');
+    this.stopRuntime(id, !pending);
     this.cleanupSegments(id, true);
+    if (pending) this.ensureTick(id);
     return this.set(id, { status: m.status === 'finalizado' ? 'finalizado' : 'detenido', finishedAt: m.finishedAt ?? new Date().toISOString() });
   }
 
@@ -252,7 +255,15 @@ export class LiveManager {
     rt.recorderRunning = true; // reservado desde ya: evita dos grabaciones a la vez
     const dir = this.dirOf(id);
     fs.mkdirSync(dir, { recursive: true });
-    const g = await this.run(yt, ['-g', '-f', 'b[height<=720]/b', '--no-playlist', '--no-warnings', '--', m.url], { timeoutMs: 90_000 });
+    let g: RunResult;
+    try {
+      g = await this.run(yt, ['-g', '-f', 'b[height<=720]/b', '--no-playlist', '--no-warnings', '--', m.url], { timeoutMs: 90_000 });
+    } catch (e) {
+      // yt-dlp no arrancó o superó el tiempo: se libera la reserva y queda en error reanudable.
+      rt.recorderRunning = false;
+      if (gen === rt.gen) this.set(id, { status: 'error', error: `No se pudo consultar el flujo del directo (${(e as Error).message}). Pulsa «Reanudar» para reintentar.` });
+      return;
+    }
     const stream = g.stdout.split(/\r?\n/).find((l) => /^https:\/\//.test(l.trim()))?.trim();
     // Pausado o detenido mientras se consultaba el flujo: no se empieza a grabar.
     const live = this.monitors.get(id);
@@ -322,6 +333,11 @@ export class LiveManager {
         if (job && !TERMINAL.includes(job.status)) return;
         this.finishBlock(id, running.index, job);
         m = this.monitors.get(id)!;
+        if (m.status === 'detenido' || m.status === 'finalizado') {
+          this.cleanupSegments(id, true);
+          this.stopRuntime(id, true);
+          return;
+        }
       }
       if (m.status === 'pausado' || m.status === 'detenido' || m.status === 'error' || m.status === 'finalizado') return;
       // 2. Siguiente segmento completo.
@@ -372,9 +388,16 @@ export class LiveManager {
       this.set(id, { recordedSec: startSec + dur, blocks: [...m.blocks, { index, startSec, endSec: startSec + dur, hash, status: 'error', clips: 0, error: 'No se pudo preparar el bloque.' }] });
       return;
     }
+    // Pausado o detenido mientras se preparaba el bloque: no se encola (el segmento se procesará al reanudar).
+    const cur = this.monitors.get(id);
+    if (!cur || cur.status === 'pausado' || cur.status === 'detenido' || cur.status === 'error' || cur.blocks.some((b) => b.index === index)) {
+      fs.rmSync(blockFile, { force: true });
+      return;
+    }
     try {
-      const job = await this.d.enqueueBlock(m, blockFile, index, win.from);
-      this.set(id, { status: m.status === 'en-directo' ? 'procesando' : m.status, recordedSec: startSec + dur, blocks: [...m.blocks, { index, startSec, endSec: startSec + dur, hash, status: 'procesando', jobId: job.id, clips: 0 }] });
+      const job = await this.d.enqueueBlock(cur, blockFile, index, win.from);
+      const now = this.monitors.get(id)!;
+      this.set(id, { status: now.status === 'en-directo' ? 'procesando' : now.status, recordedSec: startSec + dur, blocks: [...now.blocks, { index, startSec, endSec: startSec + dur, hash, status: 'procesando', jobId: job.id, clips: 0 }] });
     } catch (e) {
       // La cola está llena o hay una tarea pesada: se reintenta en el siguiente ciclo (no se pierde el segmento).
       fs.rmSync(blockFile, { force: true });
@@ -423,6 +446,12 @@ export class LiveManager {
       const processed = seg !== null && m.blocks.some((b) => b.index === seg && b.status !== 'en-cola' && b.status !== 'procesando');
       const removable = isBlock ? all || (lastDone !== undefined && f === `block_${String(lastDone).padStart(5, '0')}.mp4`) : seg !== null && processed && (all || (lastDone !== undefined && seg < lastDone));
       if (!removable || (m.settings.keepSegments && !isBlock)) continue;
+      // Un bloque cuyo trabajo sigue en cola o en proceso aún se necesita (el trabajo lo enlaza al empezar).
+      if (isBlock) {
+        const b = m.blocks.find((x) => f === `block_${String(x.index).padStart(5, '0')}.mp4`);
+        const job = b?.jobId ? this.d.getJob(b.jobId) : undefined;
+        if (job && !TERMINAL.includes(job.status)) continue;
+      }
       try {
         freed += fs.statSync(full).size;
         fs.rmSync(full, { force: true });

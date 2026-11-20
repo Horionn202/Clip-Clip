@@ -189,4 +189,37 @@ describe('LiveManager (procesos simulados)', () => {
     expect(lm.list().monitors[0].status).toBe('detenido');
     lm.shutdown();
   });
+
+  it('detener no borra el bloque de un trabajo aún en cola', async () => {
+    const lm = new LiveManager(deps('live-then-ended'));
+    const m = lm.create('https://www.youtube.com/watch?v=x', {}, true);
+    const dir = path.join(root, 'live', m.id);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'seg_00000.ts'), 'a');
+    fs.writeFileSync(path.join(dir, 'seg_00001.ts'), 'b');
+    for (let i = 0; i < 50 && lm.list().monitors[0].status !== 'finalizando'; i++) await new Promise((r) => setTimeout(r, 10));
+    await lm.tick(m.id);
+    const block = path.join(dir, 'block_00000.mp4');
+    expect(fs.existsSync(block)).toBe(true);
+    lm.stop(m.id);
+    expect(fs.existsSync(block)).toBe(true);
+    jobs.set('job-0', { ...jobs.get('job-0')!, status: 'completed', clips: [] } as unknown as Job);
+    await lm.tick(m.id);
+    expect(fs.existsSync(block)).toBe(false);
+    lm.shutdown();
+  });
+
+  it('si yt-dlp falla al pedir el flujo, queda en error reanudable', async () => {
+    const d = deps('live');
+    const base = d.run!;
+    d.run = async (cmd, args, opts) => {
+      if (cmd === 'yt-dlp' && args[0] === '-g') throw new Error('timeout');
+      return base(cmd, args, opts);
+    };
+    const lm = new LiveManager(d);
+    lm.create('https://www.youtube.com/watch?v=x', {}, true);
+    for (let i = 0; i < 50 && lm.list().monitors[0].status !== 'error'; i++) await new Promise((r) => setTimeout(r, 5));
+    expect(lm.list().monitors[0]).toMatchObject({ status: 'error' });
+    lm.shutdown();
+  });
 });
