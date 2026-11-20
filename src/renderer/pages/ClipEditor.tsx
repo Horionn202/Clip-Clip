@@ -370,7 +370,7 @@ export function EditClipModal({ open, onClose, job, clip, onError, onInfo }: { o
               className="ghost"
               onClick={() => {
                 void api()
-                  .clipWords(job.id, clip.id)
+                  .clipWords(job.id, clip.id, { start: Number(start), end: Number(end) })
                   .then((w) => {
                     setCues(buildCues(w, Number(start), Number(end)));
                     setCuesTouched(false);

@@ -516,7 +516,10 @@ export function registerIpc(ctx: IpcContext): void {
     // Una sola inferencia pesada a la vez (GPUs de 6 GB): ni con trabajos en curso ni con otra retranscripción.
     if (retranscribing || ctx.queue.activeCount > 0) throw new UserFacingError('Hay otra transcripción o trabajo en curso; espera a que termine.');
     if (rerendering.has(job.id)) throw new UserFacingError('Se está renderizando un clip de este trabajo; espera a que termine.');
+    if (cleaning) throw new UserFacingError('Hay una limpieza de almacenamiento en curso; espera a que termine.');
     retranscribing = true;
+    // Mientras tanto el trabajo cuenta como ocupado: «Liberar espacio» no toca su vídeo ni su audio y no se edita.
+    rerendering.add(job.id);
     try {
       const r = await retranscribeJob(job, ctx.pipelineCtx, ctx.settings.get(), ctx.tools(), await ctx.gpuInfo(true), new AbortController().signal, (m) => emitJob({ ...job, message: m }));
       const cur = ctx.jobs.get(job.id) ?? job;
@@ -527,6 +530,7 @@ export function registerIpc(ctx: IpcContext): void {
       return next;
     } finally {
       retranscribing = false;
+      rerendering.delete(job.id);
     }
   });
   // ---- Directos: monitor persistente; cada bloque es un trabajo normal con vídeo local ----
@@ -750,12 +754,14 @@ export function registerIpc(ctx: IpcContext): void {
     const view = comp ? { ...clip, composition: { ...clip.composition, ...comp, manualOverride: true }, layout: comp.template, camRect: comp.facecamRect } : { ...clip, layout: l, camRect: cam };
     return renderPreview(env, { ...view, start: draft.start, end: draft.end }, path.join(jobDir(ctx.jobsDir, job.id), 'frames'), name);
   });
-  h('clips:words', (jobId: unknown, clipId: unknown) => {
+  h('clips:words', (jobId: unknown, clipId: unknown, range: unknown) => {
     const job = requireJob(ctx, jobId);
     const id = idSchema.parse(clipId);
     const clip = job.clips.find((c) => c.id === id);
     if (!clip) throw new UserFacingError('El clip no existe.');
-    return transcriptWords(ctx, job.id).filter((w) => w.end > clip.start - 1 && w.start < clip.end + 1);
+    // Tramo en edición (sin guardar): las palabras deben cubrirlo entero.
+    const r = range == null ? { start: clip.start, end: clip.end } : previewRangeSchema.parse(range);
+    return transcriptWords(ctx, job.id).filter((w) => w.end > r.start - 1 && w.start < r.end + 1);
   });
   h('clips:export', async (jobId: unknown, clipId: unknown) => {
     const job = requireJob(ctx, jobId);

@@ -467,7 +467,7 @@ export interface ClipsApi {
   rerenderClip(jobId: string, clipId: string): Promise<Job>;
   previewLayout(jobId: string, clipId: string, layout: LayoutId, camRect: NormRect | null, range?: { start: number; end: number } | null, composition?: Partial<import('./composition').ClipLayout> | null): Promise<string>;
   /** Palabras de la transcripción en el tramo del clip (para el editor de subtítulos). */
-  clipWords(jobId: string, clipId: string): Promise<{ start: number; end: number; text: string }[]>;
+  clipWords(jobId: string, clipId: string, range?: { start: number; end: number } | null): Promise<{ start: number; end: number; text: string }[]>;
   exportClip(jobId: string, clipId: string): Promise<string>;
   exportAll(jobId: string): Promise<number>;
   listPublishedExports(platforms?: import('./publish').Platform[], jobId?: string, clipId?: string): Promise<{ items: PublishedExportInfo[]; totalBytes: number }>;
