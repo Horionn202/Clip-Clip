@@ -15,7 +15,7 @@ Guía corta para comprobar las funciones que dependen de vídeo real. Los tests 
 ## 2. Vídeo de gameplay con cámara abajo a la derecha
 1. Crea un trabajo con un vídeo de gameplay con facecam rectangular en la esquina inferior derecha.
 2. Con «Plantilla por defecto: automática», el clip debe salir como «Gameplay arriba + facecam abajo», con la cámara entera (sin cortar la cara).
-3. Si la detección falla, el clip debe mostrar **«No se pudo confirmar una facecam. Ajústala manualmente.»** y usar «Sin facecam: sólo gameplay».
+3. Si la detección falla, el clip debe mostrar **«No pudimos confirmar la cámara. Ajusta el recuadro manualmente.»** y usar «Sin cámara: sólo gameplay».
 4. Editar clip → Composición:
    - elige «Gameplay arriba + cámara abajo»;
    - arrastra el recuadro hasta la cámara y redimensiónalo desde la esquina (también con flechas y Mayús+flechas);
@@ -25,11 +25,13 @@ Guía corta para comprobar las funciones que dependen de vídeo real. Los tests 
 
 ## 2b. Facecam y karaoke (editor)
 - [ ] En «Editar clip», la sección «1 · Cámara en el vídeo original» muestra un solo recuadro rosa sobre el fotograma original. «Ajustar a 16:9 / 4:3» y «Mantener proporción» funcionan.
-- [ ] «Vista previa rápida» en «Facecam arriba + gameplay abajo»: la cámara sale **entera** (sus cuatro esquinas) y sin deformar. No hay guías de área segura.
+- [ ] «Vista previa rápida» en «Cámara arriba + gameplay abajo» (por defecto «Llenar panel sin barras negras»): la cámara llena todo el ancho de su panel, sin barras negras ni deformación, y el gameplay llena el de abajo (como un Short). Con «Mostrar cámara completa», la cámara entera sobre su propio fondo desenfocado. No hay guías de área segura.
+- [ ] Comparar la vista previa con el MP4 final en el mismo instante: deben coincidir (ver docs/capturas/preview-vs-render.png).
 - [ ] «Facecam flotante» en 9:16, 1:1 y 16:9: la cámara sale entera, dentro de las guías. Mover el recuadro del resultado no cambia el recorte del original.
 - [ ] «Ver diagnóstico» muestra las muestras, la consistencia, el rectángulo y el motivo. En un vídeo sin cámara: «Sin facecam: sólo gameplay».
 - [ ] «Renderizar este clip» con el vídeo del clip abierto en Resultados: termina igualmente, sin `.part`.
-- [ ] Subtítulos en karaoke: la frase entera visible y sólo la palabra que se dice en azul (en la vista previa del editor y en el MP4).
+- [ ] Subtítulos en karaoke: la frase entera visible en Marfil Antiguo, centrada en la separación cámara/gameplay, y sólo la palabra que se dice en Turquesa Surf; al avanzar vuelve a Marfil (vista previa del editor y MP4).
+- [ ] Paleta Negro Piano / Marfil Antiguo / Turquesa Surf en sidebar, pestañas, botones, modales, tarjetas, pipeline, editor, resultados, publicación, configuración, foco, campos, badges y avisos.
 
 ## 3. Directo de YouTube (propio o autorizado)
 1. **Directos** → pega la URL del directo o del canal (`https://www.youtube.com/@canal`). Acepta el aviso de uso autorizado (sólo la primera vez).

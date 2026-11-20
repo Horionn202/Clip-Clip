@@ -31,10 +31,15 @@ export function assTime(t: number): string {
 export type SubtitleStyle = 'standard' | 'karaoke';
 export interface AssOptions {
   style?: SubtitleStyle;
+  /** Centro vertical de los subtítulos (fracción de la salida). Por defecto, por encima de los controles de las apps. */
+  posY?: number;
   /** Color de la palabra activa en karaoke (#RRGGBB). */
   activeColor?: string;
 }
-export const DEFAULT_ACTIVE_COLOR = '#3B82F6';
+/** Turquesa Surf: palabra activa del karaoke (identidad de la app). */
+export const DEFAULT_ACTIVE_COLOR = '#00C285';
+/** Marfil Antiguo: color base de las palabras no activas. */
+export const SUBTITLE_BASE_COLOR = '#F2E8D5';
 
 /** #RRGGBB → color ASS (&H00BBGGRR). Un valor no válido usa el azul por defecto. */
 export function assColor(hex: string | undefined): string {
@@ -46,7 +51,7 @@ export function assColor(hex: string | undefined): string {
  * Eventos karaoke de un cue: la frase entera visible todo el tiempo y SÓLO la palabra que se está diciendo en el
  * color activo (las anteriores vuelven a blanco). Un evento por tramo de tiempo; en los silencios, todo blanco.
  */
-export function karaokeEvents(c: Cue, activeColor: string): { start: number; end: number; text: string }[] {
+export function karaokeEvents(c: Cue, activeColor: string, base = assColor(SUBTITLE_BASE_COLOR)): { start: number; end: number; text: string }[] {
   const ws = wordTimings(c);
   const words = ws.map((w) => escapeAssText(w.text).toUpperCase()).filter(Boolean);
   if (words.length !== ws.length || !ws.length) return [{ start: c.start, end: c.end, text: escapeAssText(c.text).toUpperCase() }];
@@ -61,7 +66,7 @@ export function karaokeEvents(c: Cue, activeColor: string): { start: number; end
     if (last && last.active === active && Math.abs(last.end - s0) < 0.005) last.end = s1;
     else out.push({ start: s0, end: s1, active, text: '' });
   }
-  for (const e of out) e.text = words.map((w, i) => (i === e.active ? `{\\1c${activeColor}&}${w}{\\1c&H00FFFFFF&}` : w)).join(' ');
+  for (const e of out) e.text = words.map((w, i) => (i === e.active ? `{\\1c${activeColor}&}${w}{\\1c${base}&}` : w)).join(' ');
   return out.map(({ start, end, text }) => ({ start, end, text }));
 }
 
@@ -72,11 +77,15 @@ export function karaokeEvents(c: Cue, activeColor: string): { start: number; end
 export function buildAss(words: Word[], clipStart: number, clipEnd: number, fontSize = 72, cues?: Cue[], out: { w: number; h: number } = { w: 1080, h: 1920 }, o: AssOptions = {}): string {
   const list = cues ?? buildCues(words, clipStart, clipEnd);
   const color = assColor(o.activeColor);
+  const base = assColor(SUBTITLE_BASE_COLOR);
+  // Posición: centro de la frase en posY (dentro del área segura), centrada en horizontal. Máximo dos líneas.
+  const y = Math.round(out.h * Math.min(1 - SAFE_AREA.bottom - 0.04, Math.max(SAFE_AREA.top + 0.04, o.posY ?? 0.7)));
+  const pos = `{\\an5\\pos(${Math.round(out.w / 2)},${y})}`;
   const lines: string[] = [];
   for (const c of list) {
     if (!(c.end > c.start)) continue;
-    const evs = o.style === 'karaoke' && !c.noWordTiming ? karaokeEvents(c, color) : [{ start: c.start, end: c.end, text: escapeAssText(c.text).toUpperCase() }];
-    for (const e of evs) if (e.text && assTime(e.end) !== assTime(e.start)) lines.push(`Dialogue: 0,${assTime(e.start)},${assTime(e.end)},Default,,0,0,0,,${e.text}`);
+    const evs = o.style === 'karaoke' && !c.noWordTiming ? karaokeEvents(c, color, base) : [{ start: c.start, end: c.end, text: escapeAssText(c.text).toUpperCase() }];
+    for (const e of evs) if (e.text && assTime(e.end) !== assTime(e.start)) lines.push(`Dialogue: 0,${assTime(e.start)},${assTime(e.end)},Default,,0,0,0,,${pos}${e.text}`);
   }
   // Margen inferior dentro del área segura (por encima de los controles de TikTok/Shorts/Reels).
   const marginV = Math.round(out.h * SAFE_AREA.bottom + 40);
@@ -91,7 +100,8 @@ export function buildAss(words: Word[], clipStart: number, clipEnd: number, font
     '',
     '[V4+ Styles]',
     'Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding',
-    `Style: Default,Arial,${size},&H00FFFFFF,&H0000FFFF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,5,2,2,60,60,${marginV},1`,
+    // Marfil Antiguo con contorno y sombra oscuros: muy legible sobre cámara o gameplay.
+    `Style: Default,Arial Black,${size},${base},&H0000FFFF,&H00101010,&HA0000000,-1,0,0,0,100,100,0,0,1,${Math.max(4, Math.round(size / 12))},3,5,70,70,${marginV},1`,
     '',
     '[Events]',
     'Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text',

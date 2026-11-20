@@ -183,7 +183,7 @@ export function SettingsPage(props: { settings: Settings; onChange: (s: Settings
               </option>
             ))}
           </select>
-          <small className="muted">Si la detección no es fiable se usa «Sin facecam: sólo gameplay» y se muestra la sugerencia en cada clip. Puedes cambiar la plantilla de cada clip en Resultados.</small>
+          <small className="muted">Si la detección no es fiable se usa «Sin cámara: sólo gameplay» y se muestra la sugerencia en cada clip. Puedes cambiar la plantilla de cada clip en Resultados.</small>
         </label>
         <label className="field">
           <span>Desplazamiento horizontal del recorte: {s.cropOffsetX.toFixed(2)} (−1 izquierda, 0 centro, 1 derecha)</span>
@@ -203,10 +203,15 @@ export function SettingsPage(props: { settings: Settings; onChange: (s: Settings
           </label>
           <label className="field">
             <span>Color de la palabra activa</span>
-            <input type="color" value={s.subtitleActiveColor ?? '#3B82F6'} disabled={s.subtitleStyle === 'standard'} onChange={(e) => patch({ subtitleActiveColor: e.target.value.toUpperCase() })} />
+            <input type="color" value={s.subtitleActiveColor ?? '#00C285'} disabled={s.subtitleStyle === 'standard'} onChange={(e) => patch({ subtitleActiveColor: e.target.value.toUpperCase() })} />
           </label>
         </div>
-        <small className="muted">Se aplica a los clips que renderices a partir de ahora (los ya renderizados no cambian hasta volver a renderizarlos).</small>
+        <label className="field">
+        <span>Posición vertical de los subtítulos: {s.subtitlePositionY ? `${s.subtitlePositionY} % desde arriba` : 'automática (en la separación cámara/gameplay)'}</span>
+        <input type="range" min={0} max={78} step={1} value={s.subtitlePositionY ?? 0} onChange={(e) => patch({ subtitlePositionY: Number(e.target.value) })} aria-describedby="subpos-help" />
+        <small id="subpos-help" className="muted">0 = automática. Nunca baja de la zona que tapan los controles de TikTok, Shorts y Reels.</small>
+      </label>
+      <small className="muted">Se aplica a los clips que renderices a partir de ahora (los ya renderizados no cambian hasta volver a renderizarlos).</small>
   
       </SectionCard>
       {s.onboardingDone && (

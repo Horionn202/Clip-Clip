@@ -76,27 +76,36 @@ describe('karaoke por palabra', () => {
   // «Mira, mira qué músculos»: cuatro palabras con sus tiempos de Whisper.
   const words = [W(0, 0.3, 'Mira,'), W(0.35, 0.6, 'mira'), W(0.7, 0.9, 'qué'), W(0.9, 1.5, 'músculos')];
   const cue = buildCues(words, 0, 10)[0];
-  it('la frase entera visible y sólo la palabra que se dice en azul', async () => {
-    const { karaokeEvents, assColor } = await import('../src/main/media');
-    const blue = assColor('#3B82F6');
-    expect(blue).toBe('&H00F6823B');
-    const evs = karaokeEvents(cue, blue);
+  it('frase entera visible y SÓLO la palabra que se dice en Turquesa Surf; las demás en Marfil Antiguo', async () => {
+    const { karaokeEvents, assColor, DEFAULT_ACTIVE_COLOR, SUBTITLE_BASE_COLOR } = await import('../src/main/media');
+    const tq = assColor(DEFAULT_ACTIVE_COLOR);
+    const iv = assColor(SUBTITLE_BASE_COLOR);
+    expect(DEFAULT_ACTIVE_COLOR).toBe('#00C285');
+    expect(tq).toBe('&H0085C200');
+    const evs = karaokeEvents(cue, tq, iv);
     for (const e of evs) {
-      expect(e.text.replace(/\{[^}]*\}/g, '')).toBe('MIRA, MIRA QUÉ MÚSCULOS');
-      expect((e.text.match(/\\1c&H00F6823B&/g) ?? []).length).toBeLessThanOrEqual(1);
+      expect(e.text.replace(/{[^}]*}/g, '')).toBe('MIRA, MIRA QUÉ MÚSCULOS');
+      expect((e.text.split(`\\1c${tq}&`).length - 1)).toBeLessThanOrEqual(1);
     }
     const at = (t: number) => evs.find((e) => t >= e.start && t < e.end)!.text;
-    expect(at(0.1)).toBe(`{\\1c${blue}&}MIRA,{\\1c&H00FFFFFF&} MIRA QUÉ MÚSCULOS`);
-    expect(at(0.4)).toBe(`MIRA, {\\1c${blue}&}MIRA{\\1c&H00FFFFFF&} QUÉ MÚSCULOS`);
-    expect(at(0.8)).toBe(`MIRA, MIRA {\\1c${blue}&}QUÉ{\\1c&H00FFFFFF&} MÚSCULOS`);
+    expect(at(0.1)).toBe(`{\\1c${tq}&}MIRA,{\\1c${iv}&} MIRA QUÉ MÚSCULOS`);
+    // La primera vuelve a Marfil cuando se dice la segunda.
+    expect(at(0.4)).toBe(`MIRA, {\\1c${tq}&}MIRA{\\1c${iv}&} QUÉ MÚSCULOS`);
+    expect(at(0.8)).toBe(`MIRA, MIRA {\\1c${tq}&}QUÉ{\\1c${iv}&} MÚSCULOS`);
     // Silencio entre palabras: ninguna activa.
     expect(at(0.32)).toBe('MIRA, MIRA QUÉ MÚSCULOS');
   });
-  it('ASS karaoke frente a estándar y fallback sin tiempos por palabra', () => {
-    expect(buildAss(words, 0, 10, 72, undefined, undefined, { style: 'karaoke' })).toContain('\\1c&H00F6823B&');
+  it('ASS karaoke frente a estándar, fallback sin tiempos por palabra y posición en la separación', async () => {
+    const { assColor, DEFAULT_ACTIVE_COLOR } = await import('../src/main/media');
+    const tq = assColor(DEFAULT_ACTIVE_COLOR);
+    expect(buildAss(words, 0, 10, 72, undefined, undefined, { style: 'karaoke' })).toContain(`\\1c${tq}&`);
     expect(buildAss(words, 0, 10, 72, undefined, undefined, { style: 'standard' })).not.toContain('\\1c');
     const approx = wordsFromSegments([W(0, 2, 'hola qué tal')]);
     expect(buildAss(approx, 0, 10, 72, undefined, undefined, { style: 'karaoke' })).not.toContain('\\1c');
+    // Centrado justo en la frontera cámara/gameplay (40 % de 1920 = 768).
+    expect(buildAss(words, 0, 10, 72, undefined, undefined, { style: 'karaoke', posY: 0.4 })).toContain('{\\an5\\pos(540,768)}');
+    // Nunca dentro de la zona que tapan los controles de las apps.
+    expect(buildAss(words, 0, 10, 72, undefined, undefined, { posY: 0.97 })).toContain('\\pos(540,1459)');
   });
   it('texto editado: tiempos repartidos provisionalmente y marcados como aproximados', () => {
     const t = wordTimings({ start: 1, end: 3, text: 'hola mundo' });

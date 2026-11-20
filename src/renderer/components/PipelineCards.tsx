@@ -11,7 +11,7 @@ export function redactPaths(s: string): string {
 const STATE_LABEL: Record<PipelineCard['state'], string> = { pendiente: 'Pendiente', activo: 'En curso', completado: 'Completado', error: 'Error', cancelado: 'Cancelado' };
 
 /**
- * Progreso del trabajo como tarjetas grandes (una por paso). Pendiente = gris discreto, activo = azul/violeta,
+ * Progreso del trabajo como tarjetas grandes (una por paso). Pendiente = gris discreto, activo = Turquesa Surf,
  * completado = verde, error = rojo (sólo el paso que falló), cancelado = ámbar.
  */
 export function PipelineCards({ job, now, onRetryFrom, retry, details }: { job: Job; now: number; onRetryFrom?: (stage: NonNullable<PipelineCard['stage']>) => void; retry?: Record<string, RetryOption>; details?: React.ReactNode }) {

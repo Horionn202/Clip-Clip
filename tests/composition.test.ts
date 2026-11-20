@@ -32,7 +32,8 @@ describe('coordenadas normalizadas → filtros FFmpeg', () => {
     expect(layoutFilter({ layout: 'gameplay_full', srcW: W, srcH: H, offsetX: 0, out: outputSize('1:1') })).toContain('scale=1080:1080');
     expect(layoutFilter({ layout: 'gameplay_full', srcW: W, srcH: H, offsetX: 0, out: outputSize('16:9') })).toContain('scale=1920:1080');
     const stacked = layoutFilter({ layout: 'game_top_cam_bottom', srcW: W, srcH: H, offsetX: 0, sourceCam: CAM, out: outputSize('9:16') });
-    expect(stacked).toContain('scale=1080:1216');
+    expect(stacked).toContain('scale=1080:1152'); // gameplay 60 %
+    expect(stacked).toContain('scale=1080:768'); // cámara 40 %
     expect(stacked).toContain('vstack');
   });
   it('la caja de la cámara se coloca donde dice la composición', () => {

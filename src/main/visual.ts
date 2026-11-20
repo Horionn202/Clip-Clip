@@ -104,8 +104,8 @@ export const frameEdgeAnalyzer: VisualAnalyzer = {
     const ratio = best.minSide / bg;
     if (ratio < 3) return { cls: ratio < 1.5 ? 'sin_facecam' : 'incierto', confidence: Math.min(0.5, ratio / 6), engine };
     // Afinado: la búsqueda va de 2 en 2 px y el borde real puede caer en el píxel de al lado (mezclado con el
-    // fondo). Cada lado se ajusta ±2 px al borde más fuerte y luego se amplía 1 px hacia fuera: es preferible
-    // incluir un poco de marco que cortar parte de la cámara.
+    // fondo). Cada lado se ajusta ±2 px al borde más fuerte (y al marco exterior si hay uno dentro): así
+    // el recuadro coincide con la cámara, sin cortarla ni añadir gameplay alrededor.
     const refine = (cur: number, f: (p: number) => number, lo: number, hi: number) => {
       let bestP = cur;
       let bestV = f(cur);
@@ -129,10 +129,10 @@ export const frameEdgeAnalyzer: VisualAnalyzer = {
     if (rx1 < w - 1) rx1 = outward(rx1, (p) => vSide(p, ry0, ry1), 1, w - 2);
     if (ry0 > 0) ry0 = outward(ry0, (p) => hSide(Math.max(0, p - 1), rx0, rx1), -1, 1);
     if (ry1 < h - 1) ry1 = outward(ry1, (p) => hSide(p, rx0, rx1), 1, h - 2);
-    const fx0 = Math.max(0, rx0 - 1);
-    const fy0 = Math.max(0, ry0 - 1);
-    const fx1 = Math.min(w, rx1 + 2);
-    const fy1 = Math.min(h, ry1 + 2);
+    const fx0 = rx0;
+    const fy0 = ry0;
+    const fx1 = Math.min(w, rx1 + 1);
+    const fy1 = Math.min(h, ry1 + 1);
     const cam: NormRect = { x: fx0 / w, y: fy0 / h, w: (fx1 - fx0) / w, h: (fy1 - fy0) / h };
     const confidence = Math.max(0, Math.min(1, (ratio - 3) / 6 + 0.55));
     return { cls: classify(cam), confidence: Math.round(confidence * 100) / 100, cam, engine };
