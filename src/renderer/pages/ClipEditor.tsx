@@ -289,15 +289,15 @@ export function EditClipModal({ open, onClose, job, clip, onError, onInfo }: { o
       title={`Editar clip ${clip.index}`}
       footer={
         <>
-          <button disabled={!!busy || compErr.length > 0} onClick={quickPreview}>
-            {busy === 'preview' ? 'Generando…' : 'Vista previa rápida'}
-          </button>
-          <span className="grow" />
           <button className="ghost" onClick={onClose}>
             Cancelar
           </button>
           <button disabled={!!busy || !dirty} onClick={() => run('save', async () => (await api().updateClip(job.id, clip.id, patch()), onInfo(`Clip ${clip.index} guardado. Renderízalo para aplicar los cambios.`)), true)}>
             {busy === 'save' ? 'Guardando…' : 'Guardar cambios'}
+          </button>
+          <button disabled={!!busy || compErr.length > 0} aria-busy={busy === 'preview' || undefined} onClick={quickPreview}>
+            {busy === 'preview' && <span className="spinner" aria-hidden="true" />}
+            {busy === 'preview' ? 'Generando…' : 'Vista previa rápida'}
           </button>
           <button
             className="primary"

@@ -5,6 +5,9 @@ import { humanSize } from '../../shared/storage';
 import { fmtMs } from '../../shared/jobView';
 import { api, errMsg } from '../api';
 import { ConfirmModal, Modal } from '../components/Modal';
+import { Button, EmptyState, PageHeader, StatusPill, type Tone } from '../components/ui';
+
+const TONE: Record<LiveMonitor['status'], Tone> = { esperando: 'neutral', verificando: 'neutral', 'en-directo': 'active', procesando: 'active', pausado: 'warn', finalizando: 'active', finalizado: 'ok', detenido: 'warn', error: 'err' };
 
 const dur = (sec: number) => fmtMs(Math.round(sec * 1000));
 
@@ -50,10 +53,7 @@ export function LivePage({ onOpenResults }: { onOpenResults: () => void }) {
 
   return (
     <section className="page">
-      <h1>Directos</h1>
-      <p className="muted">
-        Vigila un directo de YouTube y genera clips a medida que avanza, por bloques de {settings.blockSec} s con {settings.overlapSec} s de solape. Todo se procesa en este equipo.
-      </p>
+      <PageHeader title="Directos" subtitle={`Vigila un directo de YouTube y genera clips a medida que avanza, por bloques de ${settings.blockSec} s con ${settings.overlapSec} s de solape. Todo se procesa en este equipo.`} />
       <div className="banner warn small">Sólo para directos propios, autorizados o con derechos de uso. Se graba desde el momento en que empiezas a vigilar: no se descarga el directo completo ni lo emitido antes.</div>
       <div className="card">
         <label className="field">
@@ -107,37 +107,52 @@ export function LivePage({ onOpenResults }: { onOpenResults: () => void }) {
           return (
             <article key={m.id} className={`card monitor ${m.status}`} aria-label={`Monitor: ${m.title ?? m.url}`}>
               <div className="row">
-                <span className={`badge live-${m.status}`}>{processing && m.status !== 'pausado' ? MONITOR_STATUS_LABELS.procesando : MONITOR_STATUS_LABELS[m.status]}</span>
-                <b className="grow clip-title">{m.title ?? m.url}</b>
+                <StatusPill tone={processing && m.status !== 'pausado' ? 'active' : TONE[m.status] ?? 'neutral'} dot>
+                  {processing && m.status !== 'pausado' ? MONITOR_STATUS_LABELS.procesando : MONITOR_STATUS_LABELS[m.status]}
+                </StatusPill>
+                <b className="grow job-title">{m.title ?? 'Directo de YouTube'}</b>
               </div>
-              <div className="monitor-stats small">
-                <span>En directo: {dur(s.watchedSec)}</span>
-                <span>Procesado: {dur(s.processedSec)}</span>
-                <span>Retraso: {dur(s.lagSec)}</span>
-                <span>Clips: {m.clipsGenerated}</span>
-                <span>Disco temporal: {humanSize(m.tempBytes)}</span>
+              <div className="metric-grid">
+                <div className="metric"><span className="m-k">En directo</span><span className="m-v">{dur(s.watchedSec)}</span></div>
+                <div className="metric"><span className="m-k">Procesado</span><span className="m-v">{dur(s.processedSec)}</span></div>
+                <div className="metric"><span className="m-k">Retraso</span><span className="m-v">{dur(s.lagSec)}</span></div>
+                <div className="metric"><span className="m-k">Clips</span><span className="m-v">{m.clipsGenerated}</span></div>
+                <div className="metric"><span className="m-k">Disco temporal</span><span className="m-v">{humanSize(m.tempBytes)}</span></div>
               </div>
               {m.notice && <p className="small muted">{m.notice}</p>}
-              {m.error && <p className="small error">{m.error}</p>}
+              {m.error && (
+                <div className="banner error small" role="alert">
+                  {m.error}
+                </div>
+              )}
               <div className="row">
-                {isActive(m.status) && <button onClick={() => act(() => api().livePause(m.id))}>Pausar</button>}
-                {(m.status === 'pausado' || m.status === 'error') && <button onClick={() => act(() => api().liveResume(m.id))}>Reanudar</button>}
-                {m.status !== 'finalizado' && m.status !== 'detenido' && (
-                  <button className="danger" onClick={() => act(() => api().liveStop(m.id))}>
-                    Detener
-                  </button>
+                {isActive(m.status) && (
+                  <Button icon="pause" onClick={() => act(() => api().livePause(m.id))}>
+                    Pausar
+                  </Button>
                 )}
-                <button className="ghost" onClick={onOpenResults} disabled={!m.clipsGenerated}>
+                {(m.status === 'pausado' || m.status === 'error') && (
+                  <Button variant="primary" icon="play" onClick={() => act(() => api().liveResume(m.id))}>
+                    Reanudar
+                  </Button>
+                )}
+                {m.status !== 'finalizado' && m.status !== 'detenido' && (
+                  <Button variant="danger" icon="stop" onClick={() => act(() => api().liveStop(m.id))}>
+                    Detener
+                  </Button>
+                )}
+                <span className="grow" />
+                <Button variant="ghost" onClick={onOpenResults} disabled={!m.clipsGenerated}>
                   Abrir resultados
-                </button>
-                <button className="link" aria-haspopup="dialog" onClick={() => setDetail(m)}>
+                </Button>
+                <Button variant="ghost" aria-haspopup="dialog" onClick={() => setDetail(m)}>
                   Ver detalles
-                </button>
+                </Button>
               </div>
             </article>
           );
         })}
-        {monitors.length === 0 && <div className="empty">Aún no vigilas ningún directo.</div>}
+        {monitors.length === 0 && <EmptyState icon="live" title="Aún no vigilas ningún directo.">Pega arriba la URL de un directo propio o autorizado.</EmptyState>}
       </div>
 
       <ConfirmModal open={warnOpen} title="Antes de vigilar un directo" confirmLabel="Lo confirmo" onClose={() => setWarnOpen(false)} onConfirm={() => (setWarnOpen(false), void create(true))}>

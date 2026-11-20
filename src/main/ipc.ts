@@ -16,6 +16,7 @@ import { benchmarkModel, chatJson, listModels, pullModel, unloadModel } from './
 import { PublishStore } from './publishStore';
 import { retranscribeJob } from './retranscribe';
 import { LiveManager } from './liveMonitor';
+import { BulkDeleter } from './bulkDelete';
 import { retryOptions } from '../shared/jobView';
 import { availability, isModelCached, selectEngine } from './transcribe';
 import { compositionErrors, compositionOf } from '../shared/composition';
@@ -709,6 +710,28 @@ export function registerIpc(ctx: IpcContext): void {
     const job = requireJob(ctx, id);
     ctx.queue.cancel(job.id);
   });
+  // ---- Borrado masivo con «Deshacer» ----
+  const bulk = new BulkDeleter({
+    jobsDir: ctx.jobsDir,
+    pendingDir: path.join(ctx.userDataDir, 'pending-delete'),
+    getJobs: () => ctx.jobs.list(),
+    putJob: (j) => (ctx.jobs.put(j), emitJob(j)),
+    removeJob: (id) => ctx.jobs.delete(id),
+    forgetPublish: (id) => ctx.publish.deleteJob(id),
+    trash: (p) => shell.trashItem(p),
+    busy: () => rerendering,
+    log: (m, x) => (log.info(m, x), event('bulk_delete', { msg: m, ...(x as object) })),
+  });
+  void bulk.sweepLeftovers();
+  ctx.onShutdown?.(() => void bulk.finalizeAll());
+  const bulkIds = z.array(idSchema).min(1).max(5000);
+  const bulkOpts = z.object({ deleteExports: z.boolean() }).strict();
+  h('jobs:bulkPlan', (ids: unknown, opts: unknown) => bulk.plan(bulkIds.parse(ids), bulkOpts.parse(opts)));
+  h('jobs:bulkDelete', (ids: unknown, opts: unknown, typed: unknown) => {
+    if (cleaning) throw new UserFacingError('Hay una limpieza de almacenamiento en curso; espera a que termine.');
+    return bulk.delete(bulkIds.parse(ids), bulkOpts.parse(opts), typed == null ? undefined : z.string().max(20).parse(typed));
+  });
+  h('jobs:bulkUndo', (batchId: unknown) => bulk.undo(z.string().uuid().parse(batchId)));
   h('jobs:delete', async (id: unknown) => {
     const job = requireJob(ctx, id);
     if (!['completed', 'cancelled', 'failed'].includes(job.status)) throw new UserFacingError('Cancela el trabajo antes de borrarlo.');

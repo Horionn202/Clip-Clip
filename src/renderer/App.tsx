@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useState } from 'react';
-import logoUrl from './assets/logo-128.png';
 import type { Diagnostics, Job, Settings } from '../shared/types';
 import { api } from './api';
 import { HomePage } from './pages/Home';
@@ -10,6 +9,8 @@ import { PolicyPage } from './pages/Policy';
 import { ConnectionsPage } from './pages/Publish';
 import { LegacyModal, useLegacyPrompt } from './pages/Legacy';
 import { LivePage } from './pages/Live';
+import { AppShell, Sidebar, useDrawer, type NavItem } from './components/AppShell';
+import { ToastHost, useToasts } from './components/ui';
 
 export type Page = 'home' | 'jobs' | 'live' | 'results' | 'connections' | 'settings' | 'policy';
 
@@ -22,6 +23,8 @@ export function App() {
   const [notice, setNotice] = useState<{ kind: 'info' | 'error'; text: string } | null>(null);
 
   const [legacyOpen, setLegacyOpen] = useLegacyPrompt();
+  const [drawer, setDrawer] = useDrawer();
+  const toasts = useToasts();
   const [version, setVersion] = useState('');
   const refreshDiag = useCallback(async () => setDiag(await api().checkDeps()), []);
 
@@ -59,60 +62,45 @@ export function App() {
     setPage('results');
   };
   const active = jobs.filter((j) => !['completed', 'cancelled', 'failed'].includes(j.status)).length;
-  const nav: [Page, string][] = [
-    ['home', 'Inicio'],
-    ['jobs', active ? `Trabajos (${active})` : 'Trabajos'],
-    ['live', 'Directos'],
-    ['results', 'Resultados'],
-    ['connections', 'Conexiones'],
-    ['settings', 'Configuración'],
-    ['policy', 'Uso responsable'],
+  const nav: NavItem<Page>[] = [
+    { page: 'home', label: 'Inicio', icon: 'home' },
+    { page: 'jobs', label: 'Trabajos', icon: 'jobs', count: active },
+    { page: 'results', label: 'Resultados', icon: 'results' },
+    { page: 'connections', label: 'Publicar', icon: 'publish' },
+    { page: 'live', label: 'Directos', icon: 'live' },
+    { page: 'settings', label: 'Configuración', icon: 'settings' },
   ];
+  const bottom: NavItem<Page>[] = [{ page: 'policy', label: 'Uso responsable', icon: 'shield' }];
 
   return (
-    <div className="app">
-      <aside className="sidebar">
-        <div className="brand">
-          <img src={logoUrl} alt="" width={32} height={32} />
-          <span>Clip Clip</span>
-        </div>
-        <nav>
-          {nav.map(([p, label]) => (
-            <button key={p} className={page === p ? 'active' : ''} onClick={() => setPage(p)}>
-              {label}
+    <AppShell
+      menuOpen={drawer}
+      onMenu={() => setDrawer(true)}
+      sidebar={<Sidebar items={nav} bottom={bottom} page={page} onNavigate={setPage} diag={diag} onDiag={() => setPage('settings')} version={version} open={drawer} onClose={() => setDrawer(false)} />}
+    >
+      {notice && (
+        <div className={`banner ${notice.kind === 'error' ? 'error' : 'info'} notice`} role={notice.kind === 'error' ? 'alert' : 'status'}>
+          <span className="grow">{notice.text}</span>
+          {notice.kind === 'error' && (
+            <button className="link" onClick={() => setPage('settings')}>
+              Ver diagnóstico
             </button>
-          ))}
-        </nav>
-        <div className={`diag-pill ${diag?.ok ? 'ok' : 'bad'}`} onClick={() => setPage('settings')} role="button">
-          {diag ? (diag.ok ? '● Dependencias OK' : '● Faltan dependencias') : '○ Comprobando…'}
+          )}
+          <button className="ghost" aria-label="Cerrar aviso" onClick={() => setNotice(null)}>
+            ×
+          </button>
         </div>
-        <p className="local-note">Todo se procesa en este equipo.</p>
-        {version && <p className="local-note small">Versión {version}</p>}
-      </aside>
-      <main className="content">
-        {notice && (
-          <div className={`banner ${notice.kind === 'error' ? 'error' : 'info'} notice`} role={notice.kind === 'error' ? 'alert' : 'status'}>
-            <span className="grow">{notice.text}</span>
-            {notice.kind === 'error' && (
-              <button className="link" onClick={() => setPage('settings')}>
-                Ver diagnóstico
-              </button>
-            )}
-            <button className="ghost" aria-label="Cerrar aviso" onClick={() => setNotice(null)}>
-              ×
-            </button>
-          </div>
-        )}
-        {page === 'home' && <HomePage ollamaModel={settings?.ollamaModel} jobs={jobs} diag={diag} onCreated={() => setPage('jobs')} goSettings={() => setPage('settings')} goPolicy={() => setPage('policy')} />}
-        {page === 'jobs' && <JobsPage jobs={jobs} onOpen={openResults} onDeleted={(id) => setJobs((p) => p.filter((j) => j.id !== id))} goDiagnostics={() => setPage('settings')} />}
-        {page === 'results' && <ResultsPage jobs={jobs} selected={selected} onSelect={setSelected} />}
-        {page === 'settings' && settings && (
-          <SettingsPage settings={settings} onChange={setSettings} diag={diag} refreshDiag={refreshDiag} jobs={jobs} />
-        )}
-        {page === 'live' && <LivePage onOpenResults={() => setPage('results')} />}
-        {page === 'policy' && <PolicyPage />}
-        {page === 'connections' && <ConnectionsPage />}
-      </main>
+      )}
+      {page === 'home' && <HomePage ollamaModel={settings?.ollamaModel} jobs={jobs} diag={diag} onCreated={() => setPage('jobs')} goSettings={() => setPage('settings')} goPolicy={() => setPage('policy')} />}
+      {page === 'jobs' && <JobsPage jobs={jobs} onOpen={openResults} onDeleted={(ids) => setJobs((p) => p.filter((j) => !ids.includes(j.id)))} onRestored={() => void api().listJobs().then(setJobs)} toast={toasts.push} goDiagnostics={() => setPage('settings')} goHome={() => setPage('home')} />}
+      {page === 'results' && <ResultsPage jobs={jobs} selected={selected} onSelect={setSelected} />}
+      {page === 'settings' && settings && (
+        <SettingsPage settings={settings} onChange={setSettings} diag={diag} refreshDiag={refreshDiag} jobs={jobs} />
+      )}
+      {page === 'live' && <LivePage onOpenResults={() => setPage('results')} />}
+      {page === 'policy' && <PolicyPage />}
+      {page === 'connections' && <ConnectionsPage />}
+      <ToastHost toasts={toasts.toasts} onDismiss={toasts.dismiss} />
       <LegacyModal
         open={legacyOpen}
         onClose={() => setLegacyOpen(false)}
@@ -123,6 +111,6 @@ export function App() {
           void refreshDiag();
         }}
       />
-    </div>
+    </AppShell>
   );
 }

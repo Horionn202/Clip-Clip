@@ -9,7 +9,7 @@ export const CATEGORY_LABELS: Record<StorageCategory | 'exports', string> = {
   frames: 'Fotogramas de análisis visual',
   temp: 'Subtítulos y temporales',
   transcript: 'Transcripción',
-  internalClip: 'Clips internos',
+  internalClip: 'Renders internos',
   other: 'Otros archivos del trabajo',
   exports: 'Clips exportados (se conservan)',
 };
