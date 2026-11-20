@@ -1,5 +1,5 @@
 // Componentes base del sistema de diseño (ver design.css). Sin dependencias externas.
-import { useEffect, useRef, useState, type ButtonHTMLAttributes, type ReactNode } from 'react';
+import { useCallback, useEffect, useRef, useState, type ButtonHTMLAttributes, type ReactNode } from 'react';
 
 /* ---------- Iconos (trazo 1.8, 20×20, heredan el color) ---------- */
 const PATHS = {
@@ -142,6 +142,8 @@ export interface ToastData {
   action?: { label: string; run: () => void };
   /** ms hasta cerrarse sola (0 = no se cierra sola). */
   ttl?: number;
+  /** Hora absoluta (ms) a la que caduca: no se reinicia aunque la app se vuelva a pintar. */
+  expiresAt?: number;
 }
 
 export function ToastHost({ toasts, onDismiss }: { toasts: ToastData[]; onDismiss: (id: number) => void }) {
@@ -155,11 +157,15 @@ export function ToastHost({ toasts, onDismiss }: { toasts: ToastData[]; onDismis
 }
 
 function ToastItem({ t, onDismiss }: { t: ToastData; onDismiss: (id: number) => void }) {
+  const dismissRef = useRef(onDismiss);
+  dismissRef.current = onDismiss;
+  // El plazo se fija una vez (por id): los repintados de la app no lo reinician.
   useEffect(() => {
-    if (t.ttl === 0) return;
-    const h = setTimeout(() => onDismiss(t.id), t.ttl ?? 6000);
+    if (t.ttl === 0 && !t.expiresAt) return;
+    const until = t.expiresAt ?? Date.now() + (t.ttl ?? 6000);
+    const h = setTimeout(() => dismissRef.current(t.id), Math.max(0, until - Date.now()));
     return () => clearTimeout(h);
-  }, [t.id, t.ttl, onDismiss]);
+  }, [t.id]); // eslint-disable-line react-hooks/exhaustive-deps
   return (
     <div className={`toast ${t.kind ?? 'info'}`} role={t.kind === 'error' ? 'alert' : 'status'}>
       <Icon name={t.kind === 'error' ? 'alert' : 'check'} />
@@ -185,8 +191,9 @@ function ToastItem({ t, onDismiss }: { t: ToastData; onDismiss: (id: number) => 
 export function useToasts() {
   const [toasts, setToasts] = useState<ToastData[]>([]);
   const seq = useRef(0);
-  const push = (t: Omit<ToastData, 'id'>) => setToasts((p) => [...p, { ...t, id: ++seq.current }]);
-  const dismiss = (id: number) => setToasts((p) => p.filter((x) => x.id !== id));
+  // Callbacks estables: no cambian en cada repintado (si no, los avisos reiniciarían su plazo).
+  const push = useCallback((t: Omit<ToastData, 'id'>) => setToasts((p) => [...p, { ...t, id: ++seq.current, expiresAt: t.expiresAt ?? (t.ttl === 0 ? undefined : Date.now() + (t.ttl ?? 6000)) }]), []);
+  const dismiss = useCallback((id: number) => setToasts((p) => p.filter((x) => x.id !== id)), []);
   return { toasts, push, dismiss };
 }
 

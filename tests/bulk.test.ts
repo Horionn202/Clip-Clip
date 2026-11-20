@@ -224,6 +224,31 @@ describe('borrado masivo en disco', () => {
     }
   });
 
+  it('revisión Codex: si «Deshacer» falla en un trabajo, ése sigue recuperable y se puede reintentar', () => {
+    mkJob('job-000001', 1);
+    mkJob('job-000002', 1);
+    const { d, store } = deleter([job('job-000001', 'completed'), job('job-000002', 'completed')], [], []);
+    const r = d.delete(['job-000001', 'job-000002'], { deleteExports: false });
+    const orig = fs.renameSync;
+    let block = true;
+    (fs as unknown as { renameSync: typeof fs.renameSync }).renameSync = ((a: fs.PathLike, b: fs.PathLike) => {
+      if (block && String(b).endsWith('job-000002')) throw new Error('EPERM');
+      return orig(a, b);
+    }) as typeof fs.renameSync;
+    try {
+      expect(d.undo(r.batchId)).toBe(1);
+      expect(store.has('job-000001')).toBe(true);
+      expect(store.has('job-000002')).toBe(false);
+      block = false;
+      // Mismo plazo: el segundo intento recupera el que faltaba.
+      expect(d.undo(r.batchId)).toBe(1);
+      expect(store.has('job-000002')).toBe(true);
+      expect(fs.existsSync(path.join(jobsDir, 'job-000002', 'source.mp4'))).toBe(true);
+    } finally {
+      (fs as unknown as { renameSync: typeof fs.renameSync }).renameSync = orig;
+    }
+  });
+
   it('muchos trabajos exigen escribir BORRAR', () => {
     const jobs = Array.from({ length: 10 }, (_, i) => job(`job-00000${i}x`, 'completed'));
     for (const j of jobs) mkJob(j.id, 1);

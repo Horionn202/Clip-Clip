@@ -277,7 +277,7 @@ function JobCard(props: {
 }
 
 /** Confirmación del borrado masivo: resumen real (trabajos, clips, espacio, exports) y «BORRAR» si es mucho. */
-export function BulkDeleteModal(props: { ids: string[]; mode: 'history' | 'full' | 'completed'; onClose: () => void; onDone: (deleted: string[], batchId: string, text: string) => void }) {
+export function BulkDeleteModal(props: { ids: string[]; mode: 'history' | 'full' | 'completed'; onClose: () => void; onDone: (deleted: string[], batchId: string, text: string, undoUntil: string) => void }) {
   const [deleteExports, setDeleteExports] = useState(props.mode === 'full');
   const [plan, setPlan] = useState<BulkPlan | null>(null);
   const [typed, setTyped] = useState('');
@@ -311,6 +311,7 @@ export function BulkDeleteModal(props: { ids: string[]; mode: 'history' | 'full'
         r.deletedIds,
         r.batchId,
         `${r.jobs} trabajo${r.jobs === 1 ? '' : 's'} y ${r.clips} clip${r.clips === 1 ? '' : 's'} eliminados · ${humanSize(r.freedBytes)} liberados${r.exportsDeleted ? ` · ${r.exportsDeleted} exportados a la Papelera` : ''}.${r.errors.length ? ` ${r.errors.length} no se pudieron eliminar: ${r.errors[0]}` : ''}`,
+        r.undoUntil,
       );
     } catch (e) {
       setErr(errMsg(e));
@@ -601,13 +602,14 @@ export function JobsPage(props: {
         ids={bulk?.ids ?? []}
         mode={bulk?.mode ?? 'history'}
         onClose={() => setBulk(null)}
-        onDone={(deleted, batchId, text) => {
+        onDone={(deleted, batchId, text, undoUntil) => {
           setBulk(null);
           setSel(new Set());
           props.onDeleted(deleted);
           props.toast({
             text,
-            ttl: 15000,
+            // Caduca exactamente cuando el proceso principal confirma el borrado.
+            expiresAt: Date.parse(undoUntil),
             action: {
               label: 'Deshacer',
               run: () =>

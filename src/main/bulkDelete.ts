@@ -158,23 +158,40 @@ export class BulkDeleter {
   undo(batchId: string): number {
     const b = this.batches.get(batchId);
     if (!b) throw new UserFacingError('Ya no se puede deshacer: el plazo terminó.');
+    const src = path.join(this.d.pendingDir, batchId);
+    // Cada trabajo se recupera por separado: el lote sólo se da por terminado cuando TODOS están de vuelta.
+    // Si alguno falla (p. ej. EPERM pasajero en Windows), sigue apartado y se puede volver a pulsar «Deshacer».
+    const pending: Job[] = [];
+    let restored = 0;
+    let lastErr = '';
+    for (const j of b.jobs) {
+      try {
+        const from = path.join(src, j.id);
+        const to = safeJobDir(this.d.jobsDir, j.id);
+        if (fs.existsSync(from) && !fs.existsSync(to)) fs.renameSync(from, to);
+        this.d.putJob(j);
+        restored++;
+      } catch (e) {
+        pending.push(j);
+        lastErr = (e as Error).message;
+      }
+    }
+    if (pending.length) {
+      b.jobs = pending;
+      this.d.log?.('borrado masivo: deshacer incompleto', { batch: batchId, restored, pending: pending.length, e: lastErr });
+      if (!restored) throw new UserFacingError(`No se pudo recuperar ningún trabajo todavía (${lastErr}). Vuelve a intentarlo.`);
+      return restored;
+    }
     (this.d.clearTimer ?? ((t) => clearTimeout(t as NodeJS.Timeout)))(b.timer);
     this.batches.delete(batchId);
-    const src = path.join(this.d.pendingDir, batchId);
-    for (const j of b.jobs) {
-      const from = path.join(src, j.id);
-      const to = safeJobDir(this.d.jobsDir, j.id);
-      if (fs.existsSync(from) && !fs.existsSync(to)) fs.renameSync(from, to);
-      this.d.putJob(j);
-    }
     try {
       fs.rmSync(path.join(src, MANIFEST), { force: true });
       fs.rmdirSync(src);
     } catch {
       /* no vacía: se limpiará en el próximo inicio */
     }
-    this.d.log?.('borrado masivo deshecho', { batch: batchId, jobs: b.jobs.length });
-    return b.jobs.length;
+    this.d.log?.('borrado masivo deshecho', { batch: batchId, jobs: restored });
+    return restored;
   }
 
   /**
