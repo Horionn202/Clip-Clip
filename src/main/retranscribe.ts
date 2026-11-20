@@ -22,6 +22,10 @@ export interface RetranscribeResult {
 
 export async function retranscribeJob(job: Job, ctx: PipelineContext, s: Settings, tools: ResolvedTools, gpu: GpuInfo, signal: AbortSignal, onMsg: (m: string) => void): Promise<RetranscribeResult> {
   const dir = jobDir(ctx.jobsDir, job.id);
+  // Sin el vídeo original los clips no se pueden volver a renderizar: retranscribir los dejaría pendientes para siempre.
+  if (job.clips.some((c) => c.file && !c.subtitleCues) && !fs.readdirSync(dir).some((f) => /^source\.(mp4|mkv|webm|mov)$/i.test(f))) {
+    throw new UserFacingError('El vídeo original de este trabajo ya no está (se liberó espacio): los clips no podrían volver a renderizarse con la nueva transcripción.');
+  }
   let audio = path.join(dir, 'audio.wav');
   if (!fs.existsSync(audio)) {
     const src = fs.readdirSync(dir).find((f) => /^source\.(mp4|mkv|webm|mov)$/i.test(f));

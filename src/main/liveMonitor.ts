@@ -221,18 +221,21 @@ export class LiveManager {
       return;
     }
     if (m.status !== 'verificando' && m.status !== 'esperando') return;
+    // Una consulta de una sesión anterior (antes de pausar/reanudar) no debe pisar el resultado de la actual.
+    const gen = this.runtime(id).gen;
     this.set(id, { status: 'verificando' });
     let r: RunResult;
     try {
       r = await this.run(yt, ['-J', '--no-playlist', '--no-warnings', '--', m.url], { timeoutMs: 90_000 });
     } catch (e) {
       // yt-dlp no arrancó o superó el tiempo: error visible y reanudable (no se queda «Verificando» para siempre).
+      if (gen !== this.runtime(id).gen) return;
       const c = this.monitors.get(id);
       if (c && (c.status === 'verificando' || c.status === 'esperando')) this.set(id, { status: 'error', error: `No se pudo consultar el directo (${(e as Error).message}). Pulsa «Reanudar» para reintentar.` });
       return;
     }
     const cur = this.monitors.get(id);
-    if (!cur || (cur.status !== 'verificando' && cur.status !== 'esperando')) return;
+    if (gen !== this.runtime(id).gen || !cur || (cur.status !== 'verificando' && cur.status !== 'esperando')) return;
     const st = r.code === 0 ? parseLiveStatus(r.stdout) : { state: isNotLiveError(r.stderr) ? ('not-live' as const) : ('error' as const), title: undefined };
     if (st.state === 'error') {
       this.set(id, { status: 'error', error: `No se pudo consultar el directo: ${r.stderr.split('\n').filter(Boolean).slice(-1)[0] ?? 'error desconocido'}` });
