@@ -47,19 +47,27 @@ export function containsSelection(c: PxRect, sel: PxRect): boolean {
   return c.x <= sel.x + 1 && c.y <= sel.y + 1 && c.x + c.w >= sel.x + sel.w - 1 && c.y + c.h >= sel.y + sel.h - 1;
 }
 
+/** Selección de la cámara en píxeles pares, siempre dentro del fotograma (nunca se recorta más de lo elegido). */
+export function selectionPx(sel: PxRect, srcW: number, srcH: number): PxRect {
+  const x = evenPos(Math.min(Math.max(0, sel.x), srcW - 2));
+  const y = evenPos(Math.min(Math.max(0, sel.y), srcH - 2));
+  return { x, y, w: even(Math.min(sel.w + (sel.x - x), srcW - x)), h: even(Math.min(sel.h + (sel.y - y), srcH - y)) };
+}
+
 /**
- * Cadena de filtros de la facecam a tw×th. Normalmente amplía la selección al aspecto de destino; si esa
- * ampliación no cabe en el fotograma (p. ej. una selección muy alta), conserva la selección entera y la
- * rellena con bandas en vez de recortar parte de la cámara.
+ * Subgrafo de la facecam: `[inL]` → `[outL]` de tw×th. Recorta EXACTAMENTE la selección del vídeo original
+ * (`sourceFacecamRect`, ya con el zoom/encuadre del usuario aplicado dentro de ella) y la encaja entera en la caja
+ * de destino. Si las proporciones no coinciden, rellena con negro: nunca se corta parte de la cámara, nunca se
+ * deforma y nunca se añade gameplay de alrededor.
  */
-export function camChain(sel: PxRect, tw: number, th: number, srcW: number, srcH: number): string {
-  const c = fitAspect(sel, tw / th, srcW, srcH);
-  if (containsSelection(c, sel)) return `crop=${c.w}:${c.h}:${c.x}:${c.y},scale=${tw}:${th}:flags=lanczos,setsar=1`;
-  const s = { x: evenPos(sel.x), y: evenPos(sel.y), w: even(Math.min(sel.w, srcW - evenPos(sel.x))), h: even(Math.min(sel.h, srcH - evenPos(sel.y))) };
+export function camChain(sel: PxRect, tw: number, th: number, srcW: number, srcH: number, inL = 'csrc', outL = 'c'): string {
+  const s = selectionPx(sel, srcW, srcH);
+  const crop = `crop=${s.w}:${s.h}:${s.x}:${s.y}`;
+  // Proporciones casi iguales (≤ 2 %): escalado directo, la deformación no se aprecia.
+  if (Math.abs(s.w / s.h / (tw / th) - 1) <= 0.02) return `[${inL}]${crop},scale=${tw}:${th}:flags=lanczos,setsar=1[${outL}]`;
   return (
-    `crop=${s.w}:${s.h}:${s.x}:${s.y},` +
-    `scale=${tw}:${th}:force_original_aspect_ratio=decrease:force_divisible_by=2:flags=lanczos,` +
-    `pad=${tw}:${th}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1`
+    `[${inL}]${crop},scale=${tw}:${th}:force_original_aspect_ratio=decrease:force_divisible_by=2:flags=lanczos,` +
+    `pad=${tw}:${th}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1[${outL}]`
   );
 }
 
@@ -94,14 +102,15 @@ export interface LayoutInput {
   srcW: number;
   srcH: number;
   offsetX: number;
-  cam?: NormRect;
+  /** Cámara DENTRO del vídeo original: lo único que se recorta de la fuente. */
+  sourceCam?: NormRect;
   /** Tamaño de salida (por defecto 1080×1920). */
   out?: { w: number; h: number };
   /** Zoom del gameplay (≥ 1) y encuadre dentro de la cámara. */
   gameZoom?: number;
   camCrop?: { x: number; y: number; zoom: number };
-  /** Caja de la cámara en la salida (normalizada) para «flotante» y «personalizado». */
-  overlay?: NormRect;
+  /** Cámara DENTRO del vídeo final (normalizada a la salida): sólo «flotante» y «personalizado». */
+  outputCam?: NormRect;
 }
 
 /** Aplica zoom (≥ 1) a un recorte, alrededor de su centro, sin salir del fotograma. */
@@ -127,9 +136,9 @@ export function layoutFilter(i: LayoutInput): string {
   const H = even(i.out?.h ?? OUT_H);
   const gH = even(H * (GAME_H / OUT_H));
   const cH = H - gH;
-  if ((NEEDS_CAM.includes(i.layout) || i.layout === 'custom') && !i.cam) throw new Error(`El layout ${i.layout} necesita la posición de la facecam.`);
+  if ((NEEDS_CAM.includes(i.layout) || i.layout === 'custom') && !i.sourceCam) throw new Error(`El layout ${i.layout} necesita la posición de la facecam.`);
   const cc = i.camCrop ?? { x: 0, y: 0, zoom: 1 };
-  const camPx = i.cam ? zoomRect(toPx(i.cam, srcW, srcH), cc.zoom, srcW, srcH, cc.x, cc.y) : undefined;
+  const camPx = i.sourceCam ? zoomRect(selectionPx(toPx(i.sourceCam, srcW, srcH), srcW, srcH), cc.zoom, srcW, srcH, cc.x, cc.y) : undefined;
   const gz = i.gameZoom ?? 1;
   const crop = (r: PxRect) => `crop=${r.w}:${r.h}:${r.x}:${r.y}`;
   // El desplazamiento también actúa dentro del recorte ampliado (si no, con el mismo aspecto no habría margen para moverlo).
@@ -160,7 +169,7 @@ export function layoutFilter(i: LayoutInput): string {
       return (
         `[0:v]split=2[gsrc][csrc];` +
         `[gsrc]${crop(g)},scale=${W}:${gH}:flags=lanczos,setsar=1[g];` +
-        `[csrc]${camChain(camPx!, W, cH, srcW, srcH)}[c];` +
+        `${camChain(camPx!, W, cH, srcW, srcH, 'csrc', 'c')};` +
         `${top}vstack=inputs=2[v]`
       );
     }
@@ -168,11 +177,11 @@ export function layoutFilter(i: LayoutInput): string {
     case 'custom': {
       const g = game(W / H, camPx);
       const def = { x: 1 - 0.4 - 40 / W, y: 140 / H, w: 0.4, h: (0.4 * W * 0.75) / H };
-      const b = box(i.overlay ?? def);
+      const b = box(i.outputCam ?? def);
       return (
         `[0:v]split=2[gsrc][csrc];` +
         `[gsrc]${crop(g)},scale=${W}:${H}:flags=lanczos,setsar=1[base];` +
-        `[csrc]${camChain(camPx!, b.w, b.h, srcW, srcH)}[cam];` +
+        `${camChain(camPx!, b.w, b.h, srcW, srcH, 'csrc', 'cam')};` +
         `[base][cam]overlay=${b.x}:${b.y}[v]`
       );
     }

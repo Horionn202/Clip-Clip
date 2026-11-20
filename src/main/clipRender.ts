@@ -15,7 +15,7 @@ export interface RenderEnv {
   srcW: number;
   srcH: number;
   words: Word[];
-  settings: Pick<Settings, 'cropOffsetX' | 'subtitleFontSize'>;
+  settings: Pick<Settings, 'cropOffsetX' | 'subtitleFontSize'> & Partial<Pick<Settings, 'subtitleStyle' | 'subtitleActiveColor'>>;
   signal?: AbortSignal;
   run?: typeof runProcess;
 }
@@ -24,7 +24,14 @@ export interface RenderEnv {
 export function layoutInputFor(clip: Clip, srcW: number, srcH: number, offsetX: number): LayoutInput {
   const c = compositionOf(clip);
   const out = outputSize(c.outputAspectRatio);
-  const overlay = c.template === 'custom' || c.facecamPosition === 'custom' ? c.overlayRect ?? cornerRect('top-right', 0.4, 4 / 3, out) : c.template === 'game_cam_float' ? cornerRect(c.facecamPosition, 0.4, 4 / 3, out) : undefined;
+  // La caja de salida por defecto usa la proporción REAL de la cámara elegida (así no hay que rellenar ni deformar).
+  const camAspect = c.sourceFacecamRect ? Math.min(3, Math.max(0.5, (c.sourceFacecamRect.w * srcW) / (c.sourceFacecamRect.h * srcH))) : 4 / 3;
+  const outputCam =
+    c.template === 'custom' || c.facecamPosition === 'custom'
+      ? c.outputFacecamRect ?? cornerRect('top-right', 0.4, camAspect, out)
+      : c.template === 'game_cam_float'
+        ? cornerRect(c.facecamPosition, 0.4, camAspect, out)
+        : undefined;
   return {
     layout: c.template,
     srcW,
@@ -32,11 +39,11 @@ export function layoutInputFor(clip: Clip, srcW: number, srcH: number, offsetX: 
     // El desplazamiento del clip, si se fijó, manda sobre el ajuste global.
     // Sólo un desplazamiento elegido a mano (incluido 0) manda sobre el ajuste global; el automático no.
     offsetX: clip.composition?.manualOverride && clip.composition.gameplayCrop?.x !== undefined ? clip.composition.gameplayCrop.x : offsetX,
-    cam: c.facecamRect,
+    sourceCam: c.sourceFacecamRect,
     out,
     gameZoom: c.gameplayCrop.zoom,
     camCrop: c.facecamCrop,
-    overlay,
+    outputCam,
   };
 }
 
@@ -50,7 +57,7 @@ export async function renderClip(clip: Clip, env: RenderEnv, onProgress?: (fract
   const errs = compositionErrors(compositionOf(clip));
   if (errs.length) throw new UserFacingError(errs[0]);
   const assName = `${String(clip.index).padStart(2, '0')}.ass`;
-  fs.writeFileSync(path.join(env.clipsDir, assName), buildAss(env.words, clip.start, clip.end, env.settings.subtitleFontSize, clip.subtitleCues, outputSize(compositionOf(clip).outputAspectRatio)), 'utf8');
+  fs.writeFileSync(path.join(env.clipsDir, assName), buildAss(env.words, clip.start, clip.end, env.settings.subtitleFontSize, clip.subtitleCues, outputSize(compositionOf(clip).outputAspectRatio), { style: env.settings.subtitleStyle, activeColor: env.settings.subtitleActiveColor }), 'utf8');
   const out = clipFileName(clip);
   const tmp = `${out}.part.mp4`;
   const filter = layoutFilter(layoutInputFor(clip, env.srcW, env.srcH, env.settings.cropOffsetX));
@@ -74,15 +81,50 @@ export async function renderClip(clip: Clip, env: RenderEnv, onProgress?: (fract
     throw new UserFacingError(`No se pudo renderizar el clip ${clip.index}.`, r.stderr);
   }
   // Sustitución atómica: el clip anterior sólo se reemplaza cuando el nuevo está completo.
-  fs.renameSync(tmpPath, path.join(env.clipsDir, out));
-  if (clip.file && clip.file !== out) {
+  let name: string;
+  try {
+    name = await placeRendered(env.clipsDir, tmp, out);
+  } catch (e) {
     try {
-      fs.unlinkSync(path.join(env.clipsDir, clip.file));
+      fs.unlinkSync(tmpPath);
     } catch {
       /* ignorar */
     }
+    throw e;
   }
-  return out;
+  for (const old of new Set([clip.file, out])) {
+    if (!old || old === name) continue;
+    try {
+      fs.unlinkSync(path.join(env.clipsDir, old));
+    } catch {
+      /* en uso (Windows): se queda y se sustituirá en el próximo render */
+    }
+  }
+  return name;
+}
+
+const busy = (e: unknown) => ['EPERM', 'EBUSY', 'EACCES'].includes((e as NodeJS.ErrnoException)?.code ?? '');
+const pause = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Mueve el render terminado a su nombre final. En Windows un MP4 abierto (el reproductor de Resultados o del editor)
+ * no se puede sustituir: se reintenta un momento y, si sigue en uso, el clip nuevo se guarda con otro nombre en vez de
+ * fallar (el anterior se borra cuando se pueda). Devuelve el nombre usado.
+ */
+export async function placeRendered(dir: string, tmp: string, out: string, retries = 5): Promise<string> {
+  for (let i = 0; ; i++) {
+    try {
+      fs.renameSync(path.join(dir, tmp), path.join(dir, out));
+      return out;
+    } catch (e) {
+      if (!busy(e)) throw e;
+      if (i >= retries) break;
+      await pause(150);
+    }
+  }
+  const alt = out.replace(/\.mp4$/i, `_v${Date.now().toString(36)}.mp4`);
+  fs.renameSync(path.join(dir, tmp), path.join(dir, alt));
+  return alt;
 }
 
 /** Fotograma de vista previa (360×640) con el layout aplicado. */

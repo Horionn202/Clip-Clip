@@ -45,6 +45,8 @@ export function defaultSettings(exportDir: string): Settings {
     cropOffsetX: 0,
     defaultLayout: 'auto',
     subtitleFontSize: 72,
+    subtitleStyle: 'karaoke',
+    subtitleActiveColor: '#3B82F6',
     onboardingDone: false,
   };
 }

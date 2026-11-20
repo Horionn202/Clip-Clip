@@ -5,15 +5,19 @@ export type LayoutId = (typeof LAYOUT_IDS)[number];
 export type LayoutChoice = 'auto' | LayoutId;
 
 export const LAYOUT_LABELS: Record<LayoutId, string> = {
-  gameplay_full: 'Gameplay completo (recorte vertical)',
+  gameplay_full: 'Sin facecam: sólo gameplay',
   game_top_cam_bottom: 'Gameplay arriba + facecam abajo',
   cam_top_game_bottom: 'Facecam arriba + gameplay abajo',
-  game_cam_float: 'Gameplay vertical + facecam flotante',
-  no_facecam: 'Sin facecam (vídeo entero con fondo difuminado)',
+  game_cam_float: 'Facecam flotante',
+  no_facecam: 'Vídeo entero con fondo difuminado',
   split_horizontal: 'División horizontal (mitad izquierda arriba, derecha abajo)',
   split_vertical: 'División vertical (dos columnas)',
   custom: 'Personalizado (cámara donde quieras)',
 };
+
+/** Plantillas principales del editor; el resto son herramientas avanzadas (no soluciones de facecam). */
+export const MAIN_TEMPLATES: readonly LayoutId[] = ['gameplay_full', 'cam_top_game_bottom', 'game_top_cam_bottom', 'game_cam_float', 'custom'];
+export const ADVANCED_TEMPLATES: readonly LayoutId[] = ['no_facecam', 'split_horizontal', 'split_vertical'];
 
 /** Layouts que necesitan saber dónde está la facecam. */
 export const NEEDS_CAM: readonly LayoutId[] = ['game_top_cam_bottom', 'cam_top_game_bottom', 'game_cam_float'];
@@ -44,7 +48,24 @@ export interface VisualResult {
   confidence: number;
   cam?: NormRect;
   engine: string;
+  /** Diagnóstico explicable de la detección (qué se analizó y por qué se aceptó o no). */
+  diagnostic?: DetectionDiagnostic;
 }
+
+export interface DetectionDiagnostic {
+  /** Fotogramas analizados y ventanas del clip comparadas. */
+  samples: number;
+  windows: number;
+  /** Fracción de ventanas que vieron la misma cámara (0–1). */
+  consistency: number;
+  /** Rectángulo final elegido (si lo hay). */
+  rect?: NormRect;
+  /** Motivo de la decisión o del fallback. */
+  reason: string;
+}
+
+/** Mensaje cuando no hay confianza suficiente: nunca se inventa una cámara. */
+export const NO_CAM_CONFIRMED = 'No se pudo confirmar una facecam. Ajústala manualmente.';
 
 /** Confianza mínima para aplicar automáticamente un layout con facecam. */
 export const AUTO_CONFIDENCE = 0.6;
@@ -58,12 +79,12 @@ export interface LayoutDecision {
 
 /**
  * Decide el layout de un clip. Nunca aplica un layout con facecam sin confianza suficiente:
- * en ese caso usa «Gameplay completo» y deja la sugerencia para que la elija el usuario.
+ * en ese caso usa «Sin facecam: sólo gameplay» y deja la sugerencia para que la elija el usuario.
  */
 export function decideLayout(pref: LayoutChoice, v: VisualResult | undefined): LayoutDecision {
   if (pref !== 'auto') {
-    if ((NEEDS_CAM.includes(pref) || pref === 'custom') && !v?.cam) {
-      return { layout: 'gameplay_full', suggestion: pref, reason: 'Tu layout preferido necesita la posición de la facecam y no se detectó: ajústala a mano.' };
+    if ((NEEDS_CAM.includes(pref) || pref === 'custom') && (!v?.cam || v.confidence < AUTO_CONFIDENCE)) {
+      return { layout: 'gameplay_full', suggestion: pref, reason: `Tu plantilla preferida necesita la cámara. ${NO_CAM_CONFIRMED}` };
     }
     return { layout: pref, reason: 'Layout preferido.' };
   }
@@ -74,7 +95,7 @@ export function decideLayout(pref: LayoutChoice, v: VisualResult | undefined): L
   return {
     layout: 'gameplay_full',
     suggestion,
-    reason: `Posible ${VISUAL_LABELS[v.cls].toLowerCase()} con poca confianza (${Math.round(v.confidence * 100)} %): revisa la sugerencia.`,
+    reason: `${NO_CAM_CONFIRMED} (posible ${VISUAL_LABELS[v.cls].toLowerCase()}, confianza ${Math.round(v.confidence * 100)} %).`,
   };
 }
 

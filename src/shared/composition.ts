@@ -31,14 +31,20 @@ export interface ClipLayout {
   mode: CompositionMode;
   /** Plantilla concreta (define el filtergraph). */
   template: LayoutId;
-  /** Dónde está la facecam en el vídeo de origen. */
-  facecamRect?: NormRect;
+  /**
+   * Dónde está la cámara DENTRO del vídeo original (normalizado al fotograma de origen). Es lo único que se usa
+   * para recortar la cámara de la fuente. Nunca depende de dónde aparece en el resultado.
+   */
+  sourceFacecamRect?: NormRect;
   /** Encuadre dentro de la facecam: desplazamiento -1..1 y zoom ≥ 1. */
   facecamCrop: { x: number; y: number; zoom: number };
   /** Esquina de la cámara en los modos flotante y personalizado. */
   facecamPosition: CamCorner;
-  /** Caja de la cámara en la SALIDA (modo personalizado o esquina «custom»). */
-  overlayRect?: NormRect;
+  /**
+   * Dónde aparece la cámara DENTRO del vídeo final (normalizado a la salida). Sólo en «flotante» y «personalizado».
+   * Nunca cambia el recorte de la fuente.
+   */
+  outputFacecamRect?: NormRect;
   /** Encuadre del gameplay: desplazamiento horizontal -1..1 y zoom ≥ 1. */
   gameplayCrop: { x: number; zoom: number };
   outputAspectRatio: AspectRatio;
@@ -87,6 +93,12 @@ export function clampRect(r: NormRect, min = 0.05): NormRect {
 
 /** Composición efectiva de un clip, compatible con clips antiguos (sólo `layout` y `camRect`). */
 export function compositionOf(clip: { layout?: LayoutId; camRect?: NormRect; composition?: Partial<ClipLayout>; visual?: VisualResult }): ClipLayout {
+  // Trabajos guardados antes del cambio de nombre: `facecamRect` (origen) y `overlayRect` (salida).
+  const legacy = clip.composition as (Partial<ClipLayout> & { facecamRect?: NormRect; overlayRect?: NormRect }) | undefined;
+  if (legacy && (legacy.facecamRect || legacy.overlayRect)) {
+    const { facecamRect, overlayRect, ...rest } = legacy;
+    clip = { ...clip, composition: { ...rest, sourceFacecamRect: rest.sourceFacecamRect ?? facecamRect, outputFacecamRect: rest.outputFacecamRect ?? overlayRect } };
+  }
   const template = clip.composition?.template ?? clip.layout ?? 'gameplay_full';
   const c: ClipLayout = {
     ...DEFAULT_COMPOSITION,
@@ -95,7 +107,7 @@ export function compositionOf(clip: { layout?: LayoutId; camRect?: NormRect; com
     ...clip.composition,
     template,
     mode: TEMPLATE_MODE[template] ?? 'full-frame',
-    facecamRect: clip.composition?.facecamRect ?? clip.camRect,
+    sourceFacecamRect: clip.composition?.sourceFacecamRect ?? clip.camRect,
   };
   c.facecamCrop = { ...DEFAULT_COMPOSITION.facecamCrop, ...clip.composition?.facecamCrop };
   c.gameplayCrop = { ...DEFAULT_COMPOSITION.gameplayCrop, ...clip.composition?.gameplayCrop };
@@ -105,8 +117,8 @@ export function compositionOf(clip: { layout?: LayoutId; camRect?: NormRect; com
 /** Errores que impiden renderizar una composición (vacío = válida). */
 export function compositionErrors(c: ClipLayout): string[] {
   const e: string[] = [];
-  if ((NEEDS_CAM.includes(c.template) || c.template === 'custom') && !validRect(c.facecamRect)) e.push('Esta plantilla necesita la posición de la cámara: dibújala sobre el fotograma.');
-  if (c.overlayRect && !validRect(c.overlayRect)) e.push('La caja de la cámara en la salida no es válida.');
+  if ((NEEDS_CAM.includes(c.template) || c.template === 'custom') && !validRect(c.sourceFacecamRect)) e.push('Esta plantilla necesita la posición de la cámara: dibújala sobre el fotograma.');
+  if (c.outputFacecamRect && !validRect(c.outputFacecamRect)) e.push('La caja de la cámara en la salida no es válida.');
   if (c.gameplayCrop.zoom < 1 || c.gameplayCrop.zoom > 4 || c.facecamCrop.zoom < 1 || c.facecamCrop.zoom > 4) e.push('El zoom debe estar entre 1 y 4.');
   return e;
 }
@@ -127,13 +139,20 @@ export function iou(a: NormRect, b: NormRect): number {
  * Combina los análisis de varias ventanas del clip. La región elegida debe repetirse (IoU alto) en la mayoría:
  * una cara que aparece en un momento del gameplay no es una facecam. La confianza se multiplica por la consistencia.
  */
-export function combineDetections(parts: VisualResult[]): VisualResult & { consistency: number } {
+export function combineDetections(parts: VisualResult[], o: { samples?: number; srcAspect?: number } = {}): VisualResult & { consistency: number } {
   const withCam = parts.filter((p) => p.cam && p.cls !== 'incierto' && p.cls !== 'sin_facecam' && p.cls !== 'pantalla_completa');
   const engine = parts[0]?.engine ?? 'combinado';
-  if (!parts.length) return { cls: 'incierto', confidence: 0, engine, consistency: 0 };
+  const base = { samples: o.samples ?? 0, windows: parts.length };
+  if (!parts.length) return { cls: 'incierto', confidence: 0, engine, consistency: 0, diagnostic: { ...base, consistency: 0, reason: 'No se pudieron extraer fotogramas del clip.' } };
   if (withCam.length === 0) {
     const allNone = parts.every((p) => p.cls === 'sin_facecam');
-    return { cls: allNone ? 'sin_facecam' : 'incierto', confidence: allNone ? Math.min(...parts.map((p) => p.confidence)) : 0, engine, consistency: allNone ? 1 : 0 };
+    return {
+      cls: allNone ? 'sin_facecam' : 'incierto',
+      confidence: allNone ? Math.min(...parts.map((p) => p.confidence)) : 0,
+      engine,
+      consistency: allNone ? 1 : 0,
+      diagnostic: { ...base, consistency: allNone ? 1 : 0, reason: allNone ? 'Ninguna ventana mostró un recuadro fijo de cámara.' : 'Análisis no concluyente (imagen casi fija o sin bordes claros).' },
+    };
   }
   // Candidata = la que más coincide con las demás.
   let best = withCam[0];
@@ -154,8 +173,31 @@ export function combineDetections(parts: VisualResult[]): VisualResult & { consi
   const y1 = Math.max(...agreeing.map((p) => p.cam!.y + p.cam!.h));
   const cam = clampRect({ x: x0, y: y0, w: x1 - x0, h: y1 - y0 }, 0.03);
   const avg = agreeing.reduce((s, p) => s + p.confidence, 0) / agreeing.length;
-  const confidence = Math.round(avg * consistency * 100) / 100;
-  return { cls: best.cls, confidence, cam, engine: `${engine}×${parts.length}`, consistency };
+  const shape = facecamShape(cam, o.srcAspect ?? 16 / 9);
+  const confidence = Math.round(avg * consistency * shape.factor * 100) / 100;
+  const reason =
+    consistency < 0.5
+      ? `La región sólo se repite en ${bestAgree} de ${parts.length} ventanas: podría ser algo del gameplay.`
+      : shape.factor < 1
+        ? shape.reason
+        : `Recuadro fijo en ${bestAgree} de ${parts.length} ventanas, cerca del borde y con forma de cámara.`;
+  return { cls: best.cls, confidence, cam, engine: `${engine}×${parts.length}`, consistency, diagnostic: { ...base, consistency, rect: cam, reason } };
+}
+
+/**
+ * Una facecam real suele estar pegada a un borde (normalmente una esquina), ocupar poco y tener proporción de
+ * cámara (≈ 1:1 a 16:9). Lo que no cumple eso pierde confianza: así una cara en medio del gameplay no se elige.
+ */
+export function facecamShape(cam: NormRect, srcAspect = 16 / 9): { factor: number; reason: string } {
+  const edge = 0.12;
+  const nearX = cam.x <= edge || cam.x + cam.w >= 1 - edge;
+  const nearY = cam.y <= edge || cam.y + cam.h >= 1 - edge;
+  const ar = (cam.w * srcAspect) / cam.h;
+  const area = cam.w * cam.h;
+  if (!nearX && !nearY) return { factor: 0.4, reason: 'El recuadro está en el centro de la imagen: no parece una facecam superpuesta.' };
+  if (ar < 0.7 || ar > 2.6) return { factor: 0.6, reason: `Proporción poco habitual para una cámara (${ar.toFixed(2)}:1).` };
+  if (area > 0.35) return { factor: 0.6, reason: 'El recuadro ocupa demasiada imagen para ser una facecam.' };
+  return { factor: nearX && nearY ? 1 : 0.85, reason: nearX && nearY ? 'Cerca de una esquina.' : 'Pegado a un borde, no a una esquina.' };
 }
 
 /** Composición inicial a partir de la decisión automática. Sin confianza suficiente: recorte seguro y «Revisar». */
@@ -165,7 +207,7 @@ export function autoComposition(template: LayoutId, visual: VisualResult | undef
     ...DEFAULT_COMPOSITION,
     template,
     mode: TEMPLATE_MODE[template],
-    facecamRect: visual?.cam,
+    sourceFacecamRect: visual?.cam,
     outputAspectRatio: aspect,
     confidence: visual?.confidence ?? 0,
     source: reliable ? 'auto-detection' : 'fallback',

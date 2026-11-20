@@ -198,11 +198,13 @@ export function whisperSkipped(output: string): string | null {
 }
 
 /** Argumentos para el CLI de openai-whisper. */
-export function openaiArgs(plan: EnginePlan, audio: string, outDir: string, language: string): string[] {
+export function openaiArgs(plan: EnginePlan, audio: string, outDir: string, language: string, precise = false): string[] {
   const a = [audio, '--model', plan.model, '--word_timestamps', 'True', '--output_format', 'json', '--output_dir', outDir, '--verbose', 'True'];
   a.push('--device', plan.device);
   a.push('--fp16', plan.device === 'cuda' && plan.fp16 ? 'True' : 'False');
   if (language) a.push('--language', language);
+  // Modo preciso: búsqueda más amplia, sin temperatura y sin arrastrar el contexto (evita repeticiones). Más lento.
+  if (precise) a.push('--beam_size', '5', '--best_of', '5', '--temperature', '0', '--condition_on_previous_text', 'False');
   return a;
 }
 
@@ -220,10 +222,11 @@ export function openaiCommand(
 }
 
 /** Argumentos para resources/python/fw_transcribe.py (faster-whisper). */
-export function fasterArgs(script: string, plan: EnginePlan, audio: string, outJson: string, language: string, allowDownload: boolean): string[] {
+export function fasterArgs(script: string, plan: EnginePlan, audio: string, outJson: string, language: string, allowDownload: boolean, precise = false): string[] {
   const a = [script, '--audio', audio, '--model', plan.model, '--device', plan.device, '--compute-type', plan.computeType ?? 'float16', '--output', outJson];
   if (language) a.push('--language', language);
   if (!allowDownload) a.push('--local-only');
+  if (precise) a.push('--precise');
   return a;
 }
 

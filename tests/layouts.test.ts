@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { decideLayout, validRect, AUTO_CONFIDENCE, type VisualResult } from '../src/shared/layouts';
 import { classify, frameEdgeAnalyzer, ANALYSIS_W, ANALYSIS_H, type GrayFrame } from '../src/main/visual';
-import { CAM_H, GAME_H, OUT_H, camChain, containsSelection, fitAspect, gameplayCrop, layoutFilter, layoutRenderArgs } from '../src/main/layoutRender';
+import { CAM_H, GAME_H, OUT_H, camChain, fitAspect, gameplayCrop, layoutFilter, layoutRenderArgs } from '../src/main/layoutRender';
 
 // Generador determinista (sin Math.random) para fixtures reproducibles.
 function rng(seed: number) {
@@ -90,11 +90,11 @@ describe('LayoutStrategy: recortes y filtergraph', () => {
   const cam = { x: 0.72, y: 0.62, w: 0.26, h: 0.34 };
   it('los layouts apilados suman 1920 px y el reparto es fijo', () => {
     expect(GAME_H + CAM_H).toBe(OUT_H);
-    const f = layoutFilter({ layout: 'game_top_cam_bottom', srcW: W, srcH: H, offsetX: 0, cam });
+    const f = layoutFilter({ layout: 'game_top_cam_bottom', srcW: W, srcH: H, offsetX: 0, sourceCam: cam });
     expect(f).toContain(`scale=1080:${GAME_H}`);
     expect(f).toContain(`scale=1080:${CAM_H}`);
     expect(f).toContain('[g][c]vstack=inputs=2[v]');
-    expect(layoutFilter({ layout: 'cam_top_game_bottom', srcW: W, srcH: H, offsetX: 0, cam })).toContain('[c][g]vstack');
+    expect(layoutFilter({ layout: 'cam_top_game_bottom', srcW: W, srcH: H, offsetX: 0, sourceCam: cam })).toContain('[c][g]vstack');
   });
   it('el recorte de la facecam mantiene la cámara entera, el aspecto y queda dentro del fotograma', () => {
     const r = fitAspect({ x: 0.72 * W, y: 0.62 * H, w: 0.26 * W, h: 0.34 * H }, 1080 / CAM_H, W, H);
@@ -124,18 +124,22 @@ describe('LayoutStrategy: recortes y filtergraph', () => {
   });
 });
 
-describe('revisión Codex: facecam alta que no cabe al ampliar', () => {
-  it('conserva la selección entera y la rellena en vez de recortarla', () => {
-    // Ejemplo de la revisión: origen 1080×1920, selección 500×800 en (100, 500), destino 1080×704.
+describe('facecam: se recorta EXACTAMENTE la selección del vídeo original', () => {
+  it('selección alta: la cámara entera con bandas negras (sin cortar ni añadir gameplay)', () => {
     const chain = camChain({ x: 100, y: 500, w: 500, h: 800 }, 1080, CAM_H, 1080, 1920);
     expect(chain).toContain('crop=500:800:100:500');
+    expect(chain).toContain('force_original_aspect_ratio=decrease');
     expect(chain).toContain('pad=1080:704');
-    expect(containsSelection(fitAspect({ x: 100, y: 500, w: 500, h: 800 }, 1080 / CAM_H, 1080, 1920), { x: 100, y: 500, w: 500, h: 800 })).toBe(false);
   });
-  it('caso normal: amplía al aspecto sin bandas', () => {
+  it('4:3 en el hueco apilado: recorte exacto (nunca se amplía con gameplay de alrededor)', () => {
     const chain = camChain({ x: 1380, y: 670, w: 500, h: 360 }, 1080, CAM_H, 1920, 1080);
-    expect(chain).not.toContain('pad=');
-    expect(chain).toMatch(/^crop=\d+:\d+:\d+:\d+,scale=1080:704/);
+    expect(chain).toMatch(/^\[csrc\]crop=500:360:1380:670,/);
+  });
+  it('misma proporción: escalado directo', () => {
+    expect(camChain({ x: 0, y: 0, w: 640, h: 360 }, 1280, 720, 1920, 1080)).toBe('[csrc]crop=640:360:0:0,scale=1280:720:flags=lanczos,setsar=1[c]');
+  });
+  it('una selección que se sale del fotograma se limita a él', () => {
+    expect(camChain({ x: 1800, y: 1000, w: 400, h: 300 }, 400, 300, 1920, 1080)).toContain('crop=120:80:1800:1000');
   });
   it('«Personalizado» por defecto sin facecam detectada cae al recorte seguro', () => {
     expect(decideLayout('custom', undefined).layout).toBe('gameplay_full');

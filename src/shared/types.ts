@@ -179,6 +179,10 @@ export interface JobMetrics {
   /** Idioma pedido a Whisper ('auto' = autodetección) y el que devolvió el motor. */
   languageRequested?: string;
   languageDetected?: string;
+  /** La transcripción trae tiempos por palabra (necesarios para el karaoke). */
+  wordTimestamps?: boolean;
+  /** Última transcripción hecha en modo preciso. */
+  preciseTranscription?: boolean;
   modelDownloadMs?: number;
   /** Cada intento de transcripción (incluidos los reintentos) con su resultado. */
   transcribeAttempts?: TranscribeAttempt[];
@@ -354,6 +358,10 @@ export interface Settings {
   /** Layout por defecto de los clips: «auto» usa el análisis visual con fallback seguro. */
   defaultLayout: LayoutChoice;
   subtitleFontSize: number;
+  /** «karaoke»: resalta sólo la palabra que se está diciendo. */
+  subtitleStyle: 'standard' | 'karaoke';
+  /** Color de la palabra activa en karaoke (#RRGGBB). */
+  subtitleActiveColor: string;
   onboardingDone: boolean;
   /** Resultados del benchmark local por modelo (sólo los escribe el proceso principal). */
   benchmarks?: Record<string, BenchmarkResult>;
@@ -462,7 +470,7 @@ export interface ClipsApi {
   liveRetryBlock(id: string, index: number): Promise<import('./live').LiveMonitor>;
   onLiveUpdate(cb: (m: import('./live').LiveMonitor) => void): () => void;
   /** Vuelve a transcribir un trabajo terminado sin descargar ni analizar de nuevo. */
-  retranscribeJob(id: string): Promise<Job>;
+  retranscribeJob(id: string, opts?: { precise?: boolean }): Promise<Job>;
   deleteJob(id: string): Promise<boolean>;
   renameClip(jobId: string, clipId: string, title: string): Promise<Job>;
   updateClip(jobId: string, clipId: string, patch: ClipPatch): Promise<Job>;

@@ -30,6 +30,7 @@ import { FREE_SPACE_DEFAULTS, humanSize, type CleanupOptions, type CleanupResult
 import { executeCleanup, planCleanup, refreshJobFlags, verifyExport } from './storageManager';
 import { NEEDS_CAM } from '../shared/layouts';
 import { parseWhisperJson, type Word } from './media';
+import { wordsFromSegments } from '../shared/cues';
 import { event } from './logger';
 
 const TERMINAL = ['completed', 'cancelled', 'failed'];
@@ -46,7 +47,8 @@ function renderEnvFor(ctx: IpcContext, job: Job): RenderEnv {
   if (!fs.existsSync(tFile)) throw new UserFacingError('Falta la transcripción del trabajo: no se pueden generar los subtítulos.');
   const ffmpeg = ctx.tools().ffmpeg;
   if (!ffmpeg) throw new UserFacingError('Falta FFmpeg. Revisa Configuración → Diagnóstico.');
-  const { words } = parseWhisperJson(fs.readFileSync(tFile, 'utf8'));
+  const { words: exact, segments } = parseWhisperJson(fs.readFileSync(tFile, 'utf8'));
+  const words = exact.length ? exact : wordsFromSegments(segments);
   const s = ctx.settings.get();
   return {
     ffmpeg,
@@ -55,7 +57,7 @@ function renderEnvFor(ctx: IpcContext, job: Job): RenderEnv {
     srcW: job.sourceVideo.width,
     srcH: job.sourceVideo.height,
     words: words as Word[],
-    settings: { cropOffsetX: s.cropOffsetX, subtitleFontSize: s.subtitleFontSize },
+    settings: { cropOffsetX: s.cropOffsetX, subtitleFontSize: s.subtitleFontSize, subtitleStyle: s.subtitleStyle, subtitleActiveColor: s.subtitleActiveColor },
   };
 }
 import { CancelledError, runProcess } from './proc';
@@ -131,7 +133,9 @@ export function emitJob(job: Job): void {
 /** Palabras de la transcripción del trabajo (vacío si ya no existe). */
 function transcriptWords(ctx: IpcContext, jobId: string): Word[] {
   try {
-    return parseWhisperJson(fs.readFileSync(path.join(jobDir(ctx.jobsDir, jobId), 'transcript.json'), 'utf8')).words as Word[];
+    const { words, segments } = parseWhisperJson(fs.readFileSync(path.join(jobDir(ctx.jobsDir, jobId), 'transcript.json'), 'utf8'));
+    // Sin tiempos por palabra: palabras aproximadas desde los segmentos (subtítulo estándar, sin karaoke).
+    return (words.length ? words : wordsFromSegments(segments)) as Word[];
   } catch {
     return [];
   }
@@ -515,8 +519,9 @@ export function registerIpc(ctx: IpcContext): void {
   let retranscribeCtrl: AbortController | null = null;
   // Al cerrar la app se aborta la retranscripción (sin procesos de Whisper huérfanos).
   ctx.onShutdown?.(() => retranscribeCtrl?.abort());
-  h('jobs:retranscribe', async (id: unknown) => {
+  h('jobs:retranscribe', async (id: unknown, opts: unknown) => {
     const job = requireJob(ctx, id);
+    const precise = z.object({ precise: z.boolean().optional() }).strict().optional().parse(opts ?? undefined)?.precise === true;
     if (job.status !== 'completed') throw new UserFacingError('Sólo se puede volver a transcribir un trabajo completado.');
     // Una sola inferencia pesada a la vez (GPUs de 6 GB): ni con trabajos en curso ni con otra retranscripción.
     if (retranscribing || ctx.queue.activeCount > 0) throw new UserFacingError('Hay otra transcripción o trabajo en curso; espera a que termine.');
@@ -535,9 +540,9 @@ export function registerIpc(ctx: IpcContext): void {
     // Mientras tanto el trabajo cuenta como ocupado: «Liberar espacio» no toca su vídeo ni su audio y no se edita.
     rerendering.add(job.id);
     try {
-      const r = await retranscribeJob(job, ctx.pipelineCtx, ctx.settings.get(), ctx.tools(), await ctx.gpuInfo(true), (retranscribeCtrl = new AbortController()).signal, (m) => emitJob({ ...job, message: m }));
+      const r = await retranscribeJob(job, ctx.pipelineCtx, ctx.settings.get(), ctx.tools(), await ctx.gpuInfo(true), (retranscribeCtrl = new AbortController()).signal, (m) => emitJob({ ...job, message: m }), { precise });
       const cur = ctx.jobs.get(job.id) ?? job;
-      const next = { ...cur, clips: r.job.clips, metrics: r.job.metrics, message: `Transcripción rehecha (${r.model}, ${r.device === 'cuda' ? 'GPU' : 'CPU'}, idioma ${r.language || 'auto'}). Vuelve a renderizar los clips para aplicar los subtítulos.` };
+      const next = { ...cur, clips: r.job.clips, metrics: r.job.metrics, message: `Transcripción rehecha${r.precise ? ' en modo preciso' : ''} (${r.model}, ${r.device === 'cuda' ? 'GPU' : 'CPU'}, idioma ${r.language || 'auto'}). Vuelve a renderizar los clips para aplicar los subtítulos.` };
       ctx.jobs.put(next);
       emitJob(next);
       event('retranscribe', { job: job.id, model: r.model, device: r.device, words: r.words });
@@ -798,7 +803,7 @@ export function registerIpc(ctx: IpcContext): void {
     const comp = composition == null ? undefined : compositionSchema.parse(composition);
     const errs = comp ? compositionErrors(compositionOf({ ...clip, composition: comp })) : [];
     if (errs.length) throw new UserFacingError(errs[0]);
-    const view = comp ? { ...clip, composition: { ...clip.composition, ...comp, manualOverride: true }, layout: comp.template, camRect: comp.facecamRect } : { ...clip, composition: undefined, layout: l, camRect: cam };
+    const view = comp ? { ...clip, composition: { ...clip.composition, ...comp, manualOverride: true }, layout: comp.template, camRect: comp.sourceFacecamRect } : { ...clip, composition: undefined, layout: l, camRect: cam };
     return renderPreview(env, { ...view, start: draft.start, end: draft.end }, path.join(jobDir(ctx.jobsDir, job.id), 'frames'), name);
   });
   h('clips:words', (jobId: unknown, clipId: unknown, range: unknown) => {

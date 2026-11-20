@@ -42,7 +42,7 @@ const api: ClipsApi = {
   createJob: (req) => ipcRenderer.invoke('jobs:create', req),
   listJobs: () => ipcRenderer.invoke('jobs:list'),
   cancelJob: (id) => ipcRenderer.invoke('jobs:cancel', String(id)),
-  retranscribeJob: (id) => ipcRenderer.invoke('jobs:retranscribe', String(id)),
+  retranscribeJob: (id, opts) => ipcRenderer.invoke('jobs:retranscribe', String(id), { precise: opts?.precise === true }),
   liveList: () => ipcRenderer.invoke('live:list'),
   liveCreate: (url, settings, ack) => ipcRenderer.invoke('live:create', String(url), settings ?? {}, ack === true),
   livePause: (id) => ipcRenderer.invoke('live:pause', String(id)),
