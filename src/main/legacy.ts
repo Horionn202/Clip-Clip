@@ -337,7 +337,10 @@ export function classifyMissing(oldDir: string, newDir: string): { missing: { re
   // Sólo una migración que TERMINÓ (historial fusionado sin errores) permite tratar lo ausente como borrado a propósito.
   // Un marcador de reparación o de error no prueba nada: los trabajos que falten siguen contando como faltantes.
   const migratedBefore = historyMigrated(newDir);
-  const newJobs = new Map((readJson<NewJob[]>(path.join(newDir, 'data', 'jobs.json')) ?? []).map((j) => [j.id, j]));
+  const newJobsFile = path.join(newDir, 'data', 'jobs.json');
+  const parsedNew = readJson<NewJob[]>(newJobsFile);
+  if (fs.existsSync(newJobsFile) && !Array.isArray(parsedNew)) readErrors.push('data/jobs.json de Clip Clip: no se pudo leer el historial actual (no se libera nada hasta que se pueda comprobar)');
+  const newJobs = new Map((Array.isArray(parsedNew) ? parsedNew : []).map((j) => [j.id, j]));
   const missing: { rel: string; category: MissingCategory }[] = [];
   let intentional = 0;
   for (const top of MIGRATED_DIRS) {
@@ -369,6 +372,21 @@ export function classifyMissing(oldDir: string, newDir: string): { missing: { re
     if (!j || newJobs.has(j.id)) continue;
     if (migratedBefore) intentional++;
     else missing.push({ rel: `historial:${j.id}`, category: 'data' });
+  }
+  // Publicación: cada entrada antigua debe estar en Clip Clip (salvo la de un trabajo borrado a propósito).
+  const oldPubFile = path.join(oldDir, 'data', 'publish.json');
+  if (fs.existsSync(oldPubFile)) {
+    const oldPub = readJson<Record<string, unknown>>(oldPubFile);
+    const newPubFile = path.join(newDir, 'data', 'publish.json');
+    const newPub = fs.existsSync(newPubFile) ? readJson<Record<string, unknown>>(newPubFile) : {};
+    if (!oldPub || typeof oldPub !== 'object') readErrors.push('data/publish.json antiguo: no se pudo leer');
+    else if (!newPub || typeof newPub !== 'object') readErrors.push('data/publish.json de Clip Clip: no se pudo leer');
+    else
+      for (const k of Object.keys(oldPub)) {
+        if (k in newPub) continue;
+        if (migratedBefore && !newJobs.has(k)) intentional++;
+        else missing.push({ rel: `publicacion:${k}`, category: 'data' });
+      }
   }
   return { missing, intentional, readErrors };
 }
@@ -423,7 +441,8 @@ export function checkLegacy(lp: LegacyPaths, prot: Protected, size: (p: string) 
 export function repairLegacy(lp: LegacyPaths, prot: Protected, io?: MigrationFs, size: (p: string) => number = dirSize): LegacyRepairResult {
   const before = classifyMissing(lp.data, prot.userData);
   if (before.readErrors.length) return { linked: 0, copied: 0, copiedBytes: 0, skippedExisting: 0, errors: before.readErrors, check: checkLegacy(lp, prot, size) };
-  const only = new Set(before.missing.filter((m) => !m.rel.startsWith('historial:')).map((m) => path.join(...m.rel.split('/'))));
+  const only = new Set(before.missing.filter((m) => !m.rel.startsWith('historial:') && !m.rel.startsWith('publicacion:')).map((m) => path.join(...m.rel.split('/'))));
+  if (before.missing.some((m) => m.rel.startsWith('publicacion:'))) only.add(path.join('data', 'publish.json'));
   // El historial sólo se vuelve a fusionar si faltan trabajos que nunca se migraron.
   if (before.missing.some((m) => m.rel.startsWith('historial:'))) only.add(path.join('data', 'jobs.json'));
   let copiedBytes = 0;

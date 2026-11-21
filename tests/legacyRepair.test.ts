@@ -188,6 +188,30 @@ describe('migración reparable', () => {
     expect(r.freedBytes).toBe(80);
   });
 
+  it('revisión Codex: historial actual ilegible → no se interpreta como borrado ni se puede liberar', async () => {
+    migrateAll();
+    marker();
+    neu('data/jobs.json', '{esto no es json');
+    const c = checkLegacy(lp, prot);
+    expect(c.state).toBe('partial');
+    expect(c.readErrors.some((e) => /historial actual/.test(e))).toBe(true);
+    expect(c.canFreeData).toBe(false);
+    await expect(freeLegacy('data', lp, prot, { trash, log: () => undefined })).rejects.toThrow();
+  });
+
+  it('revisión Codex: metadatos de publicación incompletos → faltan, se reparan y sólo entonces se verifica', () => {
+    migrateAll();
+    marker();
+    old('data/publish.json', JSON.stringify({ 'job-000001': { tiktok: { status: 'publicado' } } }));
+    neu('data/publish.json', '{}');
+    const c = checkLegacy(lp, prot);
+    expect(c.state).toBe('needs_repair');
+    expect(c.missing.map((m) => m.rel)).toContain('publicacion:job-000001');
+    const r = repairLegacy(lp, prot);
+    expect(JSON.parse(fs.readFileSync(path.join(prot.userData, 'data/publish.json'), 'utf8'))).toHaveProperty('job-000001');
+    expect(r.check.state).toBe('verified');
+  });
+
   it('error de lectura: estado parcial, se explica qué carpeta y no se libera nada', () => {
     migrateAll();
     marker();
