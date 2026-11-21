@@ -260,7 +260,7 @@ export function LivePage({ onOpenResults }: { onOpenResults: () => void }) {
             </li>
           </ul>
         )}
-        <p className="small muted">Sólo se borran los temporales del monitor y su registro. Los trabajos, los clips y los exportados no se tocan.</p>
+        <p className="small muted">Los temporales del monitor se borran definitivamente (no van a la Papelera) junto con su registro. Los trabajos, los clips y los exportados no se tocan.</p>
       </ConfirmModal>
       <Modal open={!!shown} onClose={() => setDetail(null)} title={shown?.title ?? 'Monitor de directo'} size="md">
         {shown && (

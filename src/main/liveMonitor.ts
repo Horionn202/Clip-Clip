@@ -490,6 +490,9 @@ export class LiveManager {
   /** Ciclo: termina el bloque en curso y, si no hay ninguno, prepara y encola el siguiente segmento completo. */
   async tick(id: string): Promise<void> {
     const rt = this.runtime(id);
+    // El disco se vigila en CADA ciclo, antes del bloqueo: también mientras se prepara un bloque (concat) o un
+    // trabajo se procesa, porque FFmpeg sigue grabando.
+    if (this.monitors.has(id)) this.guardDisk(id);
     if (rt.busy) return;
     rt.busy = true;
     try {
@@ -497,9 +500,6 @@ export class LiveManager {
       if (!m) return;
       const dir = this.dirOf(id);
       // 1. Bloque en proceso: ¿terminó su trabajo?
-      // El disco se vigila en CADA ciclo, también mientras un bloque se procesa (FFmpeg sigue grabando).
-      this.guardDisk(id);
-      m = this.monitors.get(id)!;
       const running = m.blocks.find((b) => b.status === 'procesando');
       if (running) {
         const job = running.jobId ? this.d.getJob(running.jobId) : undefined;

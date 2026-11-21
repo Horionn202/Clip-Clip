@@ -21,6 +21,8 @@ interface Action {
   loses: string;
   bytes: number;
   files: number;
+  /** Se borra para siempre (no va a la Papelera). */
+  permanent?: boolean;
 }
 
 interface Overview {
@@ -91,7 +93,7 @@ export function FreeSpaceDialog({ open, onClose, onSelectJobs }: { open: boolean
   const plan = (k: 'sources' | 'regen' | 'internal') => ov?.plans[k];
 
   const actions: Record<ActionId, Action> = {
-    live: { id: 'live', title: 'Limpiar temporales de directos terminados', keeps: 'Los clips generados, sus trabajos y los exportados. En directos activos sólo se borra lo ya procesado.', loses: 'No se podrá «Reintentar bloque» con segmentos borrados.', bytes: liveDoneBytes, files: liveDone.length },
+    live: { id: 'live', title: 'Limpiar temporales de directos terminados', keeps: 'Los clips generados, sus trabajos y los exportados. Los directos activos o pausados no se tocan.', loses: 'No se podrá «Reintentar bloque» con segmentos borrados.', bytes: liveDoneBytes, files: liveDone.length, permanent: true },
     sources: { id: 'sources', title: 'Borrar fuentes de trabajos ya exportados', keeps: 'Clips, exportados, transcripción, títulos e historial. Sólo trabajos con TODOS sus clips exportados y verificados.', loses: 'Esos clips ya no podrán volver a editarse ni renderizarse (falta el vídeo original).', bytes: plan('sources')?.recoverableBytes ?? 0, files: plan('sources')?.files.length ?? 0 },
     regen: { id: 'regen', title: 'Borrar audio y frames regenerables', keeps: 'Vídeo original, clips, transcripción, miniaturas de los clips y exportados.', loses: 'Nada importante: se vuelven a generar si hacen falta.', bytes: plan('regen')?.recoverableBytes ?? 0, files: plan('regen')?.files.length ?? 0 },
     internal: { id: 'internal', title: 'Borrar clips internos ya exportados', keeps: 'Los exportados (se reproducen desde ahí) y los clips aún no exportados.', loses: 'Para re-editar un clip archivado hará falta el vídeo original.', bytes: plan('internal')?.recoverableBytes ?? 0, files: plan('internal')?.files.length ?? 0 },
@@ -146,7 +148,7 @@ export function FreeSpaceDialog({ open, onClose, onSelectJobs }: { open: boolean
         {ov && r && (
           <>
             <p className="small muted">
-              La app ocupa <b>{humanSize(r.totalBytes + liveBytes)}</b> en tu disco{r.freeDiskBytes !== undefined ? ` · libres ${humanSize(r.freeDiskBytes)}` : ''}. Todo lo que se borra va a la Papelera de reciclaje. Nunca se borran clips sin exportar, trabajos o directos activos ni exportados.
+              La app ocupa <b>{humanSize(r.totalBytes + liveBytes)}</b> en tu disco{r.freeDiskBytes !== undefined ? ` · libres ${humanSize(r.freeDiskBytes)}` : ''}. Lo que se borra va a la Papelera de reciclaje, salvo los segmentos de directos (temporales), que se borran definitivamente. Nunca se borran clips sin exportar, trabajos o directos activos ni exportados.
             </p>
             <div className="storage-grid">
               <Card icon="live" title="Segmentos de directos" bytes={liveBytes} note={liveBytes ? `${humanSize(liveDoneBytes)} de directos terminados o detenidos.` : 'Sin temporales de directos.'}>
@@ -217,6 +219,11 @@ export function FreeSpaceDialog({ open, onClose, onSelectJobs }: { open: boolean
                 </li>
               )}
             </ul>
+            {confirm.permanent && (
+              <div className="banner warn small" role="alert">
+                Estos archivos se borran <b>definitivamente</b>: no van a la Papelera de reciclaje.
+              </div>
+            )}
             <p className="small">
               <b>Se conserva:</b> {confirm.keeps}
             </p>

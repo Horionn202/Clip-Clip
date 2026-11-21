@@ -264,6 +264,42 @@ describe('LiveManager: limpieza en disco', () => {
     lm.shutdown();
   });
 
+  it('revisión Codex: el disco se vigila aunque el ciclo esté ocupado preparando un bloque', async () => {
+    const { id } = seed('en-directo', 'none', done(2), 4);
+    let limit = 10 ** 12;
+    let release!: () => void;
+    const held = new Promise<void>((r) => (release = r));
+    const lm = new LiveManager(
+      deps({
+        ffmpeg: () => 'ffmpeg',
+        ffprobe: () => 'ffprobe',
+        limits: () => ({ tempLimitBytes: limit, minFreeBytes: 0 }),
+        freeDiskBytes: () => 10 ** 12,
+        run: async (cmd, args, opts) => {
+          if (cmd === 'ffprobe') return { code: 0, stdout: '60', stderr: '' };
+          if (cmd === 'ffmpeg' && args.includes('concat')) {
+            await held; // FFmpeg atascado en el concat
+            fs.writeFileSync(path.join(opts.cwd!, args[args.length - 1]), 'x');
+          }
+          return { code: 0, stdout: '', stderr: '' };
+        },
+      }),
+    );
+    const mon = (lm as unknown as { monitors: Map<string, { status: string }> }).monitors.get(id)!;
+    mon.status = 'en-directo';
+    // Primer ciclo con un tope alto: empieza a preparar el bloque 2 y se queda esperando el concat.
+    const first = lm.tick(id);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(lm.list().monitors[0].status).toBe('en-directo');
+    limit = 3000;
+    // La grabación sigue creciendo (4 segmentos de 1000 B > tope de 3000 B) y llega otro ciclo.
+    await lm.tick(id);
+    expect(lm.list().monitors[0].status).toBe('pausado');
+    release();
+    await first;
+    lm.shutdown();
+  });
+
   it('nunca borra fuera de la carpeta del monitor', () => {
     const { id } = seed('detenido', 'none', done(2), 2);
     const outside = path.join(root, 'live', 'seg_00000.ts');
