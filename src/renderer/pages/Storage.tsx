@@ -3,7 +3,7 @@
 // regenerar o que ya no hacen falta, y siempre a la Papelera.
 import { useEffect, useState } from 'react';
 import { humanSize, type CleanupOptions, type CleanupResult, type StorageReport } from '../../shared/storage';
-import type { LegacyScan } from '../../shared/types';
+import type { LegacyCheck } from '../../shared/types';
 import { api, errMsg } from '../api';
 import { Modal } from '../components/Modal';
 import { Button, Icon, StatusPill, type IconName } from '../components/ui';
@@ -29,7 +29,7 @@ interface Overview {
   report: StorageReport;
   live: { id: string; title: string; active: boolean; bytes: number; clips: number }[];
   cache: number;
-  legacy: LegacyScan | null;
+  legacy: LegacyCheck | null;
   clips: number;
   plans: Record<'sources' | 'regen' | 'internal', StorageReport>;
 }
@@ -39,7 +39,7 @@ async function loadOverview(): Promise<Overview> {
     api().analyzeStorage({ source: true, audio: true, frames: true, temp: true, transcript: true, internalClips: true }),
     api().liveUsage(),
     api().cacheSize().catch(() => 0),
-    api().legacyScan().catch(() => null),
+    api().legacyCheck().catch(() => null),
     api().listJobs(),
     api().analyzeStorage({ ...NONE, source: true, sourceOnlyExported: true }),
     api().analyzeStorage({ ...NONE, audio: true, frames: true, temp: true }),
@@ -125,11 +125,22 @@ export function FreeSpaceDialog({ open, onClose, onSelectJobs }: { open: boolean
     }
   };
 
-  const act = (a: Action) => (
-    <Button size="sm" disabled={!a.bytes} onClick={() => setConfirm(a)} aria-haspopup="dialog">
-      {a.title}
-    </Button>
-  );
+  /** Motivo y siguiente paso cuando una acción no tiene nada que liberar (nunca un botón que no hace nada). */
+  const why: Record<ActionId, string> = {
+    live: 'No hay directos terminados con temporales.',
+    sources: 'Ningún trabajo tiene todos sus clips exportados y verificados: exporta los clips (y espera a que terminen los trabajos activos) para poder borrar su vídeo fuente.',
+    regen: 'No hay audio ni frames que borrar.',
+    internal: 'Ningún clip interno tiene un export verificado: exporta los clips primero.',
+    cache: 'La caché está vacía.',
+  };
+  const act = (a: Action) =>
+    a.bytes ? (
+      <Button size="sm" onClick={() => setConfirm(a)} aria-haspopup="dialog">
+        {a.title}
+      </Button>
+    ) : (
+      <p className="small muted">{why[a.id]}</p>
+    );
 
   return (
     <>
@@ -154,24 +165,54 @@ export function FreeSpaceDialog({ open, onClose, onSelectJobs }: { open: boolean
               <Card icon="live" title="Segmentos de directos" bytes={liveBytes} note={liveBytes ? `${humanSize(liveDoneBytes)} de directos terminados o detenidos.` : 'Sin temporales de directos.'}>
                 {act(actions.live)}
               </Card>
-              <Card icon="film" title="Vídeos fuente" bytes={cat('source')} note="Necesarios para volver a editar o renderizar.">
+              <Card icon="film" title="Vídeos fuente de trabajos terminados" bytes={cat('source')} note="Necesarios para volver a editar o renderizar.">
                 {act(actions.sources)}
               </Card>
               <Card icon="mic" title="Audio WAV" bytes={cat('audio')} note="Se regenera a partir del vídeo.">
                 {act(actions.regen)}
               </Card>
-              <Card icon="results" title="Frames y previews" bytes={cat('frames') + cat('temp')} note="Las miniaturas de los clips se conservan." />
+              <Card icon="results" title="Temporales de Clip Clip (frames y previews)" bytes={cat('frames') + cat('temp')} note="Las miniaturas de los clips se conservan." />
               <Card icon="check" title="Clips internos ya exportados" bytes={actions.internal.bytes} note={`Clips internos en total: ${humanSize(cat('internalClip'))}.`}>
                 {act(actions.internal)}
               </Card>
               <Card icon="export" title="Clips exportados" bytes={r.exportsBytes} kept note="Están en tu carpeta de exportación. Sólo se borran si lo pides expresamente." />
-              <Card icon="folder" title="Datos de una versión anterior" bytes={ov.legacy?.totalBytes ?? 0} note={ov.legacy?.found ? 'Datos de una versión anterior detectados. No se borran solos.' : 'No se detectaron.'}>
-                {ov.legacy?.found && (
+              <Card
+                icon="folder"
+                title="Datos de una versión anterior"
+                bytes={ov.legacy?.data?.bytes ?? 0}
+                note={
+                  !ov.legacy?.data
+                    ? 'No se detectaron.'
+                    : ov.legacy.state === 'verified'
+                      ? `Migración verificada: se pueden recuperar ${humanSize(ov.legacy.dataFreeableBytes)}.`
+                      : ov.legacy.state === 'needs_repair'
+                        ? `Faltan ${ov.legacy.missingTotal} archivos en Clip Clip: no se puede liberar hasta reparar la migración.`
+                        : ov.legacy.state === 'partial'
+                          ? 'No se pudieron leer algunas carpetas antiguas: revisa el detalle.'
+                          : 'Aún no se migraron. No se borran solos.'
+                }
+              >
+                {ov.legacy?.data && (
                   <Button size="sm" onClick={() => setLegacyOpen(true)} aria-haspopup="dialog">
-                    Revisar datos de versión anterior
+                    {ov.legacy.state === 'needs_repair' ? 'Reparar migración' : ov.legacy.state === 'none' ? 'Migrar datos antiguos' : 'Revisar datos de versión anterior'}
                   </Button>
                 )}
               </Card>
+              {ov.legacy?.install && (
+                <Card icon="folder" title="Instalación antigua" bytes={ov.legacy.install.bytes} note="Se puede liberar aunque los datos antiguos sigan sin verificar.">
+                  <Button size="sm" onClick={() => setLegacyOpen(true)} aria-haspopup="dialog">
+                    Liberar sólo instalación antigua
+                  </Button>
+                </Card>
+              )}
+              {ov.legacy?.exports && (
+                <Card icon="export" title="Exports antiguos" bytes={ov.legacy.exports.bytes} note="Vídeos exportados por la versión anterior. No se borran solos.">
+                  <Button size="sm" variant="ghost" onClick={() => void api().legacyOpen('exports')}>
+                    Abrir ubicación
+                  </Button>
+                </Card>
+              )}
+              <Card icon="trash" title="Papelera de reciclaje de Windows" bytes={0} note="Lo que la app envía a la Papelera sigue ocupando disco hasta que la vacías desde Windows (no se mide aquí)." />
               <Card icon="disk" title="Caché" bytes={ov.cache} note="Caché del navegador interno de la app.">
                 {act(actions.cache)}
               </Card>

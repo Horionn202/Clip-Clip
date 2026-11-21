@@ -109,6 +109,52 @@ export interface LegacyScan {
   dismissed: boolean;
   migrated: boolean;
 }
+/** Estado de la migración (se guarda en el marcador; su mera existencia ya no significa «terminada»). */
+export type MigrationState = 'none' | 'completed' | 'partial' | 'needs_repair' | 'repaired' | 'verified' | 'legacy_trashed';
+export type MissingCategory = 'source' | 'audio' | 'internalClip' | 'frames' | 'transcript' | 'data';
+export const MISSING_LABELS: Record<MissingCategory, string> = {
+  source: 'Vídeos fuente',
+  audio: 'Audio',
+  internalClip: 'Clips internos',
+  frames: 'Frames',
+  transcript: 'Transcripciones',
+  data: 'Datos y configuración',
+};
+/** Diagnóstico completo de la versión anterior para el modal y el centro de almacenamiento. */
+export interface LegacyCheck {
+  state: MigrationState;
+  data?: { path: string; bytes: number };
+  install?: { path: string; bytes: number; freeableBytes: number; keptInUse: string[] };
+  exports?: { path: string; bytes: number };
+  /** Archivos que faltan en Clip Clip y se necesitan (rutas relativas, máx. 500). */
+  missing: { rel: string; category: MissingCategory }[];
+  missingTotal: number;
+  byCategory: Record<MissingCategory, number>;
+  /** Archivos que ya no están en Clip Clip porque se borraron a propósito allí (trabajos eliminados o espacio liberado). */
+  intentional: number;
+  /** Carpetas que no se pudieron leer (permisos…). */
+  readErrors: string[];
+  /** Se puede enviar la carpeta de datos antigua a la Papelera (todo verificado). */
+  canFreeData: boolean;
+  /** Bytes que se liberarían enviando la carpeta de datos (sin lo que esté en uso). */
+  dataFreeableBytes: number;
+}
+export interface LegacyRepairResult {
+  linked: number;
+  copied: number;
+  /** Bytes añadidos al disco al copiar (los enlaces no ocupan más). */
+  copiedBytes: number;
+  skippedExisting: number;
+  errors: string[];
+  check: LegacyCheck;
+}
+export interface LegacyFreeResult {
+  target: 'data' | 'install' | 'exports';
+  trashed: { path: string; bytes: number }[];
+  freedBytes: number;
+  kept: string[];
+  errors: string[];
+}
 export interface LegacyMigrateResult {
   ok: boolean;
   migrated: { linked: number; copied: number; skippedExisting: number; mergedJobs: number };
@@ -498,6 +544,10 @@ export interface ClipsApi {
   legacyScan(): Promise<LegacyScan>;
   legacyMigrate(mode: 'keep' | 'free'): Promise<LegacyMigrateResult>;
   legacyDismiss(): Promise<void>;
+  legacyCheck(): Promise<LegacyCheck>;
+  legacyRepair(): Promise<LegacyRepairResult>;
+  legacyFree(target: 'data' | 'install' | 'exports'): Promise<LegacyFreeResult>;
+  legacyOpen(kind: 'data' | 'install' | 'exports'): Promise<void>;
   appVersion(): Promise<{ version: string; name: string }>;
   openJobFolder(jobId: string): Promise<void>;
   openExportFolder(): Promise<void>;

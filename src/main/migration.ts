@@ -10,7 +10,7 @@ export const MARKER = path.join('data', 'migration-clipsvirales.json');
 /** Carpetas que se migran. El entorno Python de la app (python-env, varios GB) no se toca: se sigue usando desde su ruta. */
 export const MIGRATED_DIRS = ['data', 'jobs', 'logs'];
 /** Archivos grandes que se enlazan en vez de copiarse. */
-const LINKABLE = /\.(mp4|mkv|webm|mov|wav)$/i;
+export const LINKABLE = /\.(mp4|mkv|webm|mov|wav)$/i;
 
 export interface MigrationReport {
   status: 'none' | 'already' | 'migrated' | 'partial' | 'failed';
@@ -66,10 +66,17 @@ const realFs: MigrationFs = {
   copy: (s, d) => fs.copyFileSync(s, d, fs.constants.COPYFILE_EXCL),
 };
 
-export function migrateLegacyData(oldDir: string, newDir: string, io: MigrationFs = realFs): MigrationReport {
+export interface MigrateOptions {
+  /** Reparación: se ejecuta aunque exista el marcador (la existencia del marcador ya no significa «terminado»). */
+  repair?: boolean;
+  /** Sólo estas rutas relativas (p. ej. los archivos que faltan). Nunca se sobrescribe nada que ya exista. */
+  only?: ReadonlySet<string>;
+}
+
+export function migrateLegacyData(oldDir: string, newDir: string, io: MigrationFs = realFs, opts: MigrateOptions = {}): MigrationReport {
   const report: MigrationReport = { status: 'none', from: oldDir, to: newDir, linked: 0, copied: 0, skippedExisting: 0, mergedJobs: 0, errors: [], at: new Date().toISOString() };
   if (path.resolve(oldDir) === path.resolve(newDir) || !fs.existsSync(oldDir)) return report;
-  if (fs.existsSync(path.join(newDir, MARKER))) return { ...report, status: 'already' };
+  if (!opts.repair && fs.existsSync(path.join(newDir, MARKER))) return { ...report, status: 'already' };
 
   for (const top of MIGRATED_DIRS) {
     const enumErrors: string[] = [];
@@ -77,6 +84,7 @@ export function migrateLegacyData(oldDir: string, newDir: string, io: MigrationF
     report.errors.push(...enumErrors.map((e) => `${top}/${e}`));
     for (const rel of files) {
       const relPath = path.join(top, rel);
+      if (opts.only && !opts.only.has(relPath)) continue;
       const src = path.join(oldDir, relPath);
       const dst = path.join(newDir, relPath);
       try {
@@ -135,10 +143,10 @@ export function migrateLegacyData(oldDir: string, newDir: string, io: MigrationF
   const moved = report.linked + report.copied + report.mergedJobs;
   report.status = report.errors.length === 0 ? (moved > 0 || report.skippedExisting > 0 ? 'migrated' : 'none') : moved > 0 ? 'partial' : 'failed';
   // Sólo se marca como hecha si no hubo errores: así un fallo se reintenta en el siguiente inicio.
-  if (report.errors.length === 0) {
+  if (report.errors.length === 0 && !opts.repair) {
     try {
       fs.mkdirSync(path.join(newDir, 'data'), { recursive: true });
-      fs.writeFileSync(path.join(newDir, MARKER), JSON.stringify(report, null, 2), 'utf8');
+      fs.writeFileSync(path.join(newDir, MARKER), JSON.stringify({ ...report, state: 'completed' }, null, 2), 'utf8');
     } catch (e) {
       report.errors.push(`marcador: ${(e as Error).message}`);
       report.status = 'partial';

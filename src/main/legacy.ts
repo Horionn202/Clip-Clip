@@ -4,9 +4,10 @@
 // Nunca se toca nada fuera de las rutas conocidas de ClipsVirales; los exports antiguos no se borran.
 import fs from 'node:fs';
 import path from 'node:path';
-import { LEGACY_DIR_NAME, MIGRATED_DIRS, migrateLegacyData, walk, type MigrationFs, type MigrationReport } from './migration';
+import { LEGACY_DIR_NAME, MARKER, MIGRATED_DIRS, migrateLegacyData, walk, type MigrationFs, type MigrationReport } from './migration';
+import { classify } from '../shared/storage';
 import { isInside } from './paths';
-import type { LegacyItem, LegacyMigrateResult, LegacyScan } from '../shared/types';
+import type { LegacyCheck, LegacyFreeResult, LegacyItem, LegacyMigrateResult, LegacyRepairResult, LegacyScan, MigrationState, MissingCategory } from '../shared/types';
 
 export interface LegacyPaths {
   /** %APPDATA%\ClipsVirales */
@@ -203,9 +204,14 @@ export async function runLegacyMigration(mode: 'keep' | 'free', lp: LegacyPaths,
     freedBytes: 0,
     errors: [...rep.errors],
   };
-  const v = fs.existsSync(lp.data) ? verifyMigration(lp.data, prot.userData) : { ok: true, missing: [] };
+  // Verificación detallada: lo borrado a propósito en Clip Clip no cuenta como faltante (no bloquea nada).
+  const cm = fs.existsSync(lp.data) ? classifyMissing(lp.data, prot.userData) : { missing: [], intentional: 0, readErrors: [] };
+  const v = { ok: cm.missing.length === 0 && cm.readErrors.length === 0, missing: [...cm.readErrors, ...cm.missing.map((m) => m.rel)] };
   result.verified = result.ok && v.ok;
-  if (!v.ok) result.errors.push(...v.missing.map((m) => `no verificado: ${m}`));
+  if (!v.ok) {
+    writeMarker(prot.userData, { state: cm.readErrors.length ? 'partial' : 'needs_repair' });
+    result.errors.push(`Faltan ${cm.missing.length} archivos en Clip Clip${cm.readErrors.length ? ` y ${cm.readErrors.length} carpetas no se pudieron leer` : ''}: abre «Datos de ClipsVirales» para repararlo.`);
+  } else if (fs.existsSync(path.join(prot.userData, MARKER))) writeMarker(prot.userData, { state: 'verified' });
   if (mode === 'keep') return result;
   if (!result.verified) {
     deps.log('legado: no se libera espacio porque la migración no se pudo verificar', { faltan: v.missing.length });
@@ -232,5 +238,250 @@ export async function runLegacyMigration(mode: 'keep' | 'free', lp: LegacyPaths,
     }
   }
   result.ok = result.errors.length === 0;
+  if (result.ok && result.trashed.some((t) => isInside(lp.data, t.path))) writeMarker(prot.userData, { state: 'legacy_trashed' });
   return result;
+}
+
+/**
+ * Bytes que de verdad se liberan al borrar una carpeta: un archivo con enlace duro en Clip Clip (nlink > 1) comparte el
+ * espacio con la copia nueva, así que borrar la antigua no lo libera.
+ */
+export function uniqueSize(dir: string): number {
+  let total = 0;
+  const stack = [dir];
+  while (stack.length) {
+    const d = stack.pop()!;
+    let st: fs.Stats;
+    try {
+      st = fs.statSync(d);
+    } catch {
+      continue;
+    }
+    if (st.isFile()) {
+      if (st.nlink <= 1) total += st.size;
+      continue;
+    }
+    let entries: string[] = [];
+    try {
+      entries = fs.readdirSync(d);
+    } catch {
+      continue;
+    }
+    for (const e of entries) stack.push(path.join(d, e));
+  }
+  return total;
+}
+
+// ======================================================================================================
+// Verificación detallada, reparación y liberación por partes (ADR 0009)
+// ======================================================================================================
+
+interface MarkerData {
+  state?: MigrationState;
+  [k: string]: unknown;
+}
+export function readMarker(userData: string): MarkerData | null {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(userData, MARKER), 'utf8')) as MarkerData;
+  } catch {
+    return fs.existsSync(path.join(userData, MARKER)) ? {} : null;
+  }
+}
+export function writeMarker(userData: string, patch: MarkerData): void {
+  const cur = readMarker(userData) ?? {};
+  fs.mkdirSync(path.join(userData, 'data'), { recursive: true });
+  fs.writeFileSync(path.join(userData, MARKER), JSON.stringify({ ...cur, ...patch, updatedAt: new Date().toISOString() }, null, 2), 'utf8');
+}
+
+interface NewJob {
+  id: string;
+  sourceCleaned?: boolean;
+  tempCleaned?: boolean;
+  clips?: { file?: string; archived?: boolean }[];
+}
+
+function readJson<T>(f: string): T | null {
+  try {
+    return JSON.parse(fs.readFileSync(f, 'utf8')) as T;
+  } catch {
+    return null;
+  }
+}
+
+function categoryOf(rel: string): MissingCategory {
+  const r = rel.replace(/\\/g, '/');
+  if (!r.startsWith('jobs/')) return 'data';
+  const inJob = r.split('/').slice(2).join('/');
+  const c = classify(inJob);
+  if (c === 'source') return 'source';
+  if (c === 'audio') return 'audio';
+  if (c === 'internalClip') return 'internalClip';
+  if (c === 'transcript') return 'transcript';
+  if (c === 'frames' || c === 'temp') return 'frames';
+  return 'data';
+}
+
+/**
+ * Qué falta en Clip Clip respecto a la copia antigua, separando lo que hace falta de lo que se borró A PROPÓSITO
+ * en Clip Clip después de migrar (un trabajo eliminado o su espacio liberado): eso no se «repara».
+ */
+export function classifyMissing(oldDir: string, newDir: string): { missing: { rel: string; category: MissingCategory }[]; intentional: number; readErrors: string[] } {
+  const readErrors: string[] = [];
+  const migratedBefore = fs.existsSync(path.join(newDir, MARKER));
+  const newJobs = new Map((readJson<NewJob[]>(path.join(newDir, 'data', 'jobs.json')) ?? []).map((j) => [j.id, j]));
+  const missing: { rel: string; category: MissingCategory }[] = [];
+  let intentional = 0;
+  for (const top of MIGRATED_DIRS) {
+    for (const rel of walk(path.join(oldDir, top), readErrors)) {
+      const relPath = path.join(top, rel);
+      if (fs.existsSync(path.join(newDir, relPath))) continue;
+      if (top === 'logs') continue; // los registros antiguos no hacen falta para usar Clip Clip
+      if (top === 'jobs') {
+        const parts = rel.split(/[\\/]/);
+        const job = newJobs.get(parts[0]);
+        const inJob = parts.slice(1).join('/');
+        const kind = classify(inJob);
+        const cleaned =
+          (!job && migratedBefore) || // trabajo eliminado en Clip Clip después de migrar
+          (!!job && kind === 'source' && !!job.sourceCleaned) ||
+          (!!job && (kind === 'audio' || kind === 'frames' || kind === 'temp') && !!job.tempCleaned) ||
+          (!!job && kind === 'internalClip' && !!job.clips?.some((c) => c.archived && inJob === `clips/${c.file}`));
+        if (cleaned) {
+          intentional++;
+          continue;
+        }
+      }
+      missing.push({ rel: relPath.replace(/\\/g, '/'), category: categoryOf(relPath) });
+    }
+  }
+  // Historial: un trabajo antiguo que no está en el nuevo sólo falta si nunca se migró (si no, se eliminó a propósito).
+  const oldJobs = readJson<{ id: string }[]>(path.join(oldDir, 'data', 'jobs.json')) ?? [];
+  for (const j of oldJobs) {
+    if (!j || newJobs.has(j.id)) continue;
+    if (migratedBefore) intentional++;
+    else missing.push({ rel: `historial:${j.id}`, category: 'data' });
+  }
+  return { missing, intentional, readErrors };
+}
+
+/** Protecciones efectivas: ajustes actuales y antiguos (Python/CUDA, ejecutables y carpetas de exportación). */
+function effectiveProtections(lp: LegacyPaths, prot: Protected): Protected {
+  const after = settingsProtections(path.join(prot.userData, 'data', 'settings.json'));
+  const old = settingsProtections(path.join(lp.data, 'data', 'settings.json'));
+  const extraExports = [after.exportDir, old.exportDir].filter((x): x is string => !!x);
+  return { ...prot, inUse: [...prot.inUse, ...after.inUse, ...old.inUse, ...extraExports] };
+}
+
+/** Plan de Papelera de UNA raíz (datos o instalación), con las protecciones aplicadas. */
+function rootPlan(root: string, lp: LegacyPaths, eff: Protected): { paths: string[]; kept: string[] } {
+  const only = { data: root === lp.data ? lp.data : path.join(lp.data, '__no__'), install: root === lp.install ? lp.install : path.join(lp.install, '__no__'), exports: lp.exports };
+  const plan = trashPlan(only, eff);
+  return { paths: plan.paths.filter((p) => isInside(root, p)), kept: plan.kept.filter((k) => isInside(root, k)) };
+}
+
+export function checkLegacy(lp: LegacyPaths, prot: Protected, size: (p: string) => number = dirSize): LegacyCheck {
+  const byCategory: Record<MissingCategory, number> = { source: 0, audio: 0, internalClip: 0, frames: 0, transcript: 0, data: 0 };
+  const marker = readMarker(prot.userData);
+  const out: LegacyCheck = { state: 'none', missing: [], missingTotal: 0, byCategory, intentional: 0, readErrors: [], canFreeData: false, dataFreeableBytes: 0 };
+  const eff = effectiveProtections(lp, prot);
+  if (fs.existsSync(lp.data) && path.resolve(lp.data) !== path.resolve(prot.userData)) {
+    out.data = { path: lp.data, bytes: size(lp.data) };
+    const c = classifyMissing(lp.data, prot.userData);
+    for (const m of c.missing) byCategory[m.category]++;
+    out.missing = c.missing.slice(0, 500);
+    out.missingTotal = c.missing.length;
+    out.intentional = c.intentional;
+    out.readErrors = c.readErrors;
+    out.dataFreeableBytes = rootPlan(lp.data, lp, eff).paths.reduce((a, p) => a + (size === dirSize ? uniqueSize(p) : size(p)), 0);
+  }
+  if (fs.existsSync(lp.install)) {
+    const plan = rootPlan(lp.install, lp, eff);
+    out.install = { path: lp.install, bytes: size(lp.install), freeableBytes: plan.paths.reduce((a, p) => a + size(p), 0), keptInUse: plan.kept };
+  }
+  if (fs.existsSync(lp.exports) && !isInside(lp.exports, prot.exportDir) && !isInside(prot.exportDir, lp.exports)) out.exports = { path: lp.exports, bytes: size(lp.exports) };
+  if (!out.data) out.state = marker ? 'legacy_trashed' : 'none';
+  else if (out.readErrors.length) out.state = 'partial';
+  else if (out.missingTotal > 0) out.state = marker ? 'needs_repair' : 'none';
+  else out.state = marker ? 'verified' : 'none';
+  out.canFreeData = !!out.data && out.state === 'verified';
+  return out;
+}
+
+/**
+ * Reparación: copia (o enlaza) SÓLO lo que falta y hace falta; nunca sobrescribe nada del directorio nuevo ni
+ * resucita trabajos borrados a propósito. Después verifica y guarda el estado en el marcador.
+ */
+export function repairLegacy(lp: LegacyPaths, prot: Protected, io?: MigrationFs, size: (p: string) => number = dirSize): LegacyRepairResult {
+  const before = classifyMissing(lp.data, prot.userData);
+  if (before.readErrors.length) return { linked: 0, copied: 0, copiedBytes: 0, skippedExisting: 0, errors: before.readErrors, check: checkLegacy(lp, prot, size) };
+  const only = new Set(before.missing.filter((m) => !m.rel.startsWith('historial:')).map((m) => path.join(...m.rel.split('/'))));
+  // El historial sólo se vuelve a fusionar si faltan trabajos que nunca se migraron.
+  if (before.missing.some((m) => m.rel.startsWith('historial:'))) only.add(path.join('data', 'jobs.json'));
+  let copiedBytes = 0;
+  const countingIo: MigrationFs = {
+    link: io?.link ?? ((s, d) => fs.linkSync(s, d)),
+    copy: (s, d) => {
+      (io?.copy ?? ((a: string, b: string) => fs.copyFileSync(a, b, fs.constants.COPYFILE_EXCL)))(s, d);
+      try {
+        copiedBytes += fs.statSync(d).size;
+      } catch {
+        /* ignorar */
+      }
+    },
+  };
+  const rep = only.size ? migrateLegacyData(lp.data, prot.userData, countingIo, { repair: true, only }) : null;
+  const check = checkLegacy(lp, prot, size);
+  writeMarker(prot.userData, { state: check.state === 'verified' ? 'verified' : 'repaired', lastRepair: { linked: rep?.linked ?? 0, copied: rep?.copied ?? 0, copiedBytes, errors: rep?.errors.length ?? 0 } });
+  return { linked: rep?.linked ?? 0, copied: rep?.copied ?? 0, copiedBytes, skippedExisting: rep?.skippedExisting ?? 0, errors: rep?.errors ?? [], check };
+}
+
+/**
+ * Envía a la Papelera una parte de la versión anterior. Las rutas salen de la configuración (nunca del renderer),
+ * deben llamarse exactamente «ClipsVirales» y no pueden coincidir con las de Clip Clip ni con nada en uso.
+ * «data» sólo con la migración verificada; «install» y «exports» son independientes. Si la Papelera falla, no se
+ * borra nada de forma permanente.
+ */
+export async function freeLegacy(
+  target: 'data' | 'install' | 'exports',
+  lp: LegacyPaths,
+  prot: Protected,
+  deps: { trash: (p: string) => Promise<void>; size?: (p: string) => number; log: (m: string, x?: unknown) => void },
+): Promise<LegacyFreeResult> {
+  const size = deps.size ?? dirSize;
+  const res: LegacyFreeResult = { target, trashed: [], freedBytes: 0, kept: [], errors: [] };
+  const root = target === 'data' ? lp.data : target === 'install' ? lp.install : lp.exports;
+  if (!path.isAbsolute(root) || path.basename(root) !== LEGACY_DIR_NAME || !fs.existsSync(root)) throw new Error('La carpeta de la versión anterior no existe o no es válida.');
+  if ([prot.userData, prot.installDir].some((f) => f && (isInside(root, f) || isInside(f, root)))) throw new Error('Esa carpeta es de Clip Clip: no se toca.');
+  const eff = effectiveProtections(lp, prot);
+  let paths: string[];
+  if (target === 'data') {
+    const c = checkLegacy(lp, prot, size);
+    if (!c.canFreeData) throw new Error(c.readErrors.length ? 'No se pudieron leer todas las carpetas antiguas: no se borra nada.' : `Faltan ${c.missingTotal} archivos en Clip Clip: repara la migración antes de liberar los datos antiguos.`);
+    const plan = rootPlan(lp.data, lp, eff);
+    paths = plan.paths;
+    res.kept = plan.kept;
+  } else if (target === 'install') {
+    const plan = rootPlan(lp.install, lp, eff);
+    paths = plan.paths;
+    res.kept = plan.kept;
+  } else {
+    // Exports antiguos: nunca la carpeta de exportación actual ni algo que la contenga o esté en uso.
+    if (isInside(root, prot.exportDir) || isInside(prot.exportDir, root) || eff.inUse.some((u) => u && isInside(root, u))) throw new Error('Esa carpeta es la de exportación actual o está en uso: no se toca.');
+    paths = [root];
+  }
+  for (const p of paths) {
+    // Lo enlazado con Clip Clip no libera espacio al borrarse: se informa sólo lo que de verdad se recupera.
+    const bytes = deps.size ? size(p) : uniqueSize(p);
+    try {
+      await deps.trash(p);
+      res.trashed.push({ path: p, bytes });
+      res.freedBytes += bytes;
+      deps.log('legado: enviado a la Papelera', { destino: target, ruta: p, bytes });
+    } catch (e) {
+      // Sin borrado permanente de respaldo: se queda donde está y se puede reintentar.
+      res.errors.push(`${p}: no se pudo enviar a la Papelera (${(e as Error).message})`.slice(0, 300));
+    }
+  }
+  if (target === 'data' && !res.errors.length) writeMarker(prot.userData, { state: 'legacy_trashed' });
+  return res;
 }
