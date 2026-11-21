@@ -115,7 +115,8 @@ export function planCleanup(jobs: Job[], jobsDir: string, opts: CleanupOptions, 
     // Fotogramas de referencia de los clips (miniaturas y editor de facecam): sólo se generan en el pipeline, se conservan.
     const thumbs = keptThumbs(job);
     const rendered = job.clips.filter((c) => c.file);
-    const allExported = rendered.length > 0 && rendered.every((c) => verifyExport(jobsDir, job.id, c, deps));
+    // Todos los clips elegidos, no sólo los renderizados: uno sin renderizar aún necesita el vídeo original.
+    const allExported = job.clips.length > 0 && rendered.length === job.clips.length && rendered.every((c) => verifyExport(jobsDir, job.id, c, deps));
     for (const f of list) {
       const cat = classify(f.rel);
       if (thumbs.has(f.rel.replace(/\\/g, '/'))) continue;

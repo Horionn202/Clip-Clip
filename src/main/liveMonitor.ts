@@ -495,6 +495,9 @@ export class LiveManager {
       if (!m) return;
       const dir = this.dirOf(id);
       // 1. Bloque en proceso: ¿terminó su trabajo?
+      // El disco se vigila en CADA ciclo, también mientras un bloque se procesa (FFmpeg sigue grabando).
+      this.guardDisk(id);
+      m = this.monitors.get(id)!;
       const running = m.blocks.find((b) => b.status === 'procesando');
       if (running) {
         const job = running.jobId ? this.d.getJob(running.jobId) : undefined;
@@ -514,7 +517,6 @@ export class LiveManager {
       const done = new Set(m.blocks.map((b) => b.index));
       const ready = completeSegments(files, rt.recorderRunning, done);
       m = this.set(id, { tempBytes: dirBytes(dir) });
-      if (this.guardDisk(id)) return;
       if (!ready.length) {
         if (m.status === 'finalizando' && !rt.recorderRunning) this.finalize(id);
         return;
@@ -539,9 +541,9 @@ export class LiveManager {
     const now = (this.d.now ?? Date.now)();
     let bytes = dirBytes(dir);
     let level = storageLevel(bytes, tempLimitBytes);
-    // Antes de pausar, se libera lo procesado (sin tocar lo pendiente ni el solape).
+    // Antes de pausar, se aplica la retención elegida (nunca se descarta lo que el usuario pidió conservar).
     if (level === 'full') {
-      this.cleanupSegments(id, false, 'none');
+      this.cleanupSegments(id, false);
       bytes = dirBytes(dir);
       level = storageLevel(bytes, tempLimitBytes);
     }

@@ -194,6 +194,42 @@ describe('LiveManager: limpieza en disco', () => {
     expect(fs.existsSync(path.join(jobDir, 'clip.mp4'))).toBe(true);
   });
 
+  it('revisión Codex: el disco se vigila aunque un bloque siga procesándose (pausa segura al llegar al límite)', async () => {
+    jobs.set('job-slow001', { id: 'job-slow001', status: 'transcribing', clips: [] } as unknown as Job);
+    const { id } = seed('en-directo', 'none', [...done(2), { index: 2, status: 'procesando', jobId: 'job-slow001' }], 6);
+    // Tope de 3000 B: 6 segmentos de 1000 B (los pendientes no se pueden borrar) → se pausa.
+    const lm = new LiveManager(deps({ limits: () => ({ tempLimitBytes: 3000, minFreeBytes: 0 }), freeDiskBytes: () => 10 ** 12 }));
+    // recoverMonitor deja en pausa los monitores activos al arrancar: se simula que sigue en directo.
+    (lm as unknown as { monitors: Map<string, { status: string }> }).monitors.get(id)!.status = 'en-directo';
+    await lm.tick(id);
+    const m = lm.list().monitors[0];
+    expect(m.status).toBe('pausado');
+    expect(m.error).toMatch(/límite de temporales/);
+    expect(m.storage?.level).toBe('full');
+    lm.shutdown();
+  });
+
+  it('revisión Codex: con «Conservar todo», el límite pausa sin borrar la grabación', async () => {
+    const { id, dir } = seed('en-directo', 'all', done(5), 6);
+    const lm = new LiveManager(deps({ limits: () => ({ tempLimitBytes: 3000, minFreeBytes: 0 }), freeDiskBytes: () => 10 ** 12 }));
+    (lm as unknown as { monitors: Map<string, { status: string }> }).monitors.get(id)!.status = 'en-directo';
+    await lm.tick(id);
+    expect(lm.list().monitors[0].status).toBe('pausado');
+    expect(fs.readdirSync(dir).filter((f) => f.endsWith('.ts'))).toHaveLength(6);
+    lm.shutdown();
+  });
+
+  it('poco espacio libre en el disco: pausa segura con error accionable', async () => {
+    const { id } = seed('en-directo', 'none', done(1), 2);
+    const lm = new LiveManager(deps({ limits: () => ({ tempLimitBytes: 10 ** 12, minFreeBytes: 10 * 1024 ** 3 }), freeDiskBytes: () => 1024 ** 3 }));
+    (lm as unknown as { monitors: Map<string, { status: string }> }).monitors.get(id)!.status = 'en-directo';
+    await lm.tick(id);
+    const m = lm.list().monitors[0];
+    expect(m.status).toBe('pausado');
+    expect(m.error).toMatch(/poco espacio libre/);
+    lm.shutdown();
+  });
+
   it('nunca borra fuera de la carpeta del monitor', () => {
     const { id } = seed('detenido', 'none', done(2), 2);
     const outside = path.join(root, 'live', 'seg_00000.ts');
