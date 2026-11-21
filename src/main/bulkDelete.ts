@@ -148,6 +148,8 @@ interface Batch {
   clips?: { before: Job; ids: string[]; moved: { from: string; to: string }[]; undoStarted?: boolean };
   /** «Deshacer» en curso: la finalización espera (aunque un temporizador antiguo llegue a dispararse). */
   undoing?: boolean;
+  /** «Deshacer» de trabajos ya empezado (intención en disco): el plazo nunca lo manda a la Papelera. */
+  restoring?: boolean;
 }
 
 export class BulkDeleter {
@@ -454,6 +456,7 @@ export class BulkDeleter {
     if (!writeManifest(src, [], [], undefined, b.jobs)) {
       return { restored: 0, pending: b.jobs.length, undoUntil: rearm(), message: 'No se pudo preparar la recuperación (¿disco lleno?). Vuelve a pulsar «Deshacer».' };
     }
+    b.restoring = true;
     const pending: Job[] = [];
     let restored = 0;
     let lastErr = '';
@@ -492,7 +495,7 @@ export class BulkDeleter {
   async finalize(batchId: string): Promise<void> {
     const b = this.batches.get(batchId);
     if (!b || b.undoing) return;
-    if (b.clips?.undoStarted) {
+    if (b.clips?.undoStarted || b.restoring) {
       await this.undo(batchId).catch(() => undefined);
       return;
     }

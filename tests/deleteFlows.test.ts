@@ -724,6 +724,21 @@ describe('borrado de clips desde Resultados', () => {
     expect(trashed).toEqual([]);
   });
 
+  it('revisión Codex: si el «Deshacer» de un trabajo no puede guardar el historial, el plazo no lo manda a la Papelera', async () => {
+    seedJob('job-000001');
+    let fail = true;
+    const d = deleter({ flushJobs: () => { if (fail) throw new Error('ENOSPC'); } });
+    const r = await d.delete(['job-000001'], { deleteExports: false });
+    expect((await d.undo(r.batchId)).pending).toBe(1);
+    for (const fn of [...timers]) fn(); // vence el plazo renovado
+    await new Promise((x) => setTimeout(x, 10));
+    expect(trashed).toEqual([]);
+    fail = false;
+    await d.undo(r.batchId).catch(() => undefined);
+    expect(store.has('job-000001')).toBe(true);
+    expect(fs.existsSync(path.join(pendingDir, r.batchId))).toBe(false);
+  });
+
   it('todos los clips del trabajo: se elimina el trabajo completo (sin registros vacíos)', async () => {
     seedJob('job-000001');
     const d = deleter();
