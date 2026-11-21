@@ -315,6 +315,31 @@ describe('borrado de clips desde Resultados', () => {
     expect(order).toEqual(['manifest', 'flush', 'manifest']);
   });
 
+  it('revisión Codex: borrar el trabajo completo mientras reintenta respeta un «Deshacer» de clips hecho mientras tanto', async () => {
+    seedJob('job-000001');
+    const d = deleter();
+    const a = await d.deleteClips('job-000001', ['job-000001-c1'], { deleteExports: false });
+    const orig = fs.renameSync;
+    let undone: Promise<unknown> | null = null;
+    (fs as unknown as { renameSync: typeof fs.renameSync }).renameSync = ((x: fs.PathLike, y: fs.PathLike) => {
+      if (!undone && String(x) === path.join(jobsDir, 'job-000001')) {
+        (fs as unknown as { renameSync: typeof fs.renameSync }).renameSync = orig;
+        undone = d.undo(a.batchId);
+        throw Object.assign(new Error('EBUSY'), { code: 'EBUSY' });
+      }
+      return orig(x, y);
+    }) as typeof fs.renameSync;
+    let b;
+    try {
+      b = await d.delete(['job-000001'], { deleteExports: false });
+      await undone;
+    } finally {
+      (fs as unknown as { renameSync: typeof fs.renameSync }).renameSync = orig;
+    }
+    await d.undo(b.batchId);
+    expect(store.get('job-000001')!.clips.map((c) => c.id)).toEqual(['job-000001-c1', 'job-000001-c2']);
+  });
+
   it('todos los clips del trabajo: se elimina el trabajo completo (sin registros vacíos)', async () => {
     seedJob('job-000001');
     const d = deleter();

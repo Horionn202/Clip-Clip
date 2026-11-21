@@ -165,12 +165,14 @@ export class BulkDeleter {
     let freed = 0;
     let clips = 0;
     for (const pj of plan.jobs) {
-      const job = all.get(pj.id)!;
+      let job = all.get(pj.id)!;
       try {
         const dir = safeJobDir(this.d.jobsDir, job.id);
         const staged = path.join(dest, job.id);
         // Primero se aparta la carpeta (con reintentos); sólo si se movió se quita del historial.
         if (fs.existsSync(dir)) await moveWithRetry(dir, staged, `la carpeta del trabajo «${pj.title}»`, this.d.retryWaits);
+        // Estado ACTUAL tras los reintentos (p. ej. un «Deshacer» de clips hecho mientras tanto): es lo que se recupera.
+        job = this.d.getJobs().find((j) => j.id === pj.id) ?? job;
         try {
           this.d.removeJob(job.id);
         } catch (e) {
