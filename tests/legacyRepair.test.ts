@@ -263,6 +263,22 @@ describe('migración reparable', () => {
     expect(r.check.state).toBe('verified');
   });
 
+  it('revisión Codex: reparar con un marcador antiguo (sin lista) no olvida los trabajos borrados a propósito', () => {
+    migrateAll();
+    neu(MARKER, JSON.stringify({ status: 'migrated', at: '2026-11-01T00:00:00.000Z' }));
+    old('data/jobs.json', JSON.stringify([{ id: 'job-000001', createdAt: '2026-10-01T00:00:00Z' }, { id: 'job-000002', createdAt: '2026-10-02T00:00:00Z' }]));
+    old('jobs/job-000002/source.mp4', Buffer.alloc(10)); // migrado y borrado en Clip Clip
+    fs.rmSync(path.join(prot.userData, 'jobs/job-000001/frames/01.jpg')); // un faltante real sin relación
+    const first = repairLegacy(lp, prot);
+    expect(first.check.state).toBe('verified');
+    // La lista explícita conserva el trabajo borrado: la siguiente comprobación sigue limpia y no se resucita.
+    const again = checkLegacy(lp, prot);
+    expect(again.state).toBe('verified');
+    expect(again.missing).toEqual([]);
+    repairLegacy(lp, prot);
+    expect(fs.existsSync(path.join(prot.userData, 'jobs/job-000002'))).toBe(false);
+  });
+
   it('error de lectura: estado parcial, se explica qué carpeta y no se libera nada', () => {
     migrateAll();
     marker();

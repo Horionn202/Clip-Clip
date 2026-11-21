@@ -465,6 +465,10 @@ export function checkLegacy(lp: LegacyPaths, prot: Protected, size: (p: string) 
  */
 export function repairLegacy(lp: LegacyPaths, prot: Protected, io?: MigrationFs, size: (p: string) => number = dirSize): LegacyRepairResult {
   const before = classifyMissing(lp.data, prot.userData);
+  // Trabajos que ya contaban como migrados ANTES de reparar (lista del marcador o, en marcadores antiguos, por fecha):
+  // se conservan en la lista explícita para que lo borrado a propósito no vuelva a contar como faltante.
+  const wasMigrated = migratedJobsOf(lp.data, prot.userData);
+  const preIds = (readJson<{ id: string }[]>(path.join(lp.data, 'data', 'jobs.json')) ?? []).map((j) => j.id).filter((id) => wasMigrated(id));
   if (before.readErrors.length) return { linked: 0, copied: 0, copiedBytes: 0, skippedExisting: 0, errors: before.readErrors, check: checkLegacy(lp, prot, size) };
   const only = new Set(before.missing.filter((m) => !m.rel.startsWith('historial:') && !m.rel.startsWith('publicacion:')).map((m) => path.join(...m.rel.split('/'))));
   if (before.missing.some((m) => m.rel.startsWith('publicacion:'))) only.add(path.join('data', 'publish.json'));
@@ -486,7 +490,7 @@ export function repairLegacy(lp: LegacyPaths, prot: Protected, io?: MigrationFs,
   const rep = only.size ? migrateLegacyData(lp.data, prot.userData, countingIo, { repair: true, only, keepEntry: (id) => wanted.has(id) }) : null;
   const check = checkLegacy(lp, prot, size);
   const nowIds = new Set((readJson<{ id: string }[]>(path.join(prot.userData, 'data', 'jobs.json')) ?? []).map((j) => j.id));
-  const prevIds = Array.isArray(readMarker(prot.userData)?.migratedJobIds) ? (readMarker(prot.userData)!.migratedJobIds as string[]) : [];
+  const prevIds = [...(Array.isArray(readMarker(prot.userData)?.migratedJobIds) ? (readMarker(prot.userData)!.migratedJobIds as string[]) : []), ...preIds];
   const oldIds = (readJson<{ id: string }[]>(path.join(lp.data, 'data', 'jobs.json')) ?? []).map((j) => j.id);
   const migratedJobIds = [...new Set([...prevIds, ...oldIds.filter((id) => nowIds.has(id))])];
   writeMarker(prot.userData, { state: check.state === 'verified' ? 'verified' : 'repaired', migratedJobIds, ...(check.state === 'verified' ? { historyComplete: true } : {}), lastRepair: { linked: rep?.linked ?? 0, copied: rep?.copied ?? 0, copiedBytes, errors: rep?.errors.length ?? 0 } });
