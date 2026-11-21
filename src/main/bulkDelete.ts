@@ -169,6 +169,11 @@ export class BulkDeleter {
    * Un borrado por trabajo a la vez (trabajos completos y clips sueltos comparten la cola): si dos se solapan
    * (uno esperando un bloqueo), el segundo se planifica sobre el resultado del primero.
    */
+  /** Si hay un borrado (o su «Deshacer») en curso o en cola para este trabajo: renderizar o transcribir debe esperar. */
+  isDeleting(jobId: string): boolean {
+    return this.jobLocks.has(jobId);
+  }
+
   private withJobs<T>(ids: readonly string[], fn: () => Promise<T>): Promise<T> {
     const prev = Promise.all(ids.map((i) => this.jobLocks.get(i) ?? Promise.resolve()));
     const run = prev.then(fn);

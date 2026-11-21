@@ -574,6 +574,7 @@ export function registerIpc(ctx: IpcContext): void {
     // Una sola inferencia pesada a la vez (GPUs de 6 GB): ni con trabajos en curso ni con otra retranscripción.
     if (retranscribing || ctx.queue.activeCount > 0) throw new UserFacingError('Hay otra transcripción o trabajo en curso; espera a que termine.');
     if (rerendering.has(job.id)) throw new UserFacingError('Se está renderizando un clip de este trabajo; espera a que termine.');
+    if (bulk.isDeleting(job.id)) throw new UserFacingError('Se está eliminando este trabajo o alguno de sus clips; espera a que termine.');
     if (cleaning) throw new UserFacingError('Hay una limpieza de almacenamiento en curso; espera a que termine.');
     if (setupCtrl) throw new UserFacingError('Se está instalando o verificando la aceleración GPU. Espera a que termine.');
     if (generating) throw new UserFacingError('Se están generando textos de publicación con la IA; espera a que termine.');
@@ -800,6 +801,7 @@ export function registerIpc(ctx: IpcContext): void {
   h('clips:delete', async (jobId: unknown, ids: unknown, opts: unknown) => {
     const id = idSchema.parse(jobId);
     if (rerendering.has(id)) throw new UserFacingError('Se está renderizando un clip de este trabajo; espera a que termine.');
+    if (bulk.isDeleting(id)) throw new UserFacingError('Se está eliminando este trabajo o alguno de sus clips; espera a que termine.');
     return bulk.deleteClips(id, clipIds.parse(ids), bulkOpts.parse(opts));
   });
   h('clips:rename', (...args: unknown[]) => {
@@ -819,6 +821,7 @@ export function registerIpc(ctx: IpcContext): void {
     if (!TERMINAL.includes(job.status)) throw new UserFacingError('Espera a que el trabajo termine para editar sus clips.');
     // Mientras se re-renderiza un clip del trabajo no se aceptan cambios (evita perder el resultado del render).
     if (rerendering.has(job.id)) throw new UserFacingError('Se está volviendo a renderizar un clip de este trabajo; espera a que termine.');
+    if (bulk.isDeleting(job.id)) throw new UserFacingError('Se está eliminando este trabajo o alguno de sus clips; espera a que termine.');
     const next = applyClipPatch(id, p, { clips: job.clips, preset: job.preset, sourceDuration: job.sourceDuration ?? 0 });
     // Un cambio que exige re-render sólo se guarda si se puede renderizar (vídeo original, transcripción…);
     // así nunca queda un clip marcado como pendiente sin forma de resolverlo. Los cambios de título/hook siempre se permiten.
@@ -836,6 +839,7 @@ export function registerIpc(ctx: IpcContext): void {
     if (!clip) throw new UserFacingError('El clip no existe.');
     if (job.status !== 'completed') throw new UserFacingError('Sólo se pueden re-renderizar clips de trabajos completados.');
     if (rerendering.has(job.id)) throw new UserFacingError('Ya se está re-renderizando un clip de este trabajo.');
+    if (bulk.isDeleting(job.id)) throw new UserFacingError('Se está eliminando este trabajo o alguno de sus clips; espera a que termine.');
     if (cleaning) throw new UserFacingError('Hay una limpieza de almacenamiento en curso; espera a que termine.');
     const env = renderEnvFor(ctx, job);
     rerendering.add(job.id);

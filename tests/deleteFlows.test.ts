@@ -614,6 +614,30 @@ describe('borrado de clips desde Resultados', () => {
     expect(store.get('job-000001')!.clips.map((c) => c.id)).toEqual(['job-000001-c1', 'job-000001-c3']);
   });
 
+  it('revisión Codex: el trabajo queda reservado durante todo el borrado (renderizar debe esperar)', async () => {
+    seedJob('job-000001');
+    const orig = fs.renameSync;
+    let blocked = true;
+    (fs as unknown as { renameSync: typeof fs.renameSync }).renameSync = ((x: fs.PathLike, y: fs.PathLike) => {
+      if (blocked && String(x).endsWith('01.ass')) throw Object.assign(new Error('EBUSY'), { code: 'EBUSY' });
+      return orig(x, y);
+    }) as typeof fs.renameSync;
+    const d = deleter({ retryWaits: [5, 5, 5, 5, 5, 5, 5, 5] });
+    try {
+      const p = d.deleteClips('job-000001', ['job-000001-c1'], { deleteExports: false });
+      expect(d.isDeleting('job-000001')).toBe(true);
+      blocked = false;
+      await p;
+    } finally {
+      (fs as unknown as { renameSync: typeof fs.renameSync }).renameSync = orig;
+    }
+    await new Promise((r) => setTimeout(r, 0));
+    expect(d.isDeleting('job-000001')).toBe(false);
+    // Los manejadores de renderizar/transcribir comprueban esta reserva.
+    const ipc = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'ipc.ts'), 'utf8');
+    expect((ipc.match(/bulk\.isDeleting\(/g) ?? []).length).toBeGreaterThanOrEqual(4);
+  });
+
   it('todos los clips del trabajo: se elimina el trabajo completo (sin registros vacíos)', async () => {
     seedJob('job-000001');
     const d = deleter();
