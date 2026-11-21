@@ -449,6 +449,11 @@ export class BulkDeleter {
     }
     // Cada trabajo se recupera por separado: el lote sólo se da por terminado cuando TODOS están de vuelta.
     // Si alguno falla (p. ej. EPERM pasajero en Windows), sigue apartado y se puede volver a pulsar «Deshacer».
+    // Antes de mover nada queda en disco la intención de recuperar (carpetas y registros): un cierre a mitad
+    // termina la recuperación al arrancar en vez de mandar el resto a la Papelera.
+    if (!writeManifest(src, [], [], undefined, b.jobs)) {
+      return { restored: 0, pending: b.jobs.length, undoUntil: rearm(), message: 'No se pudo preparar la recuperación (¿disco lleno?). Vuelve a pulsar «Deshacer».' };
+    }
     const pending: Job[] = [];
     let restored = 0;
     let lastErr = '';
@@ -546,6 +551,24 @@ export class BulkDeleter {
       if (this.batches.has(e) || !isInside(this.d.pendingDir, p)) continue;
       const restore = readRestore(p);
       // Hay intención de recuperar si hay archivos que devolver O clips que devolver al historial (puede no haber archivos).
+      const jobsBack = readRestoreJobs(p);
+      if (jobsBack.length) {
+        // Un «Deshacer» de trabajos interrumpido: carpetas y registros vuelven (nunca a la Papelera).
+        let left = 0;
+        for (const j of jobsBack) {
+          try {
+            const from = path.join(p, j.id);
+            const to = safeJobDir(this.d.jobsDir, j.id);
+            if (!isInside(p, from)) continue;
+            if (fs.existsSync(from) && !fs.existsSync(to)) await moveWithRetry(from, to, 'la carpeta del trabajo', this.d.retryWaits);
+            if (!this.d.getJobs().some((x) => x.id === j.id)) this.d.putJob(j);
+          } catch {
+            left++;
+          }
+        }
+        if (!left && !this.saveJobs()) clearUndoneBatch(p);
+        continue;
+      }
       if (restore.length || readRestoreClips(p)) {
         // Una vuelta atrás interrumpida: los archivos vuelven a su trabajo (validados dentro de las carpetas internas).
         let left = 0;
@@ -583,11 +606,11 @@ export class BulkDeleter {
 
 const MANIFEST = 'manifest.json';
 /** Devuelve si el manifiesto quedó escrito. */
-function writeManifest(dir: string, exportList: string[], restore: { from: string; to: string }[] = [], restoreClips?: { jobId: string; clips: Job['clips'] }): boolean {
+function writeManifest(dir: string, exportList: string[], restore: { from: string; to: string }[] = [], restoreClips?: { jobId: string; clips: Job['clips'] }, restoreJobs?: Job[]): boolean {
   try {
     fs.mkdirSync(dir, { recursive: true });
     const tmp = path.join(dir, `.tmp-${MANIFEST}`);
-    fs.writeFileSync(tmp, JSON.stringify({ exports: exportList, restore, restoreClips }), 'utf8');
+    fs.writeFileSync(tmp, JSON.stringify({ exports: exportList, restore, restoreClips, restoreJobs }), 'utf8');
     fs.renameSync(tmp, path.join(dir, MANIFEST));
     return true;
   } catch {
@@ -616,6 +639,16 @@ function readRestore(dir: string): { from: string; to: string }[] {
   try {
     const m = JSON.parse(fs.readFileSync(path.join(dir, MANIFEST), 'utf8')) as { restore?: unknown };
     return Array.isArray(m.restore) ? (m.restore as { from: unknown; to: unknown }[]).filter((x) => typeof x?.from === 'string' && typeof x?.to === 'string') as { from: string; to: string }[] : [];
+  } catch {
+    return [];
+  }
+}
+
+/** Trabajos que un «Deshacer» interrumpido debe devolver (carpeta y registro). */
+function readRestoreJobs(dir: string): Job[] {
+  try {
+    const m = JSON.parse(fs.readFileSync(path.join(dir, MANIFEST), 'utf8')) as { restoreJobs?: unknown };
+    return Array.isArray(m.restoreJobs) ? (m.restoreJobs as Job[]).filter((j) => j && typeof j.id === 'string') : [];
   } catch {
     return [];
   }

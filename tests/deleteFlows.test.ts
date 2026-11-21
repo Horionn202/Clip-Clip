@@ -700,6 +700,30 @@ describe('borrado de clips desde Resultados', () => {
     expect(fs.existsSync(dir)).toBe(true);
   });
 
+  it('revisión Codex: un «Deshacer» de trabajos interrumpido se termina al arrancar (carpetas y registros)', async () => {
+    seedJob('job-000001');
+    seedJob('job-000002');
+    const d = deleter({ retryWaits: [] });
+    const r = await d.delete(['job-000001', 'job-000002'], { deleteExports: false });
+    const orig = fs.renameSync;
+    (fs as unknown as { renameSync: typeof fs.renameSync }).renameSync = ((x: fs.PathLike, y: fs.PathLike) => {
+      if (String(x) === path.join(pendingDir, r.batchId, 'job-000002')) throw Object.assign(new Error('EBUSY'), { code: 'EBUSY' });
+      return orig(x, y);
+    }) as typeof fs.renameSync;
+    try {
+      expect((await d.undo(r.batchId)).pending).toBe(1);
+    } finally {
+      (fs as unknown as { renameSync: typeof fs.renameSync }).renameSync = orig;
+    }
+    // Cierre antes de guardar el historial: en disco no está ninguno de los dos.
+    store.delete('job-000001');
+    await deleter().sweepLeftovers();
+    expect(store.has('job-000001')).toBe(true);
+    expect(store.has('job-000002')).toBe(true);
+    expect(fs.existsSync(path.join(jobsDir, 'job-000002'))).toBe(true);
+    expect(trashed).toEqual([]);
+  });
+
   it('todos los clips del trabajo: se elimina el trabajo completo (sin registros vacíos)', async () => {
     seedJob('job-000001');
     const d = deleter();
