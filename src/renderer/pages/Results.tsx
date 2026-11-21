@@ -127,7 +127,7 @@ function ClipCard({ job, clip, pub, onPub, onError, onInfo, selecting, selected,
 }
 
 /** Confirmación de borrado de clips: cuántos, cuánto se recupera y qué pasa con los exportados. */
-function ClipDeleteModal(props: { jobId: string; ids: string[]; onClose: () => void; onDone: (r: { batchId: string; clips: number; bytes: number; wholeJob: boolean; undoUntil: string }) => void; onLocked: (msg: string, retry: () => void) => void }) {
+function ClipDeleteModal(props: { jobId: string; ids: string[]; onClose: () => void; onDone: (r: { batchId: string; clips: number; bytes: number; wholeJob: boolean; undoUntil: string }) => void; onLocked: (msg: string, retry: () => Promise<boolean>) => void; onError: (msg: string) => void }) {
   const open = props.ids.length > 0;
   const [delExports, setDelExports] = useState(false);
   const [plan, setPlan] = useState<ClipPlan | null>(null);
@@ -145,7 +145,17 @@ function ClipDeleteModal(props: { jobId: string; ids: string[]; onClose: () => v
       .then(setPlan)
       .catch((e) => setErr(errMsg(e)));
   }, [open, props.jobId, props.ids, delExports]);
-  const run = async () => {
+  /**
+   * `retrying`: llamada desde el aviso «Cerrar vista previa y reintentar», con el modal ya cerrado; los errores
+   * van a un aviso visible y el resultado le dice al aviso si debe cerrarse (true) o seguir con su botón (false).
+   */
+  const run = async (retrying = false): Promise<boolean> => {
+    const fail = (m: string, isLocked: boolean): false => {
+      if (retrying) props.onError(isLocked ? `Sigue bloqueado. ${m}` : m);
+      else if (isLocked) props.onLocked(m, () => run(true));
+      else setErr(m);
+      return false;
+    };
     setBusy(true);
     setErr('');
     // Los reproductores de la página tienen los MP4 abiertos: se liberan antes de mover nada.
@@ -155,15 +165,15 @@ function ClipDeleteModal(props: { jobId: string; ids: string[]; onClose: () => v
       // Trabajo completo que no se pudo mover (bloqueado): no es un éxito; se ofrece reintentar.
       if (r.wholeJob && r.deletedIds.length === 0) {
         const m = r.errors[0] ?? 'No se pudo eliminar el trabajo.';
-        if (r.locked.length) props.onLocked(m, () => void run());
-        else setErr(m);
-        return;
+        // Bloqueado: en el reintento el aviso sigue con su botón; otro error lo cierra (ya se ha mostrado).
+        return fail(m, r.locked.length > 0) || (retrying && !r.locked.length);
       }
       props.onDone({ batchId: r.batchId, clips: r.clips, bytes: r.freedBytes, wholeJob: r.wholeJob, undoUntil: r.undoUntil });
+      return true;
     } catch (e) {
       const m = errMsg(e);
-      if (/vista previa/.test(m)) props.onLocked(m, () => void run());
-      else setErr(m);
+      const isLocked = /vista previa/.test(m);
+      return fail(m, isLocked) || (retrying && !isLocked);
     } finally {
       setBusy(false);
       // Los reproductores que siguen (fallo o clips no borrados) vuelven a tener su vídeo.
@@ -424,8 +434,10 @@ export function ResultsPage(props: { jobs: Job[]; selected: string | null; onSel
         onClose={() => setDelIds([])}
         onLocked={(m, retry) => {
           setDelIds([]);
-          props.toast?.({ kind: 'error', text: m, ttl: 0, action: { label: 'Cerrar vista previa y reintentar', run: () => retry() } });
+          // El aviso espera al reintento: sólo se cierra si terminó (con éxito o con un error ya mostrado).
+          props.toast?.({ kind: 'error', text: m, ttl: 0, action: { label: 'Cerrar vista previa y reintentar', run: retry } });
         }}
+        onError={(m) => props.toast?.({ kind: 'error', text: m })}
         onDone={(r) => {
           setDelIds([]);
           setSel(new Set());
