@@ -244,6 +244,9 @@ export class BulkDeleter {
     const dir = safeJobDir(this.d.jobsDir, job.id);
     const want = new Set(clipIds);
     const moved: { from: string; to: string }[] = [];
+    // Antes de mover nada: si la app se cierra a mitad, el arranque DEVUELVE estos archivos (no los manda a la Papelera).
+    const intent = job.clips.filter((x) => want.has(x.id)).flatMap((c) => clipFiles(dir, c).map((f) => ({ from: f, to: path.join(dest, path.relative(dir, f)) })));
+    writeManifest(path.join(this.d.pendingDir, id), [], intent);
     try {
       for (const c of job.clips.filter((x) => want.has(x.id))) {
         for (const f of clipFiles(dir, c)) {
@@ -266,6 +269,7 @@ export class BulkDeleter {
       }
       // Lo que no pudo volver queda anotado como «a restaurar»: el próximo arranque lo devuelve (nunca a la Papelera).
       if (stuck.length) writeManifest(path.join(this.d.pendingDir, id), [], stuck);
+      else clearUndoneBatch(path.join(this.d.pendingDir, id));
       throw e;
     }
     const toTrash: string[] = [];
@@ -275,6 +279,7 @@ export class BulkDeleter {
     }
     this.d.putJob({ ...job, clips: job.clips.filter((c) => !want.has(c.id)) });
     const batch: Batch = { id, jobs: [], exports: toTrash, timer: null, clips: { before: job, ids: [...want], moved } };
+    // Historial guardado: ahora sí es un borrado confirmado (sin «restore»).
     writeManifest(path.join(this.d.pendingDir, id), toTrash);
     batch.timer = (this.d.setTimer ?? ((fn, ms) => setTimeout(fn, ms)))(() => void this.finalize(id), UNDO_MS);
     this.batches.set(id, batch);

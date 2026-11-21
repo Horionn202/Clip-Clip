@@ -254,6 +254,25 @@ describe('borrado de clips desde Resultados', () => {
     expect(fs.existsSync(path.join(jobsDir, 'job-000001', 'clips', '01_c.mp4'))).toBe(true);
   });
 
+  it('revisión Codex: si la app se cierra a mitad de apartar los archivos de un clip, el arranque los devuelve', async () => {
+    seedJob('job-000001');
+    const orig = fs.renameSync;
+    (fs as unknown as { renameSync: typeof fs.renameSync }).renameSync = ((a: fs.PathLike, b: fs.PathLike) => {
+      if (String(a).endsWith('01.ass')) throw Object.assign(new Error('EBUSY'), { code: 'EBUSY' });
+      return orig(a, b);
+    }) as typeof fs.renameSync;
+    // Reintentos que no terminan nunca: simula que la app se cierra mientras espera.
+    const never = deleter({ retryWaits: [60_000] });
+    void never.deleteClips('job-000001', ['job-000001-c1'], { deleteExports: false }).catch(() => undefined);
+    await new Promise((r) => setTimeout(r, 30));
+    (fs as unknown as { renameSync: typeof fs.renameSync }).renameSync = orig;
+    expect(fs.existsSync(path.join(jobsDir, 'job-000001', 'clips', '01_c.mp4'))).toBe(false); // ya apartado
+    expect(store.get('job-000001')!.clips).toHaveLength(2); // el historial no cambió
+    await deleter().sweepLeftovers(); // «siguiente arranque»
+    expect(fs.existsSync(path.join(jobsDir, 'job-000001', 'clips', '01_c.mp4'))).toBe(true);
+    expect(trashed).toEqual([]);
+  });
+
   it('todos los clips del trabajo: se elimina el trabajo completo (sin registros vacíos)', async () => {
     seedJob('job-000001');
     const d = deleter();

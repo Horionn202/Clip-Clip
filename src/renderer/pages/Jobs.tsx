@@ -278,7 +278,7 @@ function JobCard(props: {
 }
 
 /** Confirmación del borrado masivo: resumen real (trabajos, clips, espacio, exports) y «BORRAR» si es mucho. */
-export function BulkDeleteModal(props: { ids: string[]; mode: 'history' | 'full' | 'completed'; onClose: () => void; onDone: (deleted: string[], batchId: string, text: string, undoUntil: string, locked: { ids: string[]; deleteExports: boolean; message: string }) => void }) {
+export function BulkDeleteModal(props: { ids: string[]; mode: 'history' | 'full' | 'completed'; onClose: () => void; onDone: (deleted: string[], batchId: string, text: string, undoUntil: string, locked: { ids: string[]; deleteExports: boolean; message: string; typed?: string }) => void }) {
   const [deleteExports, setDeleteExports] = useState(props.mode === 'full');
   const [plan, setPlan] = useState<BulkPlan | null>(null);
   const [typed, setTyped] = useState('');
@@ -316,7 +316,7 @@ export function BulkDeleteModal(props: { ids: string[]; mode: 'history' | 'full'
         r.batchId,
         `${r.jobs} trabajo${r.jobs === 1 ? '' : 's'} y ${r.clips} clip${r.clips === 1 ? '' : 's'} enviados a la Papelera · ${humanSize(r.freedBytes)} recuperables${r.exportsDeleted ? ` (incluye ${r.exportsDeleted} exportados)` : ''}. El espacio se liberará definitivamente cuando vacíes la Papelera de Windows.${other > 0 ? ` ${other} no se pudieron eliminar: ${r.errors.find((e) => !/vista previa/.test(e))}` : ''}`,
         r.undoUntil,
-        { ids: r.locked, deleteExports, message: r.locked.length ? `${r.locked.length} trabajo${r.locked.length === 1 ? '' : 's'} no se ${r.locked.length === 1 ? 'pudo' : 'pudieron'} eliminar todavía: ${r.errors.find((e) => /vista previa/.test(e))}` : '' },
+        { ids: r.locked, deleteExports, typed: plan.needsTypedConfirm ? typed : undefined, message: r.locked.length ? `${r.locked.length} trabajo${r.locked.length === 1 ? '' : 's'} no se ${r.locked.length === 1 ? 'pudo' : 'pudieron'} eliminar todavía: ${r.errors.find((e) => /vista previa/.test(e))}` : '' },
       );
     } catch (e) {
       setErr(errMsg(e));
@@ -611,17 +611,39 @@ export function JobsPage(props: {
           setBulk(null);
           setSel(new Set());
           props.onDeleted(deleted);
+          /** Aviso con «Deshacer» para un lote borrado (también los que salen de un reintento). */
+          const undoToast = (msg: string, id: string, until: string) =>
+            props.toast({
+              text: msg,
+              // Caduca exactamente cuando el proceso principal confirma el borrado.
+              expiresAt: Date.parse(until),
+              action: {
+                label: 'Deshacer',
+                run: () =>
+                  api()
+                    .bulkUndo(id)
+                    .then(({ restored: n, pending }) => {
+                      props.onRestored();
+                      props.toast({ kind: pending ? 'error' : 'info', text: `${n} trabajo${n === 1 ? '' : 's'} recuperado${n === 1 ? '' : 's'}.${pending ? ` Faltan ${pending}: vuelve a pulsar «Deshacer».` : ''}` });
+                      return pending === 0; // con pendientes, el aviso sigue con su botón
+                    })
+                    .catch((e) => (props.toast({ kind: 'error', text: errMsg(e) }), false)),
+              },
+            });
           if (locked.ids.length) {
+            let left = locked.ids;
             const retry = async (): Promise<boolean> => {
               const restore = releaseMedia();
               try {
-                const r = await api().bulkDelete(locked.ids, { deleteExports: locked.deleteExports }).finally(() => setTimeout(restore, 0));
+                // Se reutiliza la confirmación «BORRAR» ya escrita para esta misma selección.
+                const r = await api().bulkDelete(left, { deleteExports: locked.deleteExports }, locked.typed).finally(() => setTimeout(restore, 0));
                 props.onDeleted(r.deletedIds);
+                if (r.deletedIds.length) undoToast(`${r.jobs} trabajo${r.jobs === 1 ? '' : 's'} más enviados a la Papelera · ${humanSize(r.freedBytes)} recuperables. El espacio se liberará definitivamente cuando vacíes la Papelera de Windows.`, r.batchId, r.undoUntil);
                 if (r.locked.length) {
+                  left = r.locked;
                   props.toast({ kind: 'error', text: `Siguen bloqueados ${r.locked.length}. Cierra la vista previa o el reproductor que los usa y vuelve a intentarlo.` });
                   return false;
                 }
-                props.toast({ text: `${r.jobs} trabajo${r.jobs === 1 ? '' : 's'} más enviados a la Papelera.` });
                 return true;
               } catch (e) {
                 props.toast({ kind: 'error', text: errMsg(e) });
@@ -631,24 +653,7 @@ export function JobsPage(props: {
             props.toast({ kind: 'error', ttl: 0, text: locked.message, action: { label: 'Cerrar vista previa y reintentar', run: retry } });
           }
           if (!deleted.length && !locked.ids.length) props.toast({ kind: 'error', text: `No se eliminó ningún trabajo. ${text}` });
-          if (deleted.length)
-            props.toast({
-            text,
-            // Caduca exactamente cuando el proceso principal confirma el borrado.
-            expiresAt: Date.parse(undoUntil),
-            action: {
-              label: 'Deshacer',
-              run: () =>
-                api()
-                  .bulkUndo(batchId)
-                  .then(({ restored: n, pending }) => {
-                    props.onRestored();
-                    props.toast({ kind: pending ? 'error' : 'info', text: `${n} trabajo${n === 1 ? '' : 's'} recuperado${n === 1 ? '' : 's'}.${pending ? ` Faltan ${pending}: vuelve a pulsar «Deshacer».` : ''}` });
-                    return pending === 0; // con pendientes, el aviso sigue con su botón
-                  })
-                  .catch((e) => (props.toast({ kind: 'error', text: errMsg(e) }), false)),
-            },
-          });
+          if (deleted.length) undoToast(text, batchId, undoUntil);
         }}
       />
     </section>
