@@ -111,6 +111,14 @@ export function planBulkDelete(all: Job[], ids: readonly string[], o: BulkOption
   return plan;
 }
 
+/** Resultado de «Deshacer»: si quedan pendientes, `undoUntil` es el nuevo plazo para volver a intentarlo. */
+export interface UndoResult {
+  restored: number;
+  pending: number;
+  undoUntil?: string;
+  message?: string;
+}
+
 export interface DeleterDeps {
   jobsDir: string;
   /** Zona de espera (dentro de los datos de la app, mismo disco que jobsDir). */
@@ -263,7 +271,10 @@ export class BulkDeleter {
     };
     // Antes de mover nada: si la app se cierra a mitad, el arranque DEVUELVE estos archivos (no los manda a la Papelera).
     const intent = job.clips.filter((x) => want.has(x.id)).flatMap((c) => clipFiles(dir, c).map((f) => ({ from: f, to: path.join(dest, path.relative(dir, f)) })));
-    writeManifest(path.join(this.d.pendingDir, id), [], intent);
+    if (!writeManifest(path.join(this.d.pendingDir, id), [], intent)) {
+      clearUndoneBatch(path.join(this.d.pendingDir, id));
+      throw new UserFacingError('No se pudo preparar el borrado (¿disco lleno?). No se ha tocado ningún archivo.');
+    }
     try {
       for (const c of job.clips.filter((x) => want.has(x.id))) {
         for (const f of clipFiles(dir, c)) {
@@ -309,14 +320,18 @@ export class BulkDeleter {
   }
 
   /** Recupera un lote apartado (carpetas y entradas del historial). */
-  async undo(batchId: string): Promise<{ restored: number; pending: number }> {
+  async undo(batchId: string): Promise<UndoResult> {
     const b = this.batches.get(batchId);
     if (!b) throw new UserFacingError('Ya no se puede deshacer: el plazo terminó.');
     // Mientras se restaura (con reintentos) el plazo no puede vencer y mandar el lote a la Papelera.
     (this.d.clearTimer ?? ((t) => clearTimeout(t as NodeJS.Timeout)))(b.timer);
     b.timer = null;
     b.undoing = true;
-    const rearm = () => ((b.undoing = false), (b.timer = (this.d.setTimer ?? ((fn, ms) => setTimeout(fn, ms)))(() => void this.finalize(batchId), UNDO_MS)));
+    const rearm = (): string => {
+      b.undoing = false;
+      b.timer = (this.d.setTimer ?? ((fn, ms) => setTimeout(fn, ms)))(() => void this.finalize(batchId), UNDO_MS);
+      return new Date(Date.now() + UNDO_MS).toISOString();
+    };
     const src = path.join(this.d.pendingDir, batchId);
     if (b.clips) {
       // Clips sueltos: cada archivo vuelve a su sitio y el trabajo recupera su estado anterior.
@@ -330,8 +345,8 @@ export class BulkDeleter {
       }
       if (left.length) {
         b.clips.moved = left;
-        rearm(); // nuevo plazo para reintentar
-        throw new UserFacingError(`No se pudieron recuperar ${left.length} archivo(s) todavía. Vuelve a pulsar «Deshacer».`);
+        // Nuevo plazo para reintentar: la interfaz renueva el aviso con su botón.
+        return { restored: 0, pending: left.length, undoUntil: rearm(), message: `No se pudieron recuperar ${left.length} archivo(s) todavía (puede que un reproductor los tenga abiertos). Vuelve a pulsar «Deshacer».` };
       }
       // Sólo vuelven los clips de este lote, en su posición original, sobre el estado ACTUAL del trabajo
       // (se respetan otros borrados y las ediciones hechas mientras tanto).
@@ -367,10 +382,9 @@ export class BulkDeleter {
     }
     if (pending.length) {
       b.jobs = pending;
-      rearm(); // nuevo plazo para reintentar
+      const undoUntil = rearm(); // nuevo plazo para reintentar
       this.d.log?.('borrado masivo: deshacer incompleto', { batch: batchId, restored, pending: pending.length, e: lastErr });
-      if (!restored) throw new UserFacingError(`No se pudo recuperar ningún trabajo todavía (${lastErr}). Vuelve a intentarlo.`);
-      return { restored, pending: pending.length };
+      return { restored, pending: pending.length, undoUntil, message: restored ? `Faltan ${pending.length}: vuelve a pulsar «Deshacer».` : `No se pudo recuperar ningún trabajo todavía (${lastErr}). Vuelve a pulsar «Deshacer».` };
     }
     (this.d.clearTimer ?? ((t) => clearTimeout(t as NodeJS.Timeout)))(b.timer);
     this.batches.delete(batchId);
@@ -460,11 +474,14 @@ export class BulkDeleter {
 }
 
 const MANIFEST = 'manifest.json';
-function writeManifest(dir: string, exportList: string[], restore: { from: string; to: string }[] = []): void {
+/** Devuelve si el manifiesto quedó escrito. */
+function writeManifest(dir: string, exportList: string[], restore: { from: string; to: string }[] = []): boolean {
   try {
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, MANIFEST), JSON.stringify({ exports: exportList, restore }), 'utf8');
+    return true;
   } catch {
+    return false;
     /* sin manifiesto, la carpeta se reintenta igualmente */
   }
 }

@@ -529,7 +529,8 @@ export interface ClipsApi {
   retranscribeJob(id: string, opts?: { precise?: boolean }): Promise<Job>;
   bulkPlan(ids: string[], opts: import('./bulk').BulkOptions): Promise<import('./bulk').BulkPlan>;
   bulkDelete(ids: string[], opts: import('./bulk').BulkOptions, typed?: string): Promise<import('./bulk').BulkResult & { locked: string[] }>;
-  bulkUndo(batchId: string): Promise<{ restored: number; pending: number }>;
+  /** Si quedan pendientes, `undoUntil` es el nuevo plazo y el aviso con «Deshacer» debe renovarse. */
+  bulkUndo(batchId: string): Promise<{ restored: number; pending: number; undoUntil?: string; message?: string }>;
   deleteJob(id: string): Promise<boolean>;
   clipsDeletePlan(jobId: string, ids: string[], opts: import('./bulk').BulkOptions): Promise<import('./bulk').ClipPlan>;
   clipsDelete(jobId: string, ids: string[], opts: import('./bulk').BulkOptions): Promise<import('./bulk').BulkResult & { locked: string[]; wholeJob: boolean }>;

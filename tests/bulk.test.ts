@@ -236,7 +236,7 @@ describe('borrado masivo en disco', () => {
       return orig(a, b);
     }) as typeof fs.renameSync;
     try {
-      expect(await d.undo(r.batchId)).toEqual({ restored: 1, pending: 1 });
+      expect(await d.undo(r.batchId)).toMatchObject({ restored: 1, pending: 1, undoUntil: expect.any(String) });
       expect(store.has('job-000001')).toBe(true);
       expect(store.has('job-000002')).toBe(false);
       block = false;

@@ -612,7 +612,7 @@ export function JobsPage(props: {
           setSel(new Set());
           props.onDeleted(deleted);
           /** Aviso con «Deshacer» para un lote borrado (también los que salen de un reintento). */
-          const undoToast = (msg: string, id: string, until: string) =>
+          const undoToast = (msg: string, id: string, until: string): void =>
             props.toast({
               text: msg,
               // Caduca exactamente cuando el proceso principal confirma el borrado.
@@ -622,10 +622,12 @@ export function JobsPage(props: {
                 run: () =>
                   api()
                     .bulkUndo(id)
-                    .then(({ restored: n, pending }) => {
+                    .then(({ restored: n, pending, undoUntil: again, message }) => {
                       props.onRestored();
-                      props.toast({ kind: pending ? 'error' : 'info', text: `${n} trabajo${n === 1 ? '' : 's'} recuperado${n === 1 ? '' : 's'}.${pending ? ` Faltan ${pending}: vuelve a pulsar «Deshacer».` : ''}` });
-                      return pending === 0; // con pendientes, el aviso sigue con su botón
+                      // Con pendientes, el plazo se renovó: un aviso nuevo con su botón sustituye a éste.
+                      if (pending && again) return undoToast(`${n ? `${n} trabajo${n === 1 ? '' : 's'} recuperado${n === 1 ? '' : 's'}. ` : ''}${message ?? ''}`, id, again), true;
+                      props.toast({ kind: 'info', text: `${n} trabajo${n === 1 ? '' : 's'} recuperado${n === 1 ? '' : 's'}.` });
+                      return true;
                     })
                     .catch((e) => (props.toast({ kind: 'error', text: errMsg(e) }), false)),
               },

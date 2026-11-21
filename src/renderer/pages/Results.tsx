@@ -430,18 +430,25 @@ export function ResultsPage(props: { jobs: Job[]; selected: string | null; onSel
           setDelIds([]);
           setSel(new Set());
           if (r.wholeJob) props.onJobsChanged?.();
-          props.toast?.({
-            text: `${r.clips} clip${r.clips === 1 ? '' : 's'} enviado${r.clips === 1 ? '' : 's'} a la Papelera · ${humanSize(r.bytes)} recuperables${r.wholeJob ? ' (trabajo completo)' : ''}. El espacio se liberará definitivamente cuando vacíes la Papelera de Windows.`,
-            expiresAt: Date.parse(r.undoUntil),
-            action: {
-              label: 'Deshacer',
-              run: () =>
-                api()
-                  .bulkUndo(r.batchId)
-                  .then(({ pending }) => (props.onJobsChanged?.(), pending === 0))
-                  .catch((e) => (props.toast?.({ kind: 'error', text: errMsg(e) }), false)),
-            },
-          });
+          const undoToast = (text: string, until: string): void =>
+            props.toast?.({
+              text,
+              expiresAt: Date.parse(until),
+              action: {
+                label: 'Deshacer',
+                run: () =>
+                  api()
+                    .bulkUndo(r.batchId)
+                    .then(({ pending, undoUntil: again, message }) => {
+                      props.onJobsChanged?.();
+                      // Con pendientes, el plazo se renovó: un aviso nuevo con su botón sustituye a éste.
+                      if (pending && again) undoToast(message ?? 'Vuelve a pulsar «Deshacer».', again);
+                      return true;
+                    })
+                    .catch((e) => (props.toast?.({ kind: 'error', text: errMsg(e) }), false)),
+              },
+            });
+          undoToast(`${r.clips} clip${r.clips === 1 ? '' : 's'} enviado${r.clips === 1 ? '' : 's'} a la Papelera · ${humanSize(r.bytes)} recuperables${r.wholeJob ? ' (trabajo completo)' : ''}. El espacio se liberará definitivamente cuando vacíes la Papelera de Windows.`, r.undoUntil);
         }}
       />
     </section>

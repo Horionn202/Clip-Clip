@@ -350,6 +350,41 @@ describe('borrado de clips desde Resultados', () => {
     expect(trashed).toEqual([]);
   });
 
+  it('revisión Codex: si no se puede escribir la intención de restaurar, no se mueve ningún archivo', async () => {
+    seedJob('job-000001');
+    const origW = fs.writeFileSync;
+    (fs as unknown as { writeFileSync: typeof fs.writeFileSync }).writeFileSync = ((f: fs.PathOrFileDescriptor, ...r: unknown[]) => {
+      if (String(f).endsWith('manifest.json')) throw Object.assign(new Error('ENOSPC'), { code: 'ENOSPC' });
+      return (origW as (...a: unknown[]) => void)(f, ...r);
+    }) as typeof fs.writeFileSync;
+    try {
+      await expect(deleter().deleteClips('job-000001', ['job-000001-c1'], { deleteExports: false })).rejects.toThrow(/disco lleno/);
+    } finally {
+      (fs as unknown as { writeFileSync: typeof fs.writeFileSync }).writeFileSync = origW;
+    }
+    expect(fs.existsSync(path.join(jobsDir, 'job-000001', 'clips', '01_c.mp4'))).toBe(true);
+    expect(store.get('job-000001')!.clips).toHaveLength(2);
+  });
+
+  it('revisión Codex: un «Deshacer» de clips incompleto devuelve un plazo nuevo (para renovar el aviso)', async () => {
+    seedJob('job-000001');
+    const d = deleter({ retryWaits: [] });
+    const r = await d.deleteClips('job-000001', ['job-000001-c1'], { deleteExports: false });
+    const orig = fs.renameSync;
+    (fs as unknown as { renameSync: typeof fs.renameSync }).renameSync = (() => {
+      throw Object.assign(new Error('EBUSY'), { code: 'EBUSY' });
+    }) as typeof fs.renameSync;
+    let u;
+    try {
+      u = await d.undo(r.batchId);
+    } finally {
+      (fs as unknown as { renameSync: typeof fs.renameSync }).renameSync = orig;
+    }
+    expect(u.pending).toBeGreaterThan(0);
+    expect(Date.parse(u.undoUntil!)).toBeGreaterThan(Date.now());
+    expect(await d.undo(r.batchId)).toEqual({ restored: 1, pending: 0 });
+  });
+
   it('todos los clips del trabajo: se elimina el trabajo completo (sin registros vacíos)', async () => {
     seedJob('job-000001');
     const d = deleter();
