@@ -152,6 +152,8 @@ interface Batch {
 
 export class BulkDeleter {
   private batches = new Map<string, Batch>();
+  /** Cola de borrados de clips por trabajo (se ejecutan de uno en uno). */
+  private jobLocks = new Map<string, Promise<unknown>>();
   constructor(private d: DeleterDeps) {}
 
   plan(ids: readonly string[], o: BulkOptions): BulkPlan {
@@ -246,6 +248,17 @@ export class BulkDeleter {
    * vacíos). Los archivos del clip se apartan (con reintentos ante bloqueos) y, pasado el plazo, van a la Papelera.
    */
   async deleteClips(jobId: string, clipIds: readonly string[], o: BulkOptions): Promise<BulkResult & { locked: string[]; wholeJob: boolean }> {
+    // Un borrado por trabajo a la vez: si dos se solapan (uno esperando un bloqueo), el segundo se planifica sobre
+    // el resultado del primero (p. ej. pasa a ser «trabajo completo» si ya no quedan otros clips).
+    const prev = this.jobLocks.get(jobId) ?? Promise.resolve();
+    const run = prev.catch(() => undefined).then(() => this.deleteClipsNow(jobId, clipIds, o));
+    const tail = run.catch(() => undefined);
+    this.jobLocks.set(jobId, tail);
+    void tail.then(() => this.jobLocks.get(jobId) === tail && this.jobLocks.delete(jobId));
+    return run;
+  }
+
+  private async deleteClipsNow(jobId: string, clipIds: readonly string[], o: BulkOptions): Promise<BulkResult & { locked: string[]; wholeJob: boolean }> {
     const plan = this.planClips(jobId, clipIds, o);
     if (plan.wholeJob) return { ...(await this.delete([jobId], o)), wholeJob: true };
     const job = this.d.getJobs().find((j) => j.id === jobId)!;

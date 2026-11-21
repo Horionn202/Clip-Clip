@@ -455,6 +455,31 @@ describe('borrado de clips desde Resultados', () => {
     expect(fs.existsSync(path.join(jobsDir, 'job-000001', 'clips', '01_c.mp4'))).toBe(true);
   });
 
+  it('revisión Codex: dos borrados solapados de los últimos clips eliminan el trabajo completo', async () => {
+    seedJob('job-000001');
+    const orig = fs.renameSync;
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((r) => (release = r));
+    let blocked = true;
+    (fs as unknown as { renameSync: typeof fs.renameSync }).renameSync = ((x: fs.PathLike, y: fs.PathLike) => {
+      if (blocked && String(x).endsWith('01_c.mp4')) throw Object.assign(new Error('EBUSY'), { code: 'EBUSY' });
+      return orig(x, y);
+    }) as typeof fs.renameSync;
+    const slow = deleter({ retryWaits: [5, 5, 5, 5, 5, 5, 5, 5] });
+    try {
+      const a = slow.deleteClips('job-000001', ['job-000001-c1'], { deleteExports: false });
+      const b = slow.deleteClips('job-000001', ['job-000001-c2'], { deleteExports: false });
+      setTimeout(() => ((blocked = false), release()), 15);
+      await gate;
+      const [ra, rb] = await Promise.all([a, b]);
+      expect(ra.wholeJob).toBe(false);
+      expect(rb.wholeJob).toBe(true);
+    } finally {
+      (fs as unknown as { renameSync: typeof fs.renameSync }).renameSync = orig;
+    }
+    expect(store.get('job-000001')).toBeUndefined();
+  });
+
   it('todos los clips del trabajo: se elimina el trabajo completo (sin registros vacíos)', async () => {
     seedJob('job-000001');
     const d = deleter();
