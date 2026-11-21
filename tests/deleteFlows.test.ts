@@ -237,7 +237,7 @@ describe('borrado de clips desde Resultados', () => {
     const orig = fs.renameSync;
     let fails = 2;
     (fs as unknown as { renameSync: typeof fs.renameSync }).renameSync = ((a: fs.PathLike, b: fs.PathLike) => {
-      if (fails-- > 0) {
+      if (!String(a).includes('manifest') && fails-- > 0) {
         // Mientras «Deshacer» espera, vence el plazo original.
         timers[0]?.();
         throw Object.assign(new Error('EBUSY'), { code: 'EBUSY' });
@@ -665,6 +665,39 @@ describe('borrado de clips desde Resultados', () => {
     await deleter().sweepLeftovers();
     expect(store.get('job-000001')!.clips.map((c) => c.id)).toEqual(['job-000001-c1', 'job-000001-c2']);
     expect(fs.existsSync(path.join(jobsDir, 'job-000001', 'clips', '01_c.mp4'))).toBe(true);
+  });
+
+  it('revisión Codex: con una recuperación de clips a medias no se puede borrar el trabajo entero', async () => {
+    seedJob('job-000001');
+    const d = deleter({ retryWaits: [] });
+    const a = await d.deleteClips('job-000001', ['job-000001-c1'], { deleteExports: false });
+    const orig = fs.renameSync;
+    (fs as unknown as { renameSync: typeof fs.renameSync }).renameSync = ((x: fs.PathLike, y: fs.PathLike) => {
+      if (String(x).startsWith(pendingDir) && String(x).endsWith('01.ass')) throw Object.assign(new Error('EBUSY'), { code: 'EBUSY' });
+      return orig(x, y);
+    }) as typeof fs.renameSync;
+    try {
+      expect((await d.undo(a.batchId)).pending).toBeGreaterThan(0);
+    } finally {
+      (fs as unknown as { renameSync: typeof fs.renameSync }).renameSync = orig;
+    }
+    const r = await d.delete(['job-000001'], { deleteExports: false });
+    expect(r.deletedIds).toEqual([]);
+    expect(r.errors[0]).toMatch(/recuperación de clips a medias/);
+    expect(await d.undo(a.batchId)).toEqual({ restored: 1, pending: 0 });
+    expect(fs.existsSync(path.join(jobsDir, 'job-000001', 'clips', '01.ass'))).toBe(true);
+  });
+
+  it('revisión Codex: un manifiesto que no se pudo reescribir conserva el anterior; uno ilegible no se manda a la Papelera', async () => {
+    seedJob('job-000001');
+    await deleter().deleteClips('job-000001', ['job-000001-c1'], { deleteExports: false });
+    const dir = path.join(pendingDir, fs.readdirSync(pendingDir)[0]);
+    const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'bulkDelete.ts'), 'utf8');
+    expect(src).toContain('fs.renameSync(tmp, path.join(dir, MANIFEST))');
+    fs.writeFileSync(path.join(dir, 'manifest.json'), '{"exports":[');
+    await deleter().sweepLeftovers();
+    expect(trashed).toEqual([]);
+    expect(fs.existsSync(dir)).toBe(true);
   });
 
   it('todos los clips del trabajo: se elimina el trabajo completo (sin registros vacíos)', async () => {

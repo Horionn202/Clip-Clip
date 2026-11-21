@@ -201,6 +201,9 @@ export class BulkDeleter {
     for (const pj of plan.jobs) {
       let job = all.get(pj.id)!;
       try {
+        if ([...this.batches.values()].some((b) => b.clips?.undoStarted && b.clips.before.id === job.id)) {
+          throw new UserFacingError('tiene una recuperación de clips a medias; pulsa «Deshacer» de nuevo cuando se libere el archivo y vuelve a intentarlo.');
+        }
         const dir = safeJobDir(this.d.jobsDir, job.id);
         const staged = path.join(dest, job.id);
         // Primero se aparta la carpeta (con reintentos); sólo si se movió se quita del historial.
@@ -569,6 +572,10 @@ export class BulkDeleter {
         }
         continue;
       }
+      if (fs.existsSync(path.join(p, MANIFEST)) && !manifestReadable(p)) {
+        this.d.log?.('borrado: manifiesto ilegible, el lote se conserva', { batch: e });
+        continue;
+      }
       await this.finishBatch(e, readManifest(p));
     }
   }
@@ -579,11 +586,21 @@ const MANIFEST = 'manifest.json';
 function writeManifest(dir: string, exportList: string[], restore: { from: string; to: string }[] = [], restoreClips?: { jobId: string; clips: Job['clips'] }): boolean {
   try {
     fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(path.join(dir, MANIFEST), JSON.stringify({ exports: exportList, restore, restoreClips }), 'utf8');
+    const tmp = path.join(dir, `.tmp-${MANIFEST}`);
+    fs.writeFileSync(tmp, JSON.stringify({ exports: exportList, restore, restoreClips }), 'utf8');
+    fs.renameSync(tmp, path.join(dir, MANIFEST));
     return true;
   } catch {
     return false;
     /* sin manifiesto, la carpeta se reintenta igualmente */
+  }
+}
+function manifestReadable(dir: string): boolean {
+  try {
+    JSON.parse(fs.readFileSync(path.join(dir, MANIFEST), 'utf8'));
+    return true;
+  } catch {
+    return false;
   }
 }
 function readManifest(dir: string): string[] {
