@@ -146,7 +146,14 @@ export function migrateLegacyData(oldDir: string, newDir: string, io: MigrationF
   if (report.errors.length === 0 && !opts.repair) {
     try {
       fs.mkdirSync(path.join(newDir, 'data'), { recursive: true });
-      fs.writeFileSync(path.join(newDir, MARKER), JSON.stringify({ ...report, state: 'completed' }, null, 2), 'utf8');
+      let migratedJobIds: string[] = [];
+      try {
+        const old = JSON.parse(fs.readFileSync(path.join(oldDir, 'data', 'jobs.json'), 'utf8')) as JobLike[];
+        migratedJobIds = Array.isArray(old) ? old.filter((j) => j && typeof j.id === 'string').map((j) => j.id) : [];
+      } catch {
+        /* sin historial antiguo */
+      }
+      fs.writeFileSync(path.join(newDir, MARKER), JSON.stringify({ ...report, state: 'completed', migratedJobIds }, null, 2), 'utf8');
     } catch (e) {
       report.errors.push(`marcador: ${(e as Error).message}`);
       report.status = 'partial';

@@ -12,7 +12,8 @@ let prot: Protected;
 const w = (p: string, data: string | Buffer = 'x') => (fs.mkdirSync(path.dirname(p), { recursive: true }), fs.writeFileSync(p, data));
 const old = (rel: string, data: string | Buffer = 'x') => w(path.join(lp.data, rel), data);
 const neu = (rel: string, data: string | Buffer = 'x') => w(path.join(prot.userData, rel), data);
-const marker = (state?: string) => neu(MARKER, JSON.stringify({ status: 'migrated', ...(state ? { state } : {}) }));
+// Como una migración real: registra qué trabajos se migraron.
+const marker = (state?: string) => neu(MARKER, JSON.stringify({ status: 'migrated', migratedJobIds: ['job-000001', 'job-000002'], ...(state ? { state } : {}) }));
 const trashed: string[] = [];
 const trash = async (p: string) => {
   trashed.push(p);
@@ -210,6 +211,33 @@ describe('migración reparable', () => {
     const r = repairLegacy(lp, prot);
     expect(JSON.parse(fs.readFileSync(path.join(prot.userData, 'data/publish.json'), 'utf8'))).toHaveProperty('job-000001');
     expect(r.check.state).toBe('verified');
+  });
+
+  it('revisión Codex: un trabajo creado en la versión anterior DESPUÉS de migrar cuenta como faltante (no como borrado)', async () => {
+    migrateAll();
+    neu(MARKER, JSON.stringify({ status: 'migrated', state: 'completed', migratedJobIds: ['job-000001'] }));
+    old('data/jobs.json', JSON.stringify([{ id: 'job-000001' }, { id: 'job-000002' }]));
+    old('jobs/job-000002/source.mp4', Buffer.alloc(300));
+    const c = checkLegacy(lp, prot);
+    expect(c.state).toBe('needs_repair');
+    expect(c.missing.map((m) => m.rel)).toEqual(expect.arrayContaining(['jobs/job-000002/source.mp4', 'historial:job-000002']));
+    await expect(freeLegacy('data', lp, prot, { trash, log: () => undefined })).rejects.toThrow();
+    const r = repairLegacy(lp, prot);
+    expect(fs.existsSync(path.join(prot.userData, 'jobs/job-000002/source.mp4'))).toBe(true);
+    expect(JSON.parse(fs.readFileSync(path.join(prot.userData, 'data/jobs.json'), 'utf8')).map((j: { id: string }) => j.id)).toContain('job-000002');
+    expect(r.check.state).toBe('verified');
+  });
+
+  it('marcador antiguo sin lista: sólo se dan por migrados los trabajos creados antes de la migración', () => {
+    migrateAll();
+    neu(MARKER, JSON.stringify({ status: 'migrated', at: '2026-11-01T00:00:00.000Z' }));
+    old('data/jobs.json', JSON.stringify([{ id: 'job-000001', createdAt: '2026-10-01T00:00:00Z' }, { id: 'job-000002', createdAt: '2026-10-15T00:00:00Z' }, { id: 'job-000003', createdAt: '2026-11-10T00:00:00Z' }]));
+    old('jobs/job-000002/source.mp4', Buffer.alloc(10)); // migrado y borrado después en Clip Clip
+    old('jobs/job-000003/source.mp4', Buffer.alloc(10)); // creado tras migrar: nunca llegó
+    const c = checkLegacy(lp, prot);
+    const rels = c.missing.map((m) => m.rel);
+    expect(rels).toContain('jobs/job-000003/source.mp4');
+    expect(rels).not.toContain('jobs/job-000002/source.mp4');
   });
 
   it('error de lectura: estado parcial, se explica qué carpeta y no se libera nada', () => {

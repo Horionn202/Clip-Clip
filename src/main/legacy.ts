@@ -308,6 +308,25 @@ function readJson<T>(f: string): T | null {
   }
 }
 
+/**
+ * Qué trabajos antiguos se migraron: la lista del marcador; en marcadores antiguos sin lista, los creados antes de
+ * la fecha de la migración (lo creado después en la versión anterior nunca se migró).
+ */
+export function migratedJobsOf(oldDir: string, newDir: string): (id: string) => boolean {
+  const m = readMarker(newDir);
+  if (Array.isArray(m?.migratedJobIds)) {
+    const set = new Set((m!.migratedJobIds as unknown[]).filter((x): x is string => typeof x === 'string'));
+    return (id) => set.has(id);
+  }
+  const at = typeof m?.at === 'string' ? Date.parse(m.at) : NaN;
+  if (!Number.isFinite(at)) return () => false;
+  const created = new Map((readJson<{ id: string; createdAt?: string }[]>(path.join(oldDir, 'data', 'jobs.json')) ?? []).map((j) => [j.id, j.createdAt ? Date.parse(j.createdAt) : NaN]));
+  return (id) => {
+    const c = created.get(id);
+    return c !== undefined && Number.isFinite(c) && c <= at;
+  };
+}
+
 /** ¿La migración del historial terminó de verdad? (marcador escrito por una migración sin errores). */
 export function historyMigrated(newDir: string): boolean {
   const m = readMarker(newDir);
@@ -337,6 +356,9 @@ export function classifyMissing(oldDir: string, newDir: string): { missing: { re
   // Sólo una migración que TERMINÓ (historial fusionado sin errores) permite tratar lo ausente como borrado a propósito.
   // Un marcador de reparación o de error no prueba nada: los trabajos que falten siguen contando como faltantes.
   const migratedBefore = historyMigrated(newDir);
+  // Sólo un trabajo que SE MIGRÓ y ya no está en Clip Clip se borró a propósito. Uno creado en la versión anterior
+  // después de migrar nunca llegó: cuenta como faltante.
+  const wasMigrated = migratedJobsOf(oldDir, newDir);
   const newJobsFile = path.join(newDir, 'data', 'jobs.json');
   const parsedNew = readJson<NewJob[]>(newJobsFile);
   if (fs.existsSync(newJobsFile) && !Array.isArray(parsedNew)) readErrors.push('data/jobs.json de Clip Clip: no se pudo leer el historial actual (no se libera nada hasta que se pueda comprobar)');
@@ -354,7 +376,7 @@ export function classifyMissing(oldDir: string, newDir: string): { missing: { re
         const inJob = parts.slice(1).join('/');
         const kind = classify(inJob);
         const cleaned =
-          (!job && migratedBefore) || // trabajo eliminado en Clip Clip después de migrar
+          (!job && migratedBefore && wasMigrated(parts[0])) || // trabajo migrado y eliminado después en Clip Clip
           (!!job && kind === 'source' && !!job.sourceCleaned) ||
           (!!job && (kind === 'audio' || kind === 'frames' || kind === 'temp') && !!job.tempCleaned) ||
           (!!job && kind === 'internalClip' && !!job.clips?.some((c) => c.archived && inJob === `clips/${c.file}`));
@@ -370,7 +392,7 @@ export function classifyMissing(oldDir: string, newDir: string): { missing: { re
   const oldJobs = readJson<{ id: string }[]>(path.join(oldDir, 'data', 'jobs.json')) ?? [];
   for (const j of oldJobs) {
     if (!j || newJobs.has(j.id)) continue;
-    if (migratedBefore) intentional++;
+    if (migratedBefore && wasMigrated(j.id)) intentional++;
     else missing.push({ rel: `historial:${j.id}`, category: 'data' });
   }
   // Publicación: cada entrada antigua debe estar en Clip Clip (salvo la de un trabajo borrado a propósito).
@@ -384,7 +406,7 @@ export function classifyMissing(oldDir: string, newDir: string): { missing: { re
     else
       for (const k of Object.keys(oldPub)) {
         if (k in newPub) continue;
-        if (migratedBefore && !newJobs.has(k)) intentional++;
+        if (migratedBefore && !newJobs.has(k) && wasMigrated(k)) intentional++;
         else missing.push({ rel: `publicacion:${k}`, category: 'data' });
       }
   }
@@ -459,7 +481,11 @@ export function repairLegacy(lp: LegacyPaths, prot: Protected, io?: MigrationFs,
   };
   const rep = only.size ? migrateLegacyData(lp.data, prot.userData, countingIo, { repair: true, only }) : null;
   const check = checkLegacy(lp, prot, size);
-  writeMarker(prot.userData, { state: check.state === 'verified' ? 'verified' : 'repaired', ...(check.state === 'verified' ? { historyComplete: true } : {}), lastRepair: { linked: rep?.linked ?? 0, copied: rep?.copied ?? 0, copiedBytes, errors: rep?.errors.length ?? 0 } });
+  const nowIds = new Set((readJson<{ id: string }[]>(path.join(prot.userData, 'data', 'jobs.json')) ?? []).map((j) => j.id));
+  const prevIds = Array.isArray(readMarker(prot.userData)?.migratedJobIds) ? (readMarker(prot.userData)!.migratedJobIds as string[]) : [];
+  const oldIds = (readJson<{ id: string }[]>(path.join(lp.data, 'data', 'jobs.json')) ?? []).map((j) => j.id);
+  const migratedJobIds = [...new Set([...prevIds, ...oldIds.filter((id) => nowIds.has(id))])];
+  writeMarker(prot.userData, { state: check.state === 'verified' ? 'verified' : 'repaired', migratedJobIds, ...(check.state === 'verified' ? { historyComplete: true } : {}), lastRepair: { linked: rep?.linked ?? 0, copied: rep?.copied ?? 0, copiedBytes, errors: rep?.errors.length ?? 0 } });
   return { linked: rep?.linked ?? 0, copied: rep?.copied ?? 0, copiedBytes, skippedExisting: rep?.skippedExisting ?? 0, errors: rep?.errors ?? [], check };
 }
 
