@@ -175,7 +175,8 @@ export class BulkDeleter {
    */
   /** Si hay un borrado (o su «Deshacer») en curso o en cola para este trabajo: renderizar o transcribir debe esperar. */
   isDeleting(jobId: string): boolean {
-    return this.jobLocks.has(jobId);
+    // También mientras haya una recuperación a medias: editar o renderizar ahora chocaría con el siguiente «Deshacer».
+    return this.jobLocks.has(jobId) || this.restoringJob(jobId);
   }
 
   private withJobs<T>(ids: readonly string[], fn: () => Promise<T>): Promise<T> {

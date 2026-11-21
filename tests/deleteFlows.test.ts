@@ -796,6 +796,21 @@ describe('borrado de clips desde Resultados', () => {
     expect(again.errors[0]).toMatch(/recuperación/);
   });
 
+  it('revisión Codex: con una recuperación de clips a medias el trabajo sigue reservado (no se edita ni renderiza)', async () => {
+    seedJob('job-000001');
+    let fail = false;
+    const d = deleter({ flushJobs: () => { if (fail) throw new Error('ENOSPC'); } });
+    const a = await d.deleteClips('job-000001', ['job-000001-c1'], { deleteExports: false });
+    fail = true;
+    expect((await d.undo(a.batchId)).pending).toBeGreaterThan(0);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(d.isDeleting('job-000001')).toBe(true);
+    fail = false;
+    await d.undo(a.batchId);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(d.isDeleting('job-000001')).toBe(false);
+  });
+
   it('todos los clips del trabajo: se elimina el trabajo completo (sin registros vacíos)', async () => {
     seedJob('job-000001');
     const d = deleter();
