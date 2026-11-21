@@ -160,6 +160,8 @@ export class BulkDeleter {
   private jobLocks = new Map<string, Promise<unknown>>();
   /** Trabajos con una recuperación del arranque sin terminar (manifiesto conservado): protegidos como los lotes vivos. */
   private diskRestoring = new Map<string, string[]>(); // lote → trabajos afectados
+  /** Copia en memoria de lo que una vuelta atrás no pudo devolver (por si tampoco se pudo escribir su manifiesto). */
+  private stuckMoves = new Map<string, { from: string; to: string }[]>();
   constructor(private d: DeleterDeps) {}
 
   plan(ids: readonly string[], o: BulkOptions): BulkPlan {
@@ -192,7 +194,14 @@ export class BulkDeleter {
     return run;
   }
 
+  /** Reintenta las recuperaciones pendientes en disco de estos trabajos (sólo ésas: ni lotes vivos ni otros trabajos). */
+  private async finishDiskRestores(jobIds: readonly string[]): Promise<void> {
+    const mine = [...this.diskRestoring].filter(([, ids]) => ids.some((i) => jobIds.includes(i))).map(([b]) => b);
+    if (mine.length) await this.sweepLeftovers(new Set(mine));
+  }
+
   private async deleteNow(ids: readonly string[], o: BulkOptions, typed?: string): Promise<BulkResult & { locked: string[] }> {
+    if (ids.some((i) => this.restoringJob(i))) await this.finishDiskRestores(ids);
     const plan = this.plan(ids, o);
     if (!plan.jobs.length) throw new UserFacingError(plan.skipped.length ? `No se puede borrar: ${plan.skipped[0].title} ${plan.skipped[0].reason}.` : 'No hay trabajos seleccionados.');
     if (!typedConfirmOk(plan.jobs.length, plan.clipCount, typed)) throw new UserFacingError('Para borrar tantos elementos escribe BORRAR.');
@@ -293,6 +302,8 @@ export class BulkDeleter {
   }
 
   private async deleteClipsNow(jobId: string, clipIds: readonly string[], o: BulkOptions): Promise<BulkResult & { locked: string[]; wholeJob: boolean }> {
+    // Antes de un nuevo borrado se intenta terminar lo que quedó a medias (vueltas atrás y recuperaciones en disco).
+    if (this.restoringJob(jobId)) await this.finishDiskRestores([jobId]);
     if (this.restoringJob(jobId)) throw new UserFacingError('Este trabajo tiene una recuperación a medias. Vuelve a pulsar «Deshacer» y, cuando termine, inténtalo de nuevo.');
     const plan = this.planClips(jobId, clipIds, o);
     if (plan.wholeJob) return { ...(await this.deleteNow([jobId], o)), wholeJob: true };
@@ -316,8 +327,12 @@ export class BulkDeleter {
         }
       }
       const back = { jobId: job.id, clips: job.clips.filter((x) => want.has(x.id)) };
-      if (stuck.length || keepIntent) writeManifest(path.join(this.d.pendingDir, id), [], stuck.length ? stuck : moved, keepIntent ? back : undefined);
-      else clearUndoneBatch(path.join(this.d.pendingDir, id));
+      if (stuck.length || keepIntent) {
+        writeManifest(path.join(this.d.pendingDir, id), [], stuck.length ? stuck : moved, back);
+        // Vuelta atrás sin terminar: el trabajo queda protegido hasta que se devuelvan esos archivos.
+        this.diskRestoring.set(id, [job.id]);
+        this.stuckMoves.set(id, stuck.length ? stuck : [...moved]);
+      } else clearUndoneBatch(path.join(this.d.pendingDir, id));
     };
     // Antes de mover nada: si la app se cierra a mitad, el arranque DEVUELVE estos archivos (no los manda a la Papelera).
     const intent = job.clips.filter((x) => want.has(x.id)).flatMap((c) => clipFiles(dir, c).map((f) => ({ from: f, to: path.join(dest, path.relative(dir, f)) })));
@@ -557,10 +572,10 @@ export class BulkDeleter {
   }
 
   /** Lotes de una sesión anterior (cierre durante el plazo o Papelera que falló): se terminan ahora. */
-  async sweepLeftovers(): Promise<void> {
+  async sweepLeftovers(only?: Set<string>): Promise<void> {
     let entries: string[] = [];
     try {
-      entries = fs.readdirSync(this.d.pendingDir);
+      entries = fs.readdirSync(this.d.pendingDir).filter((e) => !only || only.has(e));
     } catch {
       return;
     }
@@ -575,7 +590,8 @@ export class BulkDeleter {
     for (const e of entries) {
       const p = path.join(this.d.pendingDir, e);
       if (this.batches.has(e) || !isInside(this.d.pendingDir, p)) continue;
-      const restore = readRestore(p);
+      const fromDisk = readRestore(p);
+      const restore = fromDisk.length ? fromDisk : (this.stuckMoves.get(e) ?? []);
       // Hay intención de recuperar si hay archivos que devolver O clips que devolver al historial (puede no haber archivos).
       const jobsBack = readRestoreJobs(p);
       if (jobsBack.length) {
@@ -625,9 +641,12 @@ export class BulkDeleter {
           }
           clearUndoneBatch(p);
           this.diskRestoring.delete(e);
+          this.stuckMoves.delete(e);
         }
         continue;
       }
+      // Reintento de recuperaciones durante la sesión: jamás se finaliza (Papelera) nada desde aquí.
+      if (only) continue;
       if (fs.existsSync(path.join(p, MANIFEST)) && !manifestReadable(p)) {
         this.d.log?.('borrado: manifiesto ilegible, el lote se conserva', { batch: e });
         continue;

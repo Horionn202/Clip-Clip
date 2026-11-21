@@ -831,7 +831,11 @@ describe('borrado de clips desde Resultados', () => {
     }
     expect(boot.isDeleting('job-000001')).toBe(true);
     const again = await boot.delete(['job-000001'], { deleteExports: false });
-    expect(again.deletedIds).toEqual([]);
+    // Antes de borrar se termina la recuperación pendiente (B ya no está bloqueado): ambos vuelven y sólo entonces se borra A.
+    expect(again.deletedIds).toEqual(['job-000001']);
+    expect(store.has('job-000002')).toBe(true);
+    expect(fs.existsSync(path.join(jobsDir, 'job-000002'))).toBe(true);
+    expect(fs.existsSync(path.join(pendingDir, r.batchId))).toBe(false);
   });
 
   it('revisión Codex: terminar una recuperación del arranque no desprotege otra del mismo trabajo', async () => {
@@ -892,6 +896,28 @@ describe('borrado de clips desde Resultados', () => {
       (fs as unknown as { renameSync: typeof fs.renameSync }).renameSync = orig;
     }
     expect(boot.isDeleting('job-000001')).toBe(false);
+  });
+
+  it('revisión Codex: una vuelta atrás sin terminar se completa antes de volver a borrar el clip', async () => {
+    seedJob('job-000001');
+    const orig = fs.renameSync;
+    let block = true;
+    (fs as unknown as { renameSync: typeof fs.renameSync }).renameSync = ((a: fs.PathLike, b: fs.PathLike) => {
+      if (block && (String(a).endsWith('01.ass') || (String(a).startsWith(pendingDir) && String(a).endsWith('01_c.mp4')))) throw Object.assign(new Error('EBUSY'), { code: 'EBUSY' });
+      return orig(a, b);
+    }) as typeof fs.renameSync;
+    const d = deleter({ retryWaits: [] });
+    try {
+      await expect(d.deleteClips('job-000001', ['job-000001-c1'], { deleteExports: false })).rejects.toThrow(/vista previa/);
+    } finally {
+      (fs as unknown as { renameSync: typeof fs.renameSync }).renameSync = orig;
+      block = false;
+    }
+    expect(d.isDeleting('job-000001')).toBe(true);
+    const r = await d.deleteClips('job-000001', ['job-000001-c1'], { deleteExports: false }); // ya sin bloqueos
+    await d.undo(r.batchId);
+    expect(fs.existsSync(path.join(jobsDir, 'job-000001', 'clips', '01_c.mp4'))).toBe(true);
+    expect(fs.existsSync(path.join(jobsDir, 'job-000001', 'clips', '01.ass'))).toBe(true);
   });
 
   it('todos los clips del trabajo: se elimina el trabajo completo (sin registros vacíos)', async () => {
