@@ -203,6 +203,57 @@ describe('borrado de clips desde Resultados', () => {
     expect(fs.existsSync(path.join(exportDir, 'job-000001_1.mp4'))).toBe(true);
   });
 
+  it('revisión Codex: ninguna variable local se llama «exports» (en CommonJS taparía el módulo)', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'bulkDelete.ts'), 'utf8');
+    expect(src).not.toMatch(/(const|let|var)\s+exports\b/);
+    expect(src).not.toMatch(/\(\s*[^)]*\bexports\s*:\s*string\[\]/);
+  });
+
+  it('revisión Codex: si la vuelta atrás falla, el próximo arranque devuelve el archivo (no a la Papelera)', async () => {
+    seedJob('job-000001');
+    const orig = fs.renameSync;
+    let block = true;
+    (fs as unknown as { renameSync: typeof fs.renameSync }).renameSync = ((a: fs.PathLike, b: fs.PathLike) => {
+      // El .ass queda bloqueado y además el MP4 ya movido no puede volver.
+      if (block && (String(a).endsWith('01.ass') || (String(a).startsWith(pendingDir) && String(a).endsWith('01_c.mp4')))) throw Object.assign(new Error('EBUSY'), { code: 'EBUSY' });
+      return orig(a, b);
+    }) as typeof fs.renameSync;
+    try {
+      await expect(deleter().deleteClips('job-000001', ['job-000001-c1'], { deleteExports: false })).rejects.toThrow(/vista previa/);
+    } finally {
+      (fs as unknown as { renameSync: typeof fs.renameSync }).renameSync = orig;
+      block = false;
+    }
+    expect(fs.existsSync(path.join(jobsDir, 'job-000001', 'clips', '01_c.mp4'))).toBe(false); // quedó apartado
+    await deleter().sweepLeftovers();
+    expect(fs.existsSync(path.join(jobsDir, 'job-000001', 'clips', '01_c.mp4'))).toBe(true); // y vuelve al arrancar
+    expect(trashed).toEqual([]);
+  });
+
+  it('revisión Codex: «Deshacer» suspende el plazo mientras reintenta (no se finaliza a mitad)', async () => {
+    seedJob('job-000001');
+    const d = deleter();
+    const r = await d.deleteClips('job-000001', ['job-000001-c1'], { deleteExports: false });
+    const orig = fs.renameSync;
+    let fails = 2;
+    (fs as unknown as { renameSync: typeof fs.renameSync }).renameSync = ((a: fs.PathLike, b: fs.PathLike) => {
+      if (fails-- > 0) {
+        // Mientras «Deshacer» espera, vence el plazo original.
+        timers[0]?.();
+        throw Object.assign(new Error('EBUSY'), { code: 'EBUSY' });
+      }
+      return orig(a, b);
+    }) as typeof fs.renameSync;
+    try {
+      await d.undo(r.batchId);
+    } finally {
+      (fs as unknown as { renameSync: typeof fs.renameSync }).renameSync = orig;
+    }
+    expect(trashed).toEqual([]);
+    expect(store.get('job-000001')!.clips).toHaveLength(2);
+    expect(fs.existsSync(path.join(jobsDir, 'job-000001', 'clips', '01_c.mp4'))).toBe(true);
+  });
+
   it('todos los clips del trabajo: se elimina el trabajo completo (sin registros vacíos)', async () => {
     seedJob('job-000001');
     const d = deleter();

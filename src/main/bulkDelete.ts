@@ -92,19 +92,19 @@ export function planBulkDelete(all: Job[], ids: readonly string[], o: BulkOption
       continue;
     }
     const bytes = listJobFiles(safeJobDir(d.jobsDir, j.id)).reduce((a, f) => a + f.bytes, 0);
-    let exports = 0;
+    let exportN = 0;
     for (const c of j.clips) {
       if (!deletableExport(c.exportedPath, d.jobsDir)) continue;
       if (o.deleteExports && !sharedOutside.has(path.resolve(c.exportedPath).toLowerCase())) {
-        exports++;
+        exportN++;
         plan.exportBytes += sizeOf(c.exportedPath);
       } else plan.keptExports++;
     }
     const clips = j.clips.length;
-    plan.jobs.push({ id: j.id, title: jobTitle(j), clips, bytes, exports });
+    plan.jobs.push({ id: j.id, title: jobTitle(j), clips, bytes, exports: exportN });
     plan.clipCount += clips;
     plan.internalBytes += bytes;
-    plan.exportCount += exports;
+    plan.exportCount += exportN;
   }
   for (const id of want) if (!all.some((j) => j.id === id)) plan.skipped.push({ id, title: id, reason: 'ya no existe' });
   plan.needsTypedConfirm = needsTypedConfirm(plan.jobs.length, plan.clipCount);
@@ -136,6 +136,8 @@ interface Batch {
   timer: unknown;
   /** Borrado de clips sueltos: estado anterior del trabajo y archivos apartados (para «Deshacer»). */
   clips?: { before: Job; ids: string[]; moved: { from: string; to: string }[] };
+  /** «Deshacer» en curso: la finalización espera (aunque un temporizador antiguo llegue a dispararse). */
+  undoing?: boolean;
 }
 
 export class BulkDeleter {
@@ -254,33 +256,41 @@ export class BulkDeleter {
       }
     } catch (e) {
       // Algo sigue bloqueado: lo ya movido vuelve a su sitio y el trabajo queda como estaba.
+      const stuck: { from: string; to: string }[] = [];
       for (const m of moved.reverse()) {
         try {
           fs.renameSync(m.to, m.from);
         } catch {
-          /* se intentará en el próximo inicio (manifiesto) */
+          stuck.push(m);
         }
       }
+      // Lo que no pudo volver queda anotado como «a restaurar»: el próximo arranque lo devuelve (nunca a la Papelera).
+      if (stuck.length) writeManifest(path.join(this.d.pendingDir, id), [], stuck);
       throw e;
     }
-    const exports: string[] = [];
+    const toTrash: string[] = [];
     if (o.deleteExports) {
       const others = new Set(this.d.getJobs().flatMap((j) => j.clips.filter((c) => j.id !== job.id || !want.has(c.id)).map((c) => c.exportedPath)).filter(Boolean).map((p) => path.resolve(p!).toLowerCase()));
-      for (const c of job.clips) if (want.has(c.id) && deletableExport(c.exportedPath, this.d.jobsDir) && !others.has(path.resolve(c.exportedPath).toLowerCase())) exports.push(c.exportedPath);
+      for (const c of job.clips) if (want.has(c.id) && deletableExport(c.exportedPath, this.d.jobsDir) && !others.has(path.resolve(c.exportedPath).toLowerCase())) toTrash.push(c.exportedPath);
     }
     this.d.putJob({ ...job, clips: job.clips.filter((c) => !want.has(c.id)) });
-    const batch: Batch = { id, jobs: [], exports, timer: null, clips: { before: job, ids: [...want], moved } };
-    writeManifest(path.join(this.d.pendingDir, id), exports);
+    const batch: Batch = { id, jobs: [], exports: toTrash, timer: null, clips: { before: job, ids: [...want], moved } };
+    writeManifest(path.join(this.d.pendingDir, id), toTrash);
     batch.timer = (this.d.setTimer ?? ((fn, ms) => setTimeout(fn, ms)))(() => void this.finalize(id), UNDO_MS);
     this.batches.set(id, batch);
-    this.d.log?.('borrado de clips', { batch: id, trabajo: job.id, clips: plan.clips, exports: exports.length });
-    return { batchId: id, deletedIds: [], jobs: 0, clips: plan.clips, freedBytes: plan.bytes + plan.exportBytes, exportsDeleted: exports.length, undoUntil: new Date(Date.now() + UNDO_MS).toISOString(), errors: [], locked: [], wholeJob: false };
+    this.d.log?.('borrado de clips', { batch: id, trabajo: job.id, clips: plan.clips, exports: toTrash.length });
+    return { batchId: id, deletedIds: [], jobs: 0, clips: plan.clips, freedBytes: plan.bytes + plan.exportBytes, exportsDeleted: toTrash.length, undoUntil: new Date(Date.now() + UNDO_MS).toISOString(), errors: [], locked: [], wholeJob: false };
   }
 
   /** Recupera un lote apartado (carpetas y entradas del historial). */
   async undo(batchId: string): Promise<{ restored: number; pending: number }> {
     const b = this.batches.get(batchId);
     if (!b) throw new UserFacingError('Ya no se puede deshacer: el plazo terminó.');
+    // Mientras se restaura (con reintentos) el plazo no puede vencer y mandar el lote a la Papelera.
+    (this.d.clearTimer ?? ((t) => clearTimeout(t as NodeJS.Timeout)))(b.timer);
+    b.timer = null;
+    b.undoing = true;
+    const rearm = () => ((b.undoing = false), (b.timer = (this.d.setTimer ?? ((fn, ms) => setTimeout(fn, ms)))(() => void this.finalize(batchId), UNDO_MS)));
     const src = path.join(this.d.pendingDir, batchId);
     if (b.clips) {
       // Clips sueltos: cada archivo vuelve a su sitio y el trabajo recupera su estado anterior.
@@ -294,6 +304,7 @@ export class BulkDeleter {
       }
       if (left.length) {
         b.clips.moved = left;
+        rearm(); // nuevo plazo para reintentar
         throw new UserFacingError(`No se pudieron recuperar ${left.length} archivo(s) todavía. Vuelve a pulsar «Deshacer».`);
       }
       // Sólo vuelven los clips de este lote, en su posición original, sobre el estado ACTUAL del trabajo
@@ -330,6 +341,7 @@ export class BulkDeleter {
     }
     if (pending.length) {
       b.jobs = pending;
+      rearm(); // nuevo plazo para reintentar
       this.d.log?.('borrado masivo: deshacer incompleto', { batch: batchId, restored, pending: pending.length, e: lastErr });
       if (!restored) throw new UserFacingError(`No se pudo recuperar ningún trabajo todavía (${lastErr}). Vuelve a intentarlo.`);
       return { restored, pending: pending.length };
@@ -347,20 +359,20 @@ export class BulkDeleter {
    */
   async finalize(batchId: string): Promise<void> {
     const b = this.batches.get(batchId);
-    if (!b) return;
+    if (!b || b.undoing) return;
     this.batches.delete(batchId);
     for (const j of b.jobs) this.d.forgetPublish(j.id);
     await this.finishBatch(batchId, b.exports);
   }
 
-  private async finishBatch(batchId: string, exports: string[]): Promise<boolean> {
+  private async finishBatch(batchId: string, exportPaths: string[]): Promise<boolean> {
     const dir = path.join(this.d.pendingDir, batchId);
     if (!isInside(this.d.pendingDir, dir) || dir === path.resolve(this.d.pendingDir)) return false;
     // Un export sólo se borra si sigue siendo borrable y ningún trabajo actual lo usa.
     const inUse = new Set(this.d.getJobs().flatMap((j) => j.clips.map((c) => c.exportedPath)).filter(Boolean).map((p) => path.resolve(p!).toLowerCase()));
     let ok = true;
     const left: string[] = [];
-    for (const p of exports) {
+    for (const p of exportPaths) {
       if (!deletableExport(p, this.d.jobsDir) || inUse.has(path.resolve(p).toLowerCase())) continue;
       try {
         await this.d.trash(p);
@@ -401,16 +413,31 @@ export class BulkDeleter {
     for (const e of entries) {
       const p = path.join(this.d.pendingDir, e);
       if (this.batches.has(e) || !isInside(this.d.pendingDir, p)) continue;
+      const restore = readRestore(p);
+      if (restore.length) {
+        // Una vuelta atrás interrumpida: los archivos vuelven a su trabajo (validados dentro de las carpetas internas).
+        let left = 0;
+        for (const r of restore) {
+          if (!isInside(p, r.to) || !isInside(this.d.jobsDir, r.from)) continue;
+          try {
+            if (fs.existsSync(r.to) && !fs.existsSync(r.from)) await moveWithRetry(r.to, r.from, 'un archivo', this.d.retryWaits);
+          } catch {
+            left++;
+          }
+        }
+        if (!left) clearUndoneBatch(p);
+        continue;
+      }
       await this.finishBatch(e, readManifest(p));
     }
   }
 }
 
 const MANIFEST = 'manifest.json';
-function writeManifest(dir: string, exports: string[]): void {
+function writeManifest(dir: string, exportList: string[], restore: { from: string; to: string }[] = []): void {
   try {
     fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(path.join(dir, MANIFEST), JSON.stringify({ exports }), 'utf8');
+    fs.writeFileSync(path.join(dir, MANIFEST), JSON.stringify({ exports: exportList, restore }), 'utf8');
   } catch {
     /* sin manifiesto, la carpeta se reintenta igualmente */
   }
@@ -419,6 +446,15 @@ function readManifest(dir: string): string[] {
   try {
     const m = JSON.parse(fs.readFileSync(path.join(dir, MANIFEST), 'utf8')) as { exports?: unknown };
     return Array.isArray(m.exports) ? m.exports.filter((x): x is string => typeof x === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+/** Archivos que una vuelta atrás no pudo devolver (se restauran al arrancar). */
+function readRestore(dir: string): { from: string; to: string }[] {
+  try {
+    const m = JSON.parse(fs.readFileSync(path.join(dir, MANIFEST), 'utf8')) as { restore?: unknown };
+    return Array.isArray(m.restore) ? (m.restore as { from: unknown; to: unknown }[]).filter((x) => typeof x?.from === 'string' && typeof x?.to === 'string') as { from: string; to: string }[] : [];
   } catch {
     return [];
   }
