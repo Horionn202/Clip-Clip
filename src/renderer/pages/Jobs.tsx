@@ -630,6 +630,7 @@ export function JobsPage(props: {
             };
             props.toast({ kind: 'error', ttl: 0, text: locked.message, action: { label: 'Cerrar vista previa y reintentar', run: retry } });
           }
+          if (!deleted.length && !locked.ids.length) props.toast({ kind: 'error', text: `No se eliminó ningún trabajo. ${text}` });
           if (deleted.length)
             props.toast({
             text,

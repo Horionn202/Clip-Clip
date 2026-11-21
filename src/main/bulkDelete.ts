@@ -306,6 +306,8 @@ export class BulkDeleter {
       this.d.putJob({ ...(cur ?? b.clips.before), clips });
       (this.d.clearTimer ?? ((t) => clearTimeout(t as NodeJS.Timeout)))(b.timer);
       this.batches.delete(batchId);
+      // Sin manifiesto: un borrado deshecho no puede decidir nada en el próximo inicio (p. ej. borrar exportados).
+      clearUndoneBatch(src);
       this.d.log?.('borrado de clips deshecho', { batch: batchId, trabajo: b.clips.before.id });
       return { restored: 1, pending: 0 };
     }
@@ -334,12 +336,7 @@ export class BulkDeleter {
     }
     (this.d.clearTimer ?? ((t) => clearTimeout(t as NodeJS.Timeout)))(b.timer);
     this.batches.delete(batchId);
-    try {
-      fs.rmSync(path.join(src, MANIFEST), { force: true });
-      fs.rmdirSync(src);
-    } catch {
-      /* no vacía: se limpiará en el próximo inicio */
-    }
+    clearUndoneBatch(src);
     this.d.log?.('borrado masivo deshecho', { batch: batchId, jobs: restored });
     return { restored, pending: 0 };
   }
@@ -438,4 +435,28 @@ function clipFiles(jobDir: string, c: { file?: string; thumb?: string; index: nu
   add(path.join('clips', `${String(c.index).padStart(2, '0')}.ass`));
   if (c.thumb) add(path.join('frames', c.thumb));
   return out;
+}
+
+/** Tras «Deshacer»: se quita el manifiesto del lote y sus carpetas, sólo si quedaron vacías (nunca archivos). */
+function clearUndoneBatch(src: string): void {
+  try {
+    fs.rmSync(path.join(src, MANIFEST), { force: true });
+  } catch {
+    /* ignorar */
+  }
+  const prune = (d: string): void => {
+    let entries: fs.Dirent[] = [];
+    try {
+      entries = fs.readdirSync(d, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) if (e.isDirectory()) prune(path.join(d, e.name));
+    try {
+      fs.rmdirSync(d); // falla si no está vacía: se limpiará en el próximo inicio
+    } catch {
+      /* ignorar */
+    }
+  };
+  prune(src);
 }

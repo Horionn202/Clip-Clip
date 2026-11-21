@@ -191,6 +191,18 @@ describe('borrado de clips desde Resultados', () => {
     expect(store.get('job-000001')!.clips.map((c) => c.id)).toEqual(['job-000001-c1', 'job-000001-c3']);
   });
 
+  it('revisión Codex: un borrado de clips deshecho no deja manifiesto que borre exportados al reiniciar', async () => {
+    seedJob('job-000001', 'completed', true);
+    const d = deleter();
+    const a = await d.deleteClips('job-000001', ['job-000001-c1'], { deleteExports: true });
+    await d.undo(a.batchId);
+    expect(fs.existsSync(path.join(pendingDir, a.batchId))).toBe(false);
+    // Después se borra el mismo clip CONSERVANDO los exportados y la app se reinicia antes del plazo.
+    await d.deleteClips('job-000001', ['job-000001-c1'], { deleteExports: false });
+    await deleter().sweepLeftovers();
+    expect(fs.existsSync(path.join(exportDir, 'job-000001_1.mp4'))).toBe(true);
+  });
+
   it('todos los clips del trabajo: se elimina el trabajo completo (sin registros vacíos)', async () => {
     seedJob('job-000001');
     const d = deleter();
