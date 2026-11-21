@@ -308,6 +308,13 @@ function readJson<T>(f: string): T | null {
   }
 }
 
+/** ¿La migración del historial terminó de verdad? (marcador escrito por una migración sin errores). */
+export function historyMigrated(newDir: string): boolean {
+  const m = readMarker(newDir);
+  if (!m) return false;
+  return m.status === 'migrated' || m.status === 'none' || m.historyComplete === true;
+}
+
 function categoryOf(rel: string): MissingCategory {
   const r = rel.replace(/\\/g, '/');
   if (!r.startsWith('jobs/')) return 'data';
@@ -327,7 +334,9 @@ function categoryOf(rel: string): MissingCategory {
  */
 export function classifyMissing(oldDir: string, newDir: string): { missing: { rel: string; category: MissingCategory }[]; intentional: number; readErrors: string[] } {
   const readErrors: string[] = [];
-  const migratedBefore = fs.existsSync(path.join(newDir, MARKER));
+  // Sólo una migración que TERMINÓ (historial fusionado sin errores) permite tratar lo ausente como borrado a propósito.
+  // Un marcador de reparación o de error no prueba nada: los trabajos que falten siguen contando como faltantes.
+  const migratedBefore = historyMigrated(newDir);
   const newJobs = new Map((readJson<NewJob[]>(path.join(newDir, 'data', 'jobs.json')) ?? []).map((j) => [j.id, j]));
   const missing: { rel: string; category: MissingCategory }[] = [];
   let intentional = 0;
@@ -431,7 +440,7 @@ export function repairLegacy(lp: LegacyPaths, prot: Protected, io?: MigrationFs,
   };
   const rep = only.size ? migrateLegacyData(lp.data, prot.userData, countingIo, { repair: true, only }) : null;
   const check = checkLegacy(lp, prot, size);
-  writeMarker(prot.userData, { state: check.state === 'verified' ? 'verified' : 'repaired', lastRepair: { linked: rep?.linked ?? 0, copied: rep?.copied ?? 0, copiedBytes, errors: rep?.errors.length ?? 0 } });
+  writeMarker(prot.userData, { state: check.state === 'verified' ? 'verified' : 'repaired', ...(check.state === 'verified' ? { historyComplete: true } : {}), lastRepair: { linked: rep?.linked ?? 0, copied: rep?.copied ?? 0, copiedBytes, errors: rep?.errors.length ?? 0 } });
   return { linked: rep?.linked ?? 0, copied: rep?.copied ?? 0, copiedBytes, skippedExisting: rep?.skippedExisting ?? 0, errors: rep?.errors ?? [], check };
 }
 
@@ -466,7 +475,11 @@ export async function freeLegacy(
     res.kept = plan.kept;
   } else {
     // Exports antiguos: nunca la carpeta de exportación actual ni algo que la contenga o esté en uso.
-    if (isInside(root, prot.exportDir) || isInside(prot.exportDir, root) || eff.inUse.some((u) => u && isInside(root, u))) throw new Error('Esa carpeta es la de exportación actual o está en uso: no se toca.');
+    // Sólo cuenta lo que Clip Clip usa HOY (su carpeta de exportación y sus ejecutables); la carpeta de exportación de la
+    // versión anterior es precisamente lo que se quiere liberar.
+    const current = [...prot.inUse, ...settingsProtections(path.join(prot.userData, 'data', 'settings.json')).inUse];
+    const curExport = settingsProtections(path.join(prot.userData, 'data', 'settings.json')).exportDir;
+    if ([prot.exportDir, curExport].some((d) => d && (isInside(root, d) || isInside(d, root))) || current.some((u) => u && isInside(root, u))) throw new Error('Esa carpeta es la de exportación actual o está en uso: no se toca.');
     paths = [root];
   }
   for (const p of paths) {

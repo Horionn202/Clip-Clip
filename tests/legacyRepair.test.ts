@@ -167,6 +167,27 @@ describe('migración reparable', () => {
     expect(r.freedBytes).toBe(80);
   });
 
+  it('revisión Codex: un marcador de una migración que falló NO convierte lo ausente en «borrado a propósito»', async () => {
+    // La primera migración no llegó a fusionar el historial: sólo quedó un marcador de estado (sin status migrated).
+    neu('data/jobs.json', '[]');
+    neu(MARKER, JSON.stringify({ state: 'needs_repair' }));
+    const c = checkLegacy(lp, prot);
+    expect(c.canFreeData).toBe(false);
+    expect(c.missing.some((m) => m.rel === 'historial:job-000001')).toBe(true);
+    await expect(freeLegacy('data', lp, prot, { trash, log: () => undefined })).rejects.toThrow(/repara/);
+    // La reparación vuelve a fusionar el historial y entonces sí se verifica.
+    const r = repairLegacy(lp, prot);
+    expect(JSON.parse(fs.readFileSync(path.join(prot.userData, 'data/jobs.json'), 'utf8')).map((j: { id: string }) => j.id)).toEqual(['job-000001']);
+    expect(r.check.state).toBe('verified');
+  });
+
+  it('revisión Codex: la carpeta de exportación de la versión anterior se puede liberar (no cuenta como «en uso»)', async () => {
+    w(path.join(lp.exports, 'viejo.mp4'), Buffer.alloc(80));
+    old('data/settings.json', JSON.stringify({ exportDir: lp.exports }));
+    const r = await freeLegacy('exports', lp, prot, { trash, log: () => undefined });
+    expect(r.freedBytes).toBe(80);
+  });
+
   it('error de lectura: estado parcial, se explica qué carpeta y no se libera nada', () => {
     migrateAll();
     marker();
