@@ -36,6 +36,13 @@ export interface Protected {
 }
 
 export function dirSize(dir: string): number {
+  // Un archivo suelto (p. ej. un .exe de la instalación) cuenta con su tamaño, no como 0.
+  try {
+    const st = fs.statSync(dir);
+    if (st.isFile()) return st.size;
+  } catch {
+    return 0;
+  }
   let total = 0;
   const stack = [dir];
   while (stack.length) {
@@ -362,6 +369,8 @@ export function classifyMissing(oldDir: string, newDir: string): { missing: { re
   const newJobsFile = path.join(newDir, 'data', 'jobs.json');
   const parsedNew = readJson<NewJob[]>(newJobsFile);
   if (fs.existsSync(newJobsFile) && !Array.isArray(parsedNew)) readErrors.push('data/jobs.json de Clip Clip: no se pudo leer el historial actual (no se libera nada hasta que se pueda comprobar)');
+  // Sin historial actual tras una migración terminada no se puede saber qué se borró a propósito: no se verifica.
+  if (!fs.existsSync(newJobsFile) && migratedBefore && fs.existsSync(path.join(oldDir, 'data', 'jobs.json'))) readErrors.push('data/jobs.json de Clip Clip: no existe el historial actual (no se libera nada hasta que se pueda comprobar)');
   const newJobs = new Map((Array.isArray(parsedNew) ? parsedNew : []).map((j) => [j.id, j]));
   const missing: { rel: string; category: MissingCategory }[] = [];
   let intentional = 0;

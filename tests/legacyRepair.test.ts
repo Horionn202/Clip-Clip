@@ -279,6 +279,25 @@ describe('migración reparable', () => {
     expect(fs.existsSync(path.join(prot.userData, 'jobs/job-000002'))).toBe(false);
   });
 
+  it('revisión Codex: sin historial actual tras una migración terminada no se verifica ni se libera', async () => {
+    migrateAll();
+    marker();
+    fs.rmSync(path.join(prot.userData, 'data/jobs.json'));
+    const c = checkLegacy(lp, prot);
+    expect(c.state).toBe('partial');
+    expect(c.canFreeData).toBe(false);
+    const r = repairLegacy(lp, prot);
+    expect(r.check.canFreeData).toBe(false);
+    await expect(freeLegacy('data', lp, prot, { trash, log: () => undefined })).rejects.toThrow();
+  });
+
+  it('revisión Codex: el tamaño liberable de la instalación cuenta los archivos sueltos', () => {
+    w(path.join(lp.install, 'python-env', 'python.exe'), 'py');
+    const c = checkLegacy(lp, { ...prot, inUse: [path.join(lp.install, 'python-env', 'python.exe')] });
+    expect(c.install?.freeableBytes).toBe(357); // ClipsVirales.exe, aunque python-env se conserve
+    expect(c.install?.keptInUse.some((k) => k.endsWith('python-env'))).toBe(true);
+  });
+
   it('error de lectura: estado parcial, se explica qué carpeta y no se libera nada', () => {
     migrateAll();
     marker();
