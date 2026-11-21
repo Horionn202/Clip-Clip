@@ -369,6 +369,13 @@ export class BulkDeleter {
   async undo(batchId: string): Promise<UndoResult> {
     const b = this.batches.get(batchId);
     if (!b) throw new UserFacingError('Ya no se puede deshacer: el plazo terminó.');
+    // En la cola de sus trabajos: un borrado no puede llevarse archivos que «Deshacer» está devolviendo.
+    return this.withJobs(b.clips ? [b.clips.before.id] : b.jobs.map((j) => j.id), () => this.undoNow(batchId));
+  }
+
+  private async undoNow(batchId: string): Promise<UndoResult> {
+    const b = this.batches.get(batchId);
+    if (!b) throw new UserFacingError('Ya no se puede deshacer: el plazo terminó.');
     // Mientras se restaura (con reintentos) el plazo no puede vencer y mandar el lote a la Papelera.
     (this.d.clearTimer ?? ((t) => clearTimeout(t as NodeJS.Timeout)))(b.timer);
     b.timer = null;
