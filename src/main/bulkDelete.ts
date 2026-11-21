@@ -5,13 +5,40 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { Job } from '../shared/types';
-import { DELETABLE_STATUSES, jobTitle, needsTypedConfirm, typedConfirmOk, type BulkOptions, type BulkPlan, type BulkResult } from '../shared/bulk';
+import { DELETABLE_STATUSES, jobTitle, needsTypedConfirm, typedConfirmOk, type BulkOptions, type BulkPlan, type BulkResult, type ClipPlan } from '../shared/bulk';
 import { UserFacingError } from '../shared/validation';
 import { isInside } from './paths';
 import { listJobFiles } from './storageManager';
 
 const VIDEO = /\.(mp4|mov|webm|mkv)$/i;
 export const UNDO_MS = 15_000;
+
+/** Errores de Windows cuando un archivo está abierto (reproductor, vista previa, antivirus…). */
+const LOCKED = new Set(['EPERM', 'EBUSY', 'ENOTEMPTY', 'EACCES']);
+export const RETRY_MS = [100, 250, 500, 1000, 2000];
+export class LockedError extends UserFacingError {
+  constructor(what: string) {
+    super(`Windows tiene en uso ${what} (una vista previa, un reproductor o el antivirus la tiene abierta). No se ha borrado nada: cierra la vista previa y reintenta.`);
+  }
+}
+
+/**
+ * Mueve con reintentos cortos (backoff) si Windows tiene el archivo bloqueado. Si sigue bloqueado, lanza
+ * `LockedError` sin haber tocado nada.
+ */
+export async function moveWithRetry(from: string, to: string, what: string, waits: readonly number[] = RETRY_MS, sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))): Promise<void> {
+  for (let i = 0; ; i++) {
+    try {
+      fs.renameSync(from, to);
+      return;
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code ?? '';
+      if (!LOCKED.has(code)) throw e;
+      if (i >= waits.length) throw new LockedError(what);
+      await sleep(waits[i]);
+    }
+  }
+}
 
 /**
  * ¿Se puede borrar este export? Sólo si es el archivo registrado de un clip de los trabajos elegidos, es un vídeo,
@@ -98,6 +125,8 @@ export interface DeleterDeps {
   log?: (msg: string, extra?: unknown) => void;
   setTimer?: (fn: () => void, ms: number) => unknown;
   clearTimer?: (t: unknown) => void;
+  /** Esperas entre reintentos (inyectable en pruebas). */
+  retryWaits?: readonly number[];
 }
 
 interface Batch {
@@ -105,6 +134,8 @@ interface Batch {
   jobs: Job[];
   exports: string[];
   timer: unknown;
+  /** Borrado de clips sueltos: estado anterior del trabajo y archivos apartados (para «Deshacer»). */
+  clips?: { before: Job; moved: { from: string; to: string }[] };
 }
 
 export class BulkDeleter {
@@ -116,7 +147,7 @@ export class BulkDeleter {
   }
 
   /** Aparta los trabajos (se pueden recuperar con `undo` durante UNDO_MS) y programa el borrado definitivo. */
-  delete(ids: readonly string[], o: BulkOptions, typed?: string): BulkResult {
+  async delete(ids: readonly string[], o: BulkOptions, typed?: string): Promise<BulkResult & { locked: string[] }> {
     const plan = this.plan(ids, o);
     if (!plan.jobs.length) throw new UserFacingError(plan.skipped.length ? `No se puede borrar: ${plan.skipped[0].title} ${plan.skipped[0].reason}.` : 'No hay trabajos seleccionados.');
     if (!typedConfirmOk(plan.jobs.length, plan.clipCount, typed)) throw new UserFacingError('Para borrar tantos elementos escribe BORRAR.');
@@ -126,6 +157,7 @@ export class BulkDeleter {
     const all = new Map(this.d.getJobs().map((j) => [j.id, j]));
     const batch: Batch = { id, jobs: [], exports: [], timer: null };
     const errors: string[] = [];
+    const locked: string[] = [];
     let freed = 0;
     let clips = 0;
     for (const pj of plan.jobs) {
@@ -133,7 +165,8 @@ export class BulkDeleter {
       try {
         const dir = safeJobDir(this.d.jobsDir, job.id);
         const staged = path.join(dest, job.id);
-        if (fs.existsSync(dir)) fs.renameSync(dir, staged);
+        // Primero se aparta la carpeta (con reintentos); sólo si se movió se quita del historial.
+        if (fs.existsSync(dir)) await moveWithRetry(dir, staged, `la carpeta del trabajo «${pj.title}»`, this.d.retryWaits);
         try {
           this.d.removeJob(job.id);
         } catch (e) {
@@ -159,6 +192,7 @@ export class BulkDeleter {
           for (const c of job.clips) if (deletableExport(c.exportedPath, this.d.jobsDir) && !shared.has(path.resolve(c.exportedPath).toLowerCase())) (batch.exports.push(c.exportedPath), (freed += sizeOf(c.exportedPath)));
         }
       } catch (e) {
+        if (e instanceof LockedError) locked.push(pj.id);
         errors.push(`${pj.title}: ${(e as Error).message}`);
       }
     }
@@ -168,14 +202,106 @@ export class BulkDeleter {
     batch.timer = set(() => void this.finalize(id), UNDO_MS);
     this.batches.set(id, batch);
     this.d.log?.('borrado masivo', { batch: id, jobs: batch.jobs.length, exports: batch.exports.length, errors: errors.length });
-    return { batchId: id, deletedIds: batch.jobs.map((j) => j.id), jobs: batch.jobs.length, clips, freedBytes: freed, exportsDeleted: batch.exports.length, undoUntil: new Date(Date.now() + UNDO_MS).toISOString(), errors };
+    return { batchId: id, deletedIds: batch.jobs.map((j) => j.id), jobs: batch.jobs.length, clips, freedBytes: freed, exportsDeleted: batch.exports.length, undoUntil: new Date(Date.now() + UNDO_MS).toISOString(), errors, locked };
+  }
+
+  /** Qué supone borrar estos clips de un trabajo (para el modal). */
+  planClips(jobId: string, clipIds: readonly string[], o: BulkOptions): ClipPlan {
+    const job = this.d.getJobs().find((j) => j.id === jobId);
+    if (!job) throw new UserFacingError('El trabajo no existe.');
+    const want = new Set(clipIds);
+    const chosen = job.clips.filter((c) => want.has(c.id));
+    if (!chosen.length) throw new UserFacingError('No hay clips seleccionados.');
+    const dir = safeJobDir(this.d.jobsDir, job.id);
+    const others = new Set(this.d.getJobs().flatMap((j) => j.clips.filter((c) => j.id !== job.id || !want.has(c.id)).map((c) => c.exportedPath)).filter(Boolean).map((p) => path.resolve(p!).toLowerCase()));
+    const plan: ClipPlan = { jobId, clips: chosen.length, wholeJob: chosen.length === job.clips.length, bytes: 0, exportCount: 0, exportBytes: 0, keptExports: 0 };
+    if (plan.wholeJob) plan.bytes = listJobFiles(dir).reduce((a, f) => a + f.bytes, 0);
+    else for (const c of chosen) for (const f of clipFiles(dir, c)) plan.bytes += sizeOf(f);
+    for (const c of chosen) {
+      if (!deletableExport(c.exportedPath, this.d.jobsDir)) continue;
+      if (o.deleteExports && !others.has(path.resolve(c.exportedPath).toLowerCase())) {
+        plan.exportCount++;
+        plan.exportBytes += sizeOf(c.exportedPath);
+      } else plan.keptExports++;
+    }
+    return plan;
+  }
+
+  /**
+   * Borra clips de un trabajo con «Deshacer». Si son TODOS sus clips se elimina el trabajo completo (sin registros
+   * vacíos). Los archivos del clip se apartan (con reintentos ante bloqueos) y, pasado el plazo, van a la Papelera.
+   */
+  async deleteClips(jobId: string, clipIds: readonly string[], o: BulkOptions): Promise<BulkResult & { locked: string[]; wholeJob: boolean }> {
+    const plan = this.planClips(jobId, clipIds, o);
+    if (plan.wholeJob) return { ...(await this.delete([jobId], o)), wholeJob: true };
+    const job = this.d.getJobs().find((j) => j.id === jobId)!;
+    if (!DELETABLE_STATUSES.includes(job.status) || this.d.busy().has(jobId)) throw new UserFacingError('El trabajo está en curso o renderizándose: espera a que termine.');
+    const id = randomUUID();
+    const dest = path.join(this.d.pendingDir, id, job.id);
+    fs.mkdirSync(dest, { recursive: true });
+    const dir = safeJobDir(this.d.jobsDir, job.id);
+    const want = new Set(clipIds);
+    const moved: { from: string; to: string }[] = [];
+    try {
+      for (const c of job.clips.filter((x) => want.has(x.id))) {
+        for (const f of clipFiles(dir, c)) {
+          const rel = path.relative(dir, f);
+          const to = path.join(dest, rel);
+          fs.mkdirSync(path.dirname(to), { recursive: true });
+          await moveWithRetry(f, to, `el clip «${c.title}»`, this.d.retryWaits);
+          moved.push({ from: f, to });
+        }
+      }
+    } catch (e) {
+      // Algo sigue bloqueado: lo ya movido vuelve a su sitio y el trabajo queda como estaba.
+      for (const m of moved.reverse()) {
+        try {
+          fs.renameSync(m.to, m.from);
+        } catch {
+          /* se intentará en el próximo inicio (manifiesto) */
+        }
+      }
+      throw e;
+    }
+    const exports: string[] = [];
+    if (o.deleteExports) {
+      const others = new Set(this.d.getJobs().flatMap((j) => j.clips.filter((c) => j.id !== job.id || !want.has(c.id)).map((c) => c.exportedPath)).filter(Boolean).map((p) => path.resolve(p!).toLowerCase()));
+      for (const c of job.clips) if (want.has(c.id) && deletableExport(c.exportedPath, this.d.jobsDir) && !others.has(path.resolve(c.exportedPath).toLowerCase())) exports.push(c.exportedPath);
+    }
+    this.d.putJob({ ...job, clips: job.clips.filter((c) => !want.has(c.id)) });
+    const batch: Batch = { id, jobs: [], exports, timer: null, clips: { before: job, moved } };
+    writeManifest(path.join(this.d.pendingDir, id), exports);
+    batch.timer = (this.d.setTimer ?? ((fn, ms) => setTimeout(fn, ms)))(() => void this.finalize(id), UNDO_MS);
+    this.batches.set(id, batch);
+    this.d.log?.('borrado de clips', { batch: id, trabajo: job.id, clips: plan.clips, exports: exports.length });
+    return { batchId: id, deletedIds: [], jobs: 0, clips: plan.clips, freedBytes: plan.bytes + plan.exportBytes, exportsDeleted: exports.length, undoUntil: new Date(Date.now() + UNDO_MS).toISOString(), errors: [], locked: [], wholeJob: false };
   }
 
   /** Recupera un lote apartado (carpetas y entradas del historial). */
-  undo(batchId: string): { restored: number; pending: number } {
+  async undo(batchId: string): Promise<{ restored: number; pending: number }> {
     const b = this.batches.get(batchId);
     if (!b) throw new UserFacingError('Ya no se puede deshacer: el plazo terminó.');
     const src = path.join(this.d.pendingDir, batchId);
+    if (b.clips) {
+      // Clips sueltos: cada archivo vuelve a su sitio y el trabajo recupera su estado anterior.
+      const left: { from: string; to: string }[] = [];
+      for (const m of b.clips.moved) {
+        try {
+          if (fs.existsSync(m.to) && !fs.existsSync(m.from)) await moveWithRetry(m.to, m.from, 'un clip', this.d.retryWaits);
+        } catch {
+          left.push(m);
+        }
+      }
+      if (left.length) {
+        b.clips.moved = left;
+        throw new UserFacingError(`No se pudieron recuperar ${left.length} archivo(s) todavía. Vuelve a pulsar «Deshacer».`);
+      }
+      this.d.putJob(b.clips.before);
+      (this.d.clearTimer ?? ((t) => clearTimeout(t as NodeJS.Timeout)))(b.timer);
+      this.batches.delete(batchId);
+      this.d.log?.('borrado de clips deshecho', { batch: batchId, trabajo: b.clips.before.id });
+      return { restored: 1, pending: 0 };
+    }
     // Cada trabajo se recupera por separado: el lote sólo se da por terminado cuando TODOS están de vuelta.
     // Si alguno falla (p. ej. EPERM pasajero en Windows), sigue apartado y se puede volver a pulsar «Deshacer».
     const pending: Job[] = [];
@@ -185,7 +311,7 @@ export class BulkDeleter {
       try {
         const from = path.join(src, j.id);
         const to = safeJobDir(this.d.jobsDir, j.id);
-        if (fs.existsSync(from) && !fs.existsSync(to)) fs.renameSync(from, to);
+        if (fs.existsSync(from) && !fs.existsSync(to)) await moveWithRetry(from, to, 'la carpeta del trabajo', this.d.retryWaits);
         this.d.putJob(j);
         restored++;
       } catch (e) {
@@ -292,4 +418,17 @@ function readManifest(dir: string): string[] {
   } catch {
     return [];
   }
+}
+
+/** Archivos de un clip dentro de su trabajo (MP4 interno, subtítulos y miniatura), validados dentro de la carpeta. */
+function clipFiles(jobDir: string, c: { file?: string; thumb?: string; index: number }): string[] {
+  const out: string[] = [];
+  const add = (rel: string) => {
+    const f = path.resolve(jobDir, rel);
+    if (isInside(jobDir, f) && f !== path.resolve(jobDir) && fs.existsSync(f) && fs.statSync(f).isFile()) out.push(f);
+  };
+  if (c.file) add(path.join('clips', c.file));
+  add(path.join('clips', `${String(c.index).padStart(2, '0')}.ass`));
+  if (c.thumb) add(path.join('frames', c.thumb));
+  return out;
 }

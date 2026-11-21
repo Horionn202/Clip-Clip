@@ -63,6 +63,17 @@ export interface BulkPlan {
   needsTypedConfirm: boolean;
 }
 
+export interface ClipPlan {
+  jobId: string;
+  clips: number;
+  /** El usuario eligió todos los clips: se elimina el trabajo completo (sin registros vacíos). */
+  wholeJob: boolean;
+  bytes: number;
+  exportCount: number;
+  exportBytes: number;
+  keptExports: number;
+}
+
 export interface BulkResult {
   batchId: string;
   /** Trabajos que de verdad se apartaron (los que fallaron siguen en el historial). */

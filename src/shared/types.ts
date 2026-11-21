@@ -528,9 +528,11 @@ export interface ClipsApi {
   /** Vuelve a transcribir un trabajo terminado sin descargar ni analizar de nuevo. */
   retranscribeJob(id: string, opts?: { precise?: boolean }): Promise<Job>;
   bulkPlan(ids: string[], opts: import('./bulk').BulkOptions): Promise<import('./bulk').BulkPlan>;
-  bulkDelete(ids: string[], opts: import('./bulk').BulkOptions, typed?: string): Promise<import('./bulk').BulkResult>;
+  bulkDelete(ids: string[], opts: import('./bulk').BulkOptions, typed?: string): Promise<import('./bulk').BulkResult & { locked: string[] }>;
   bulkUndo(batchId: string): Promise<{ restored: number; pending: number }>;
   deleteJob(id: string): Promise<boolean>;
+  clipsDeletePlan(jobId: string, ids: string[], opts: import('./bulk').BulkOptions): Promise<import('./bulk').ClipPlan>;
+  clipsDelete(jobId: string, ids: string[], opts: import('./bulk').BulkOptions): Promise<import('./bulk').BulkResult & { locked: string[]; wholeJob: boolean }>;
   renameClip(jobId: string, clipId: string, title: string): Promise<Job>;
   updateClip(jobId: string, clipId: string, patch: ClipPatch): Promise<Job>;
   rerenderClip(jobId: string, clipId: string): Promise<Job>;

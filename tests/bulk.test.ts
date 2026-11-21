@@ -126,14 +126,14 @@ describe('borrado masivo en disco', () => {
     const trashed: string[] = [];
     const timers: (() => void)[] = [];
     const { d, store } = deleter([job('job-000001', 'completed', [clip('c1', e)])], trashed, timers);
-    const r = d.delete(['job-000001'], { deleteExports: false });
+    const r = await d.delete(['job-000001'], { deleteExports: false });
     expect(r).toMatchObject({ jobs: 1, clips: 1, freedBytes: 100, exportsDeleted: 0 });
     expect(store.size).toBe(0);
     expect(fs.existsSync(path.join(jobsDir, 'job-000001'))).toBe(false);
-    expect(d.undo(r.batchId)).toEqual({ restored: 1, pending: 0 });
+    expect(await d.undo(r.batchId)).toEqual({ restored: 1, pending: 0 });
     expect(store.has('job-000001')).toBe(true);
     expect(fs.existsSync(path.join(jobsDir, 'job-000001', 'source.mp4'))).toBe(true);
-    expect(() => d.undo(r.batchId)).toThrow(/plazo/);
+    await expect(d.undo(r.batchId)).rejects.toThrow(/plazo/);
     expect(fs.existsSync(e)).toBe(true);
     expect(trashed).toEqual([]);
   });
@@ -144,14 +144,14 @@ describe('borrado masivo en disco', () => {
     const trashed: string[] = [];
     const timers: (() => void)[] = [];
     const { d } = deleter([job('job-000001', 'completed', [clip('c1', e)])], trashed, timers);
-    const r = d.delete(['job-000001'], { deleteExports: true });
+    const r = await d.delete(['job-000001'], { deleteExports: true });
     expect(r).toMatchObject({ freedBytes: 140, exportsDeleted: 1 });
     expect(fs.existsSync(e)).toBe(true); // todavía se puede deshacer
     await d.finalize(r.batchId);
     expect(trashed).toContain(e);
     expect(trashed.some((p) => p.startsWith(pendingDir))).toBe(true);
     expect(fs.existsSync(e)).toBe(false);
-    expect(() => d.undo(r.batchId)).toThrow();
+    await expect(d.undo(r.batchId)).rejects.toThrow();
   });
 
   it('revisión Codex: si la Papelera falla no se borra nada para siempre y se reintenta al iniciar', async () => {
@@ -179,7 +179,7 @@ describe('borrado masivo en disco', () => {
         clearTimer: () => undefined,
       });
     const d = mk();
-    const r = d.delete(['job-000001'], { deleteExports: true });
+    const r = await d.delete(['job-000001'], { deleteExports: true });
     expect(r.deletedIds).toEqual(['job-000001']);
     await d.finalize(r.batchId);
     // Nada borrado de forma permanente: la carpeta apartada y el export siguen ahí.
@@ -197,14 +197,14 @@ describe('borrado masivo en disco', () => {
     const e = mkExport('e.mp4', 5);
     const trashed: string[] = [];
     const { d } = deleter([job('job-000001', 'completed', [clip('c1', e)])], trashed, []);
-    d.delete(['job-000001'], { deleteExports: true });
+    await d.delete(['job-000001'], { deleteExports: true });
     // Sin finalize (cierre brusco): una instancia nueva lo termina desde el disco.
     const { d: next } = deleter([], trashed, []);
     await next.sweepLeftovers();
     expect(trashed).toContain(e);
   });
 
-  it('revisión Codex: sólo se informan como borrados los trabajos que de verdad se apartaron', () => {
+  it('revisión Codex: sólo se informan como borrados los trabajos que de verdad se apartaron', async () => {
     mkJob('job-000001', 1);
     mkJob('job-000002', 1);
     // Un archivo con el nombre de la carpeta de destino hace fallar el traslado del segundo trabajo.
@@ -215,7 +215,7 @@ describe('borrado masivo en disco', () => {
       return orig(a, b);
     }) as typeof fs.renameSync;
     try {
-      const r = d.delete(['job-000001', 'job-000002'], { deleteExports: false });
+      const r = await d.delete(['job-000001', 'job-000002'], { deleteExports: false });
       expect(r.deletedIds).toEqual(['job-000001']);
       expect(r.errors.length).toBe(1);
       expect(store.has('job-000002')).toBe(true);
@@ -224,11 +224,11 @@ describe('borrado masivo en disco', () => {
     }
   });
 
-  it('revisión Codex: si «Deshacer» falla en un trabajo, ése sigue recuperable y se puede reintentar', () => {
+  it('revisión Codex: si «Deshacer» falla en un trabajo, ése sigue recuperable y se puede reintentar', async () => {
     mkJob('job-000001', 1);
     mkJob('job-000002', 1);
     const { d, store } = deleter([job('job-000001', 'completed'), job('job-000002', 'completed')], [], []);
-    const r = d.delete(['job-000001', 'job-000002'], { deleteExports: false });
+    const r = await d.delete(['job-000001', 'job-000002'], { deleteExports: false });
     const orig = fs.renameSync;
     let block = true;
     (fs as unknown as { renameSync: typeof fs.renameSync }).renameSync = ((a: fs.PathLike, b: fs.PathLike) => {
@@ -236,12 +236,12 @@ describe('borrado masivo en disco', () => {
       return orig(a, b);
     }) as typeof fs.renameSync;
     try {
-      expect(d.undo(r.batchId)).toEqual({ restored: 1, pending: 1 });
+      expect(await d.undo(r.batchId)).toEqual({ restored: 1, pending: 1 });
       expect(store.has('job-000001')).toBe(true);
       expect(store.has('job-000002')).toBe(false);
       block = false;
       // Mismo plazo: el segundo intento recupera el que faltaba.
-      expect(d.undo(r.batchId)).toEqual({ restored: 1, pending: 0 });
+      expect(await d.undo(r.batchId)).toEqual({ restored: 1, pending: 0 });
       expect(store.has('job-000002')).toBe(true);
       expect(fs.existsSync(path.join(jobsDir, 'job-000002', 'source.mp4'))).toBe(true);
     } finally {
@@ -249,7 +249,7 @@ describe('borrado masivo en disco', () => {
     }
   });
 
-  it('revisión Codex: si falla guardar el historial, la carpeta vuelve a su sitio y el trabajo sigue', () => {
+  it('revisión Codex: si falla guardar el historial, la carpeta vuelve a su sitio y el trabajo sigue', async () => {
     mkJob('job-000001', 1);
     const store = new Map([['job-000001', job('job-000001', 'completed')]]);
     const d = new BulkDeleter({
@@ -267,25 +267,25 @@ describe('borrado masivo en disco', () => {
       setTimer: () => 0,
       clearTimer: () => undefined,
     });
-    const r = d.delete(['job-000001'], { deleteExports: false });
+    const r = await d.delete(['job-000001'], { deleteExports: false });
     expect(r.deletedIds).toEqual([]);
     expect(r.errors[0]).toMatch(/ENOSPC/);
     expect(store.has('job-000001')).toBe(true);
     expect(fs.existsSync(path.join(jobsDir, 'job-000001', 'source.mp4'))).toBe(true);
   });
 
-  it('muchos trabajos exigen escribir BORRAR', () => {
+  it('muchos trabajos exigen escribir BORRAR', async () => {
     const jobs = Array.from({ length: 10 }, (_, i) => job(`job-00000${i}x`, 'completed'));
     for (const j of jobs) mkJob(j.id, 1);
     const { d } = deleter(jobs, [], []);
-    expect(() => d.delete(jobs.map((j) => j.id), { deleteExports: false })).toThrow(/BORRAR/);
-    expect(d.delete(jobs.map((j) => j.id), { deleteExports: false }, 'BORRAR').jobs).toBe(10);
+    await expect(d.delete(jobs.map((j) => j.id), { deleteExports: false })).rejects.toThrow(/BORRAR/);
+    expect((await d.delete(jobs.map((j) => j.id), { deleteExports: false }, 'BORRAR')).jobs).toBe(10);
   });
 
-  it('nunca borra un trabajo en curso', () => {
+  it('nunca borra un trabajo en curso', async () => {
     mkJob('job-000001', 1);
     const { d, store } = deleter([job('job-000001', 'rendering')], [], []);
-    expect(() => d.delete(['job-000001'], { deleteExports: false })).toThrow(/en curso/);
+    await expect(d.delete(['job-000001'], { deleteExports: false })).rejects.toThrow(/en curso/);
     expect(store.size).toBe(1);
     expect(fs.existsSync(path.join(jobsDir, 'job-000001'))).toBe(true);
   });

@@ -5,6 +5,7 @@ import { humanDuration } from '../../shared/estimates';
 import { TEMP_ONLY, humanSize } from '../../shared/storage';
 import { TYPED_CONFIRM, pruneSelection, selectionState, setMany, toggle, type BulkPlan } from '../../shared/bulk';
 import { api, errMsg } from '../api';
+import { releaseMedia } from '../releaseMedia';
 import { JobReport } from './Performance';
 import { FreeSpaceDialog } from './Storage';
 import { ConfirmModal, Modal } from '../components/Modal';
@@ -277,7 +278,7 @@ function JobCard(props: {
 }
 
 /** Confirmación del borrado masivo: resumen real (trabajos, clips, espacio, exports) y «BORRAR» si es mucho. */
-export function BulkDeleteModal(props: { ids: string[]; mode: 'history' | 'full' | 'completed'; onClose: () => void; onDone: (deleted: string[], batchId: string, text: string, undoUntil: string) => void }) {
+export function BulkDeleteModal(props: { ids: string[]; mode: 'history' | 'full' | 'completed'; onClose: () => void; onDone: (deleted: string[], batchId: string, text: string, undoUntil: string, locked: { ids: string[]; deleteExports: boolean; message: string }) => void }) {
   const [deleteExports, setDeleteExports] = useState(props.mode === 'full');
   const [plan, setPlan] = useState<BulkPlan | null>(null);
   const [typed, setTyped] = useState('');
@@ -306,12 +307,16 @@ export function BulkDeleteModal(props: { ids: string[]; mode: 'history' | 'full'
     setBusy(true);
     setErr('');
     try {
+      // Los reproductores de la página tienen archivos abiertos: se liberan antes de mover nada.
+      releaseMedia();
       const r = await api().bulkDelete(plan.jobs.map((j) => j.id), { deleteExports }, plan.needsTypedConfirm ? typed : undefined);
+      const other = r.errors.length - r.locked.length;
       props.onDone(
         r.deletedIds,
         r.batchId,
-        `${r.jobs} trabajo${r.jobs === 1 ? '' : 's'} y ${r.clips} clip${r.clips === 1 ? '' : 's'} eliminados · ${humanSize(r.freedBytes)} liberados${r.exportsDeleted ? ` · ${r.exportsDeleted} exportados a la Papelera` : ''}.${r.errors.length ? ` ${r.errors.length} no se pudieron eliminar: ${r.errors[0]}` : ''}`,
+        `${r.jobs} trabajo${r.jobs === 1 ? '' : 's'} y ${r.clips} clip${r.clips === 1 ? '' : 's'} enviados a la Papelera · ${humanSize(r.freedBytes)} recuperables${r.exportsDeleted ? ` (incluye ${r.exportsDeleted} exportados)` : ''}. El espacio se liberará definitivamente cuando vacíes la Papelera de Windows.${other > 0 ? ` ${other} no se pudieron eliminar: ${r.errors.find((e) => !/vista previa/.test(e))}` : ''}`,
         r.undoUntil,
+        { ids: r.locked, deleteExports, message: r.locked.length ? `${r.locked.length} trabajo${r.locked.length === 1 ? '' : 's'} no se ${r.locked.length === 1 ? 'pudo' : 'pudieron'} eliminar todavía: ${r.errors.find((e) => /vista previa/.test(e))}` : '' },
       );
     } catch (e) {
       setErr(errMsg(e));
@@ -602,11 +607,31 @@ export function JobsPage(props: {
         ids={bulk?.ids ?? []}
         mode={bulk?.mode ?? 'history'}
         onClose={() => setBulk(null)}
-        onDone={(deleted, batchId, text, undoUntil) => {
+        onDone={(deleted, batchId, text, undoUntil, locked) => {
           setBulk(null);
           setSel(new Set());
           props.onDeleted(deleted);
-          props.toast({
+          if (locked.ids.length) {
+            const retry = async (): Promise<boolean> => {
+              releaseMedia();
+              try {
+                const r = await api().bulkDelete(locked.ids, { deleteExports: locked.deleteExports });
+                props.onDeleted(r.deletedIds);
+                if (r.locked.length) {
+                  props.toast({ kind: 'error', text: `Siguen bloqueados ${r.locked.length}. Cierra la vista previa o el reproductor que los usa y vuelve a intentarlo.` });
+                  return false;
+                }
+                props.toast({ text: `${r.jobs} trabajo${r.jobs === 1 ? '' : 's'} más enviados a la Papelera.` });
+                return true;
+              } catch (e) {
+                props.toast({ kind: 'error', text: errMsg(e) });
+                return false;
+              }
+            };
+            props.toast({ kind: 'error', ttl: 0, text: locked.message, action: { label: 'Cerrar vista previa y reintentar', run: retry } });
+          }
+          if (deleted.length)
+            props.toast({
             text,
             // Caduca exactamente cuando el proceso principal confirma el borrado.
             expiresAt: Date.parse(undoUntil),

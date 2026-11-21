@@ -627,7 +627,7 @@ export function registerIpc(ctx: IpcContext): void {
       const job = ctx.jobs.get(jobId);
       if (!job) return;
       const dir = path.join(jobDir(ctx.jobsDir, jobId), 'clips');
-      for (const c of job.clips.filter((x) => ids.includes(x.id))) if (c.file && !c.exportedPath) fs.rmSync(path.join(dir, c.file), { force: true });
+      for (const c of job.clips.filter((x) => ids.includes(x.id))) if (c.file && !c.exportedPath) void shell.trashItem(path.join(dir, c.file)).catch((e) => log.error('directo: duplicado no enviado a la Papelera', e));
       const next = { ...job, clips: job.clips.filter((c) => !ids.includes(c.id) || !!c.exportedPath) };
       ctx.jobs.put(next);
       emitJob(next);
@@ -782,31 +782,24 @@ export function registerIpc(ctx: IpcContext): void {
   const bulkIds = z.array(idSchema).min(1).max(5000);
   const bulkOpts = z.object({ deleteExports: z.boolean() }).strict();
   h('jobs:bulkPlan', (ids: unknown, opts: unknown) => bulk.plan(bulkIds.parse(ids), bulkOpts.parse(opts)));
-  h('jobs:bulkDelete', (ids: unknown, opts: unknown, typed: unknown) => {
+  h('jobs:bulkDelete', async (ids: unknown, opts: unknown, typed: unknown) => {
     if (cleaning) throw new UserFacingError('Hay una limpieza de almacenamiento en curso; espera a que termine.');
-    return bulk.delete(bulkIds.parse(ids), bulkOpts.parse(opts), typed == null ? undefined : z.string().max(20).parse(typed));
+    return await bulk.delete(bulkIds.parse(ids), bulkOpts.parse(opts), typed == null ? undefined : z.string().max(20).parse(typed));
   });
   h('jobs:bulkUndo', (batchId: unknown) => bulk.undo(z.string().uuid().parse(batchId)));
+  // Ruta antigua de borrado individual: ahora usa el MISMO borrado con «Deshacer» y Papelera (nunca fs.rmSync).
   h('jobs:delete', async (id: unknown) => {
-    const job = requireJob(ctx, id);
-    if (!['completed', 'cancelled', 'failed'].includes(job.status)) throw new UserFacingError('Cancela el trabajo antes de borrarlo.');
-    const win = BrowserWindow.getFocusedWindow();
-    const opts = {
-      type: 'warning' as const,
-      buttons: ['Cancelar', 'Borrar'],
-      defaultId: 0,
-      cancelId: 0,
-      title: 'Borrar trabajo',
-      message: '¿Borrar este trabajo del historial?',
-      detail: 'Se eliminarán el vídeo descargado, la transcripción y los clips de la carpeta interna de la app. Los clips ya exportados no se tocarán.',
-    };
-    const r = win ? await dialog.showMessageBox(win, opts) : await dialog.showMessageBox(opts);
-    if (r.response !== 1) return false;
-    const dir = jobDir(ctx.jobsDir, job.id);
-    if (isInside(ctx.jobsDir, dir) && dir !== path.resolve(ctx.jobsDir)) fs.rmSync(dir, { recursive: true, force: true });
-    ctx.jobs.delete(job.id);
-    ctx.publish.deleteJob(job.id);
+    const r = await bulk.delete([idSchema.parse(id)], { deleteExports: false });
+    if (!r.deletedIds.length) throw new UserFacingError(r.errors[0] ?? 'No se pudo eliminar el trabajo.');
     return true;
+  });
+  // ---- Borrado de clips sueltos (Resultados) ----
+  const clipIds = z.array(idSchema).min(1).max(1000);
+  h('clips:deletePlan', (jobId: unknown, ids: unknown, opts: unknown) => bulk.planClips(idSchema.parse(jobId), clipIds.parse(ids), bulkOpts.parse(opts)));
+  h('clips:delete', async (jobId: unknown, ids: unknown, opts: unknown) => {
+    const id = idSchema.parse(jobId);
+    if (rerendering.has(id)) throw new UserFacingError('Se está renderizando un clip de este trabajo; espera a que termine.');
+    return bulk.deleteClips(id, clipIds.parse(ids), bulkOpts.parse(opts));
   });
   h('clips:rename', (...args: unknown[]) => {
     const [jobId, clipId, title] = renameClipSchema.parse(args);
