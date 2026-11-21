@@ -638,6 +638,35 @@ describe('borrado de clips desde Resultados', () => {
     expect((ipc.match(/bulk\.isDeleting\(/g) ?? []).length).toBeGreaterThanOrEqual(4);
   });
 
+  it('revisión Codex: si tampoco se puede guardar el historial al deshacer, se conserva el manifiesto con los clips', async () => {
+    seedJob('job-000001');
+    const origW = fs.writeFileSync;
+    let n = 0;
+    let flushes = 0;
+    let onDisk: Job | null = null;
+    (fs as unknown as { writeFileSync: typeof fs.writeFileSync }).writeFileSync = ((f: fs.PathOrFileDescriptor, ...x: unknown[]) => {
+      if (String(f).endsWith('manifest.json') && ++n === 2) throw Object.assign(new Error('ENOSPC'), { code: 'ENOSPC' });
+      return (origW as (...a: unknown[]) => void)(f, ...x);
+    }) as typeof fs.writeFileSync;
+    try {
+      const d = deleter({
+        flushJobs: () => {
+          if (++flushes === 2) throw Object.assign(new Error('ENOSPC'), { code: 'ENOSPC' });
+          onDisk = structuredClone(store.get('job-000001')!);
+        },
+      });
+      await expect(d.deleteClips('job-000001', ['job-000001-c1'], { deleteExports: false })).rejects.toThrow(/disco lleno/);
+    } finally {
+      (fs as unknown as { writeFileSync: typeof fs.writeFileSync }).writeFileSync = origW;
+    }
+    // Reinicio con el historial que quedó en disco (sin el clip).
+    store.set('job-000001', onDisk!);
+    expect(store.get('job-000001')!.clips).toHaveLength(1);
+    await deleter().sweepLeftovers();
+    expect(store.get('job-000001')!.clips.map((c) => c.id)).toEqual(['job-000001-c1', 'job-000001-c2']);
+    expect(fs.existsSync(path.join(jobsDir, 'job-000001', 'clips', '01_c.mp4'))).toBe(true);
+  });
+
   it('todos los clips del trabajo: se elimina el trabajo completo (sin registros vacíos)', async () => {
     seedJob('job-000001');
     const d = deleter();

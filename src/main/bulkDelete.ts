@@ -288,7 +288,8 @@ export class BulkDeleter {
     const want = new Set(clipIds);
     const moved: { from: string; to: string }[] = [];
     /** Lo ya movido vuelve a su sitio; lo que no pueda volver queda anotado y el próximo arranque lo devuelve (nunca a la Papelera). */
-    const rollback = (): void => {
+    /** `keepIntent`: el historial restaurado no llegó a disco; el manifiesto con los clips se conserva para el arranque. */
+    const rollback = (keepIntent = false): void => {
       const stuck: { from: string; to: string }[] = [];
       for (const m of [...moved].reverse()) {
         try {
@@ -297,7 +298,8 @@ export class BulkDeleter {
           stuck.push(m);
         }
       }
-      if (stuck.length) writeManifest(path.join(this.d.pendingDir, id), [], stuck);
+      const back = { jobId: job.id, clips: job.clips.filter((x) => want.has(x.id)) };
+      if (stuck.length || keepIntent) writeManifest(path.join(this.d.pendingDir, id), [], stuck.length ? stuck : moved, keepIntent ? back : undefined);
       else clearUndoneBatch(path.join(this.d.pendingDir, id));
     };
     // Antes de mover nada: si la app se cierra a mitad, el arranque DEVUELVE estos archivos (no los manda a la Papelera).
@@ -345,13 +347,14 @@ export class BulkDeleter {
     // Historial guardado: ahora sí es un borrado confirmado (sin «restore»). Si no se puede escribir, se deshace
     // todo: un manifiesto de intención con el historial ya reducido dejaría archivos huérfanos al arrancar.
     if (!writeManifest(path.join(this.d.pendingDir, id), toTrash)) {
+      let saved = true;
       try {
         this.d.putJob(cur);
         this.d.flushJobs?.();
       } catch {
-        /* ignorar */
+        saved = false;
       }
-      rollback();
+      rollback(!saved);
       throw new UserFacingError('No se pudo completar el borrado (¿disco lleno?). Los clips siguen en su sitio.');
     }
     batch.timer = (this.d.setTimer ?? ((fn, ms) => setTimeout(fn, ms)))(() => void this.finalize(id), UNDO_MS);
