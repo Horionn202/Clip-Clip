@@ -74,6 +74,8 @@ interface Runtime {
   absClips: AbsClip[];
   /** Muestra anterior del tamaño de la carpeta, para estimar cuánto falta hasta el límite. */
   lastBytes?: { at: number; bytes: number };
+  /** Bloque que se está preparando (concat + encolado): sus archivos no se pueden limpiar todavía. */
+  preparing?: number;
 }
 
 const TERMINAL = ['completed', 'failed', 'cancelled'];
@@ -578,6 +580,16 @@ export class LiveManager {
   }
 
   private async startBlock(id: string, index: number, files: string[], retry?: LiveBlock): Promise<void> {
+    const rt = this.runtime(id);
+    rt.preparing = index;
+    try {
+      await this.prepareBlock(id, index, files, retry);
+    } finally {
+      if (rt.preparing === index) rt.preparing = undefined;
+    }
+  }
+
+  private async prepareBlock(id: string, index: number, files: string[], retry?: LiveBlock): Promise<void> {
     const m = this.monitors.get(id)!;
     const dir = this.dirOf(id);
     const ff = this.d.ffmpeg();
@@ -736,6 +748,9 @@ export class LiveManager {
         })
         .map((b) => b.index),
     );
+    // El bloque que se está preparando aún no está registrado: también se protege.
+    const prep = this.rt.get(id)?.preparing;
+    if (prep !== undefined) busy.add(prep);
     const drop = planSegmentCleanup(files, m.blocks, {
       retention: retention ?? m.settings.retention ?? 'none',
       blockSec: m.settings.blockSec,

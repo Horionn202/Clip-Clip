@@ -104,7 +104,7 @@ export function FreeSpaceDialog({ open, onClose, onSelectJobs }: { open: boolean
     try {
       let freed = 0;
       let errors = 0;
-      if (a.id === 'live') for (const m of ov!.live) freed += await api().liveFreeTemps(m.id);
+      if (a.id === 'live') for (const m of liveDone) freed += await api().liveFreeTemps(m.id); // sólo los del resumen
       else if (a.id === 'cache') freed = await api().clearCache();
       else {
         const opts: CleanupOptions = a.id === 'sources' ? { ...NONE, source: true, sourceOnlyExported: true } : a.id === 'regen' ? { ...NONE, audio: true, frames: true, temp: true } : { ...NONE, internalClips: true };
@@ -112,7 +112,7 @@ export function FreeSpaceDialog({ open, onClose, onSelectJobs }: { open: boolean
         freed = res.freedBytes;
         errors = res.errors.length;
       }
-      const kept = a.id === 'live' ? ov!.live.reduce((n, m) => n + m.clips, 0) : ov!.clips;
+      const kept = a.id === 'live' ? liveDone.reduce((n, m) => n + m.clips, 0) : ov!.clips;
       setDone(`Se liberaron ${humanSize(freed)}. Tus ${kept} clips se conservaron.${errors ? ` ${errors} archivo(s) no se pudieron borrar.` : ''}`);
       setConfirm(null);
       refresh();

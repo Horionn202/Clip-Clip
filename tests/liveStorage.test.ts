@@ -230,6 +230,40 @@ describe('LiveManager: limpieza en disco', () => {
     lm.shutdown();
   });
 
+  it('revisión Codex: «Liberar temporales» durante la preparación de un bloque no borra sus archivos', async () => {
+    const { id, dir } = seed('en-directo', 'none', done(2), 4);
+    let during: string[] = [];
+    let lm!: LiveManager;
+    lm = new LiveManager(
+      deps({
+        ffmpeg: () => 'ffmpeg',
+        ffprobe: () => 'ffprobe',
+        run: async (cmd, args, opts) => {
+          if (cmd === 'ffprobe') return { code: 0, stdout: '60\n', stderr: '' };
+          if (cmd === 'ffmpeg' && args.includes('concat')) {
+            fs.writeFileSync(path.join(opts.cwd!, args[args.length - 1]), 'bloque a medio escribir');
+            lm.freeTemps(id); // el usuario pulsa «Liberar temporales ahora» mientras FFmpeg trabaja
+            during = fs.readdirSync(dir);
+            return { code: 0, stdout: '', stderr: '' };
+          }
+          return { code: 0, stdout: '', stderr: '' };
+        },
+        enqueueBlock: async (m, file, block) => {
+          expect(fs.existsSync(file)).toBe(true); // el bloque sigue ahí al encolarlo
+          const j = { id: `job-prep${block}`, status: 'queued', clips: [] } as unknown as Job;
+          jobs.set(j.id, j);
+          return j;
+        },
+      }),
+    );
+    (lm as unknown as { monitors: Map<string, { status: string }> }).monitors.get(id)!.status = 'en-directo';
+    await (lm as unknown as { startBlock: (id: string, i: number, f: string[]) => Promise<void> }).startBlock(id, 2, fs.readdirSync(dir));
+    expect(during).toContain('block_00002.mp4');
+    expect(during).toContain('seg_00002.ts');
+    expect(lm.list().monitors[0].blocks.find((b) => b.index === 2)?.status).toBe('procesando');
+    lm.shutdown();
+  });
+
   it('nunca borra fuera de la carpeta del monitor', () => {
     const { id } = seed('detenido', 'none', done(2), 2);
     const outside = path.join(root, 'live', 'seg_00000.ts');
