@@ -389,7 +389,10 @@ export function classifyMissing(oldDir: string, newDir: string): { missing: { re
     }
   }
   // Historial: un trabajo antiguo que no está en el nuevo sólo falta si nunca se migró (si no, se eliminó a propósito).
-  const oldJobs = readJson<{ id: string }[]>(path.join(oldDir, 'data', 'jobs.json')) ?? [];
+  const oldJobsFile = path.join(oldDir, 'data', 'jobs.json');
+  const parsedOld = readJson<{ id: string }[]>(oldJobsFile);
+  if (fs.existsSync(oldJobsFile) && !Array.isArray(parsedOld)) readErrors.push('data/jobs.json antiguo: no se pudo leer el historial de la versión anterior (no se libera nada hasta que se pueda comprobar)');
+  const oldJobs = Array.isArray(parsedOld) ? parsedOld : [];
   for (const j of oldJobs) {
     if (!j || newJobs.has(j.id)) continue;
     if (migratedBefore && wasMigrated(j.id)) intentional++;
@@ -479,7 +482,8 @@ export function repairLegacy(lp: LegacyPaths, prot: Protected, io?: MigrationFs,
       }
     },
   };
-  const rep = only.size ? migrateLegacyData(lp.data, prot.userData, countingIo, { repair: true, only }) : null;
+  const wanted = new Set(before.missing.filter((m) => m.rel.startsWith('historial:') || m.rel.startsWith('publicacion:')).map((m) => m.rel.slice(m.rel.indexOf(':') + 1)));
+  const rep = only.size ? migrateLegacyData(lp.data, prot.userData, countingIo, { repair: true, only, keepEntry: (id) => wanted.has(id) }) : null;
   const check = checkLegacy(lp, prot, size);
   const nowIds = new Set((readJson<{ id: string }[]>(path.join(prot.userData, 'data', 'jobs.json')) ?? []).map((j) => j.id));
   const prevIds = Array.isArray(readMarker(prot.userData)?.migratedJobIds) ? (readMarker(prot.userData)!.migratedJobIds as string[]) : [];

@@ -71,6 +71,8 @@ export interface MigrateOptions {
   repair?: boolean;
   /** Sólo estas rutas relativas (p. ej. los archivos que faltan). Nunca se sobrescribe nada que ya exista. */
   only?: ReadonlySet<string>;
+  /** Al fusionar historial y publicación: sólo estas entradas antiguas (la reparación nunca resucita lo borrado a propósito). */
+  keepEntry?: (id: string) => boolean;
 }
 
 export function migrateLegacyData(oldDir: string, newDir: string, io: MigrationFs = realFs, opts: MigrateOptions = {}): MigrationReport {
@@ -93,7 +95,8 @@ export function migrateLegacyData(oldDir: string, newDir: string, io: MigrationF
           // Historial en ambos sitios: se fusiona (sin perder trabajos de ninguno).
           const a = JSON.parse(fs.readFileSync(dst, 'utf8')) as JobLike[];
           const b = JSON.parse(fs.readFileSync(src, 'utf8')) as JobLike[];
-          const { jobs, added } = mergeJobs(Array.isArray(a) ? a : [], Array.isArray(b) ? b : []);
+          const legacy = (Array.isArray(b) ? b : []).filter((j) => !opts.keepEntry || (j && opts.keepEntry(j.id)));
+          const { jobs, added } = mergeJobs(Array.isArray(a) ? a : [], legacy);
           if (added > 0) {
             const tmp = `${dst}.migr.tmp`;
             fs.writeFileSync(tmp, JSON.stringify(jobs, null, 2), 'utf8');
@@ -106,16 +109,25 @@ export function migrateLegacyData(oldDir: string, newDir: string, io: MigrationF
           // Metadatos de publicación en ambos sitios: se fusionan por trabajo (gana el directorio nuevo).
           const a = JSON.parse(fs.readFileSync(dst, 'utf8')) as Record<string, unknown>;
           const b = JSON.parse(fs.readFileSync(src, 'utf8')) as Record<string, unknown>;
-          const extra = Object.keys(b ?? {}).filter((k) => !(k in (a ?? {})));
+          const extra = Object.keys(b ?? {}).filter((k) => !(k in (a ?? {})) && (!opts.keepEntry || opts.keepEntry(k)));
           if (extra.length) {
             const tmp = `${dst}.migr.tmp`;
-            fs.writeFileSync(tmp, JSON.stringify({ ...b, ...a }, null, 2), 'utf8');
+            fs.writeFileSync(tmp, JSON.stringify({ ...Object.fromEntries(extra.map((k) => [k, b[k]])), ...a }, null, 2), 'utf8');
             fs.renameSync(tmp, dst);
           }
           continue;
         }
         if (fs.existsSync(dst)) {
           report.skippedExisting++;
+          continue;
+        }
+        // Reparación sin historial o publicación en Clip Clip: se crean sólo con las entradas que faltan.
+        if (opts.keepEntry && (relPath === path.join('data', 'jobs.json') || relPath === path.join('data', 'publish.json'))) {
+          const b = JSON.parse(fs.readFileSync(src, 'utf8')) as unknown;
+          const out = Array.isArray(b) ? b.filter((j: JobLike) => j && opts.keepEntry!(j.id)) : Object.fromEntries(Object.entries((b ?? {}) as Record<string, unknown>).filter(([k]) => opts.keepEntry!(k)));
+          fs.writeFileSync(dst, JSON.stringify(out, null, 2), 'utf8');
+          if (Array.isArray(out)) report.mergedJobs += out.length;
+          else report.copied++;
           continue;
         }
         // Vídeos y audio de los trabajos: enlace duro (mismo contenido sin ocupar más disco). La app nunca los

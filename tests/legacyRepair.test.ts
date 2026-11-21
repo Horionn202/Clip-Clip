@@ -240,6 +240,29 @@ describe('migración reparable', () => {
     expect(rels).not.toContain('jobs/job-000002/source.mp4');
   });
 
+  it('revisión Codex: historial antiguo ilegible → error de lectura y no se puede liberar', async () => {
+    migrateAll();
+    marker();
+    old('data/jobs.json', '{roto');
+    const c = checkLegacy(lp, prot);
+    expect(c.state).toBe('partial');
+    expect(c.readErrors.some((e) => /versión anterior/.test(e))).toBe(true);
+    await expect(freeLegacy('data', lp, prot, { trash, log: () => undefined })).rejects.toThrow();
+  });
+
+  it('revisión Codex: la reparación sólo añade los trabajos que faltan (no resucita uno borrado a propósito)', () => {
+    migrateAll();
+    // job-000002 se migró y se borró en Clip Clip; job-000003 se creó en la versión anterior después de migrar.
+    neu(MARKER, JSON.stringify({ status: 'migrated', migratedJobIds: ['job-000001', 'job-000002'] }));
+    old('data/jobs.json', JSON.stringify([{ id: 'job-000001' }, { id: 'job-000002' }, { id: 'job-000003' }]));
+    old('data/publish.json', JSON.stringify({ 'job-000002': { x: 1 }, 'job-000003': { x: 2 } }));
+    const r = repairLegacy(lp, prot); // sin publish.json en Clip Clip: se crea sólo con lo que falta
+    const ids = JSON.parse(fs.readFileSync(path.join(prot.userData, 'data/jobs.json'), 'utf8')).map((j: { id: string }) => j.id);
+    expect(ids).toEqual(['job-000001', 'job-000003']);
+    expect(Object.keys(JSON.parse(fs.readFileSync(path.join(prot.userData, 'data/publish.json'), 'utf8')))).toEqual(['job-000003']);
+    expect(r.check.state).toBe('verified');
+  });
+
   it('error de lectura: estado parcial, se explica qué carpeta y no se libera nada', () => {
     migrateAll();
     marker();
