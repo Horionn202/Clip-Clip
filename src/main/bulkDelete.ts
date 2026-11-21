@@ -453,7 +453,9 @@ export class BulkDeleter {
     // Si alguno falla (p. ej. EPERM pasajero en Windows), sigue apartado y se puede volver a pulsar «Deshacer».
     // Antes de mover nada queda en disco la intención de recuperar (carpetas y registros): un cierre a mitad
     // termina la recuperación al arrancar en vez de mandar el resto a la Papelera.
-    if (!writeManifest(src, [], [], undefined, b.jobs)) {
+    // Sólo la primera vez y con TODOS los trabajos: un reintento no puede quitar la protección de los ya devueltos
+    // (sus registros quizá aún no estén en disco).
+    if (!b.restoring && !writeManifest(src, [], [], undefined, b.jobs)) {
       return { restored: 0, pending: b.jobs.length, undoUntil: rearm(), message: 'No se pudo preparar la recuperación (¿disco lleno?). Vuelve a pulsar «Deshacer».' };
     }
     b.restoring = true;
