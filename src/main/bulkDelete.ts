@@ -377,7 +377,7 @@ export class BulkDeleter {
         }
         const back = b.clips.before.clips.filter((c) => b.clips!.ids.includes(c.id));
         if (!writeManifest(src, [], b.clips.moved, { jobId: b.clips.before.id, clips: back })) {
-          return { restored: 0, pending: b.clips.moved.length, undoUntil: rearm(), message: 'No se pudo preparar la recuperación (¿disco lleno?). Vuelve a pulsar «Deshacer».' };
+          return { restored: 0, pending: b.clips.ids.length, undoUntil: rearm(), message: 'No se pudo preparar la recuperación (¿disco lleno?). Vuelve a pulsar «Deshacer».' };
         }
         b.clips.undoStarted = true;
       }

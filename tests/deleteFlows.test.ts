@@ -492,6 +492,27 @@ describe('borrado de clips desde Resultados', () => {
     expect(trashed).toEqual([]);
   });
 
+  it('revisión Codex: un clip sin archivos cuenta como pendiente si falla la preparación de «Deshacer»', async () => {
+    seedJob('job-000001');
+    // Clip archivado: sin archivos internos.
+    for (const f of ['clips/01_c.mp4', 'clips/01.ass', 'frames/01.jpg']) fs.rmSync(path.join(jobsDir, 'job-000001', f), { force: true });
+    const d = deleter();
+    const r = await d.deleteClips('job-000001', ['job-000001-c1'], { deleteExports: false });
+    const origW = fs.writeFileSync;
+    (fs as unknown as { writeFileSync: typeof fs.writeFileSync }).writeFileSync = ((f: fs.PathOrFileDescriptor, ...x: unknown[]) => {
+      if (String(f).endsWith('manifest.json')) throw Object.assign(new Error('ENOSPC'), { code: 'ENOSPC' });
+      return (origW as (...a: unknown[]) => void)(f, ...x);
+    }) as typeof fs.writeFileSync;
+    let u;
+    try {
+      u = await d.undo(r.batchId);
+    } finally {
+      (fs as unknown as { writeFileSync: typeof fs.writeFileSync }).writeFileSync = origW;
+    }
+    expect(u.pending).toBe(1);
+    expect(u.undoUntil).toBeTruthy();
+  });
+
   it('todos los clips del trabajo: se elimina el trabajo completo (sin registros vacíos)', async () => {
     seedJob('job-000001');
     const d = deleter();
