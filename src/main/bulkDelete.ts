@@ -145,7 +145,7 @@ interface Batch {
   exports: string[];
   timer: unknown;
   /** Borrado de clips sueltos: estado anterior del trabajo y archivos apartados (para «Deshacer»). */
-  clips?: { before: Job; ids: string[]; moved: { from: string; to: string }[] };
+  clips?: { before: Job; ids: string[]; moved: { from: string; to: string }[]; undoStarted?: boolean };
   /** «Deshacer» en curso: la finalización espera (aunque un temporizador antiguo llegue a dispararse). */
   undoing?: boolean;
 }
@@ -344,7 +344,15 @@ export class BulkDeleter {
     };
     const src = path.join(this.d.pendingDir, batchId);
     if (b.clips) {
-      // Clips sueltos: cada archivo vuelve a su sitio y el trabajo recupera su estado anterior.
+      // Clips sueltos: antes de mover nada queda en disco la intención de recuperarlos (archivos e historial),
+      // para que un cierre a mitad termine la recuperación al arrancar en vez de mandarlos a la Papelera.
+      if (!b.clips.undoStarted) {
+        const back = b.clips.before.clips.filter((c) => b.clips!.ids.includes(c.id));
+        if (!writeManifest(src, [], b.clips.moved, { jobId: b.clips.before.id, clips: back })) {
+          return { restored: 0, pending: b.clips.moved.length, undoUntil: rearm(), message: 'No se pudo preparar la recuperación (¿disco lleno?). Vuelve a pulsar «Deshacer».' };
+        }
+        b.clips.undoStarted = true;
+      }
       const left: { from: string; to: string }[] = [];
       for (const m of b.clips.moved) {
         try {
@@ -416,6 +424,10 @@ export class BulkDeleter {
   async finalize(batchId: string): Promise<void> {
     const b = this.batches.get(batchId);
     if (!b || b.undoing) return;
+    if (b.clips?.undoStarted) {
+      await this.undo(batchId).catch(() => undefined);
+      return;
+    }
     this.batches.delete(batchId);
     for (const j of b.jobs) this.d.forgetPublish(j.id);
     await this.finishBatch(batchId, b.exports);
@@ -481,7 +493,19 @@ export class BulkDeleter {
             left++;
           }
         }
-        if (!left) clearUndoneBatch(p);
+        if (!left) {
+          const rc = readRestoreClips(p);
+          const job = rc && this.d.getJobs().find((j) => j.id === rc.jobId);
+          if (rc && job) {
+            try {
+              this.d.putJob(mergeClips(job, rc.clips));
+              this.d.flushJobs?.();
+            } catch {
+              continue; // se reintenta en el próximo inicio
+            }
+          }
+          clearUndoneBatch(p);
+        }
         continue;
       }
       await this.finishBatch(e, readManifest(p));
@@ -491,10 +515,10 @@ export class BulkDeleter {
 
 const MANIFEST = 'manifest.json';
 /** Devuelve si el manifiesto quedó escrito. */
-function writeManifest(dir: string, exportList: string[], restore: { from: string; to: string }[] = []): boolean {
+function writeManifest(dir: string, exportList: string[], restore: { from: string; to: string }[] = [], restoreClips?: { jobId: string; clips: Job['clips'] }): boolean {
   try {
     fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(path.join(dir, MANIFEST), JSON.stringify({ exports: exportList, restore }), 'utf8');
+    fs.writeFileSync(path.join(dir, MANIFEST), JSON.stringify({ exports: exportList, restore, restoreClips }), 'utf8');
     return true;
   } catch {
     return false;
@@ -517,6 +541,24 @@ function readRestore(dir: string): { from: string; to: string }[] {
   } catch {
     return [];
   }
+}
+
+/** Clips que un «Deshacer» interrumpido debe devolver al historial. */
+function readRestoreClips(dir: string): { jobId: string; clips: Job['clips'] } | null {
+  try {
+    const m = JSON.parse(fs.readFileSync(path.join(dir, MANIFEST), 'utf8')) as { restoreClips?: { jobId?: unknown; clips?: unknown } };
+    const r = m.restoreClips;
+    return r && typeof r.jobId === 'string' && Array.isArray(r.clips) ? { jobId: r.jobId, clips: r.clips as Job['clips'] } : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Devuelve al trabajo los clips que falten, en su posición (por índice). */
+function mergeClips(job: Job, back: Job['clips']): Job {
+  const have = new Set(job.clips.map((c) => c.id));
+  const clips = [...job.clips, ...back.filter((c) => !have.has(c.id))].sort((a, b) => a.index - b.index);
+  return { ...job, clips };
 }
 
 /** Archivos de un clip dentro de su trabajo (MP4 interno, subtítulos y miniatura), validados dentro de la carpeta. */

@@ -641,6 +641,9 @@ export function JobsPage(props: {
                 const r = await api().bulkDelete(left, { deleteExports: locked.deleteExports }, locked.typed).finally(() => setTimeout(restore, 0));
                 props.onDeleted(r.deletedIds);
                 if (r.deletedIds.length) undoToast(`${r.jobs} trabajo${r.jobs === 1 ? '' : 's'} más enviados a la Papelera · ${humanSize(r.freedBytes)} recuperables. El espacio se liberará definitivamente cuando vacíes la Papelera de Windows.`, r.batchId, r.undoUntil);
+                // Fallos que no son bloqueos (p. ej. EIO): se muestran; esos trabajos no se reintentan.
+                const other = r.errors.length - r.locked.length;
+                if (other > 0) props.toast({ kind: 'error', text: `No se pudo${other === 1 ? '' : 'n'} eliminar ${other} trabajo${other === 1 ? '' : 's'}: ${r.errors.slice(0, 2).join(' · ')}` });
                 if (r.locked.length) {
                   left = r.locked;
                   props.toast({ kind: 'error', text: `Siguen bloqueados ${r.locked.length}. Cierra la vista previa o el reproductor que los usa y vuelve a intentarlo.` });

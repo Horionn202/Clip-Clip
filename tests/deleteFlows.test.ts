@@ -403,6 +403,28 @@ describe('borrado de clips desde Resultados', () => {
     expect(store.get('job-000001')!.clips).toHaveLength(2);
   });
 
+  it('revisión Codex: un «Deshacer» de clips a medias se termina al arrancar (archivos e historial)', async () => {
+    seedJob('job-000001');
+    const d = deleter({ retryWaits: [] });
+    const r = await d.deleteClips('job-000001', ['job-000001-c1'], { deleteExports: false });
+    const orig = fs.renameSync;
+    (fs as unknown as { renameSync: typeof fs.renameSync }).renameSync = ((x: fs.PathLike, y: fs.PathLike) => {
+      if (String(x).endsWith('01.ass')) throw Object.assign(new Error('EBUSY'), { code: 'EBUSY' });
+      return orig(x, y);
+    }) as typeof fs.renameSync;
+    try {
+      expect((await d.undo(r.batchId)).pending).toBeGreaterThan(0);
+    } finally {
+      (fs as unknown as { renameSync: typeof fs.renameSync }).renameSync = orig;
+    }
+    // La app se cierra aquí; al arrancar se termina la recuperación.
+    await deleter().sweepLeftovers();
+    expect(fs.existsSync(path.join(jobsDir, 'job-000001', 'clips', '01_c.mp4'))).toBe(true);
+    expect(fs.existsSync(path.join(jobsDir, 'job-000001', 'clips', '01.ass'))).toBe(true);
+    expect(store.get('job-000001')!.clips.map((c) => c.id)).toEqual(['job-000001-c1', 'job-000001-c2']);
+    expect(trashed).toEqual([]);
+  });
+
   it('todos los clips del trabajo: se elimina el trabajo completo (sin registros vacíos)', async () => {
     seedJob('job-000001');
     const d = deleter();
