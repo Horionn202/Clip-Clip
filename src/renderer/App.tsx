@@ -93,7 +93,7 @@ export function App() {
       )}
       {page === 'home' && <HomePage ollamaModel={settings?.ollamaModel} jobs={jobs} diag={diag} onCreated={() => setPage('jobs')} goSettings={() => setPage('settings')} goPolicy={() => setPage('policy')} />}
       {page === 'jobs' && <JobsPage jobs={jobs} onOpen={openResults} onDeleted={(ids) => setJobs((p) => p.filter((j) => !ids.includes(j.id)))} onRestored={() => void api().listJobs().then(setJobs)} toast={toasts.push} goDiagnostics={() => setPage('settings')} goHome={() => setPage('home')} />}
-      {page === 'results' && <ResultsPage jobs={jobs} selected={selected} onSelect={setSelected} />}
+      {page === 'results' && <ResultsPage jobs={jobs} selected={selected} onSelect={setSelected} toast={toasts.push} onJobsChanged={() => void api().listJobs().then(setJobs)} />}
       {page === 'settings' && settings && (
         <SettingsPage settings={settings} onChange={setSettings} diag={diag} refreshDiag={refreshDiag} jobs={jobs} />
       )}

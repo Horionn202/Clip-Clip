@@ -9,7 +9,10 @@ import { PublishBadges, PublishModal, usePublish } from './Publish';
 import { PublishedExportAction } from './PublishedExport';
 import { ConfirmModal, Modal } from '../components/Modal';
 import type { ClipPublish } from '../../shared/publish';
-import { Button, EmptyState, Menu, PageHeader, StatusPill } from '../components/ui';
+import { Button, EmptyState, Menu, PageHeader, StatusPill, type ToastData } from '../components/ui';
+import type { ClipPlan } from '../../shared/bulk';
+import { humanSize } from '../../shared/storage';
+import { releaseMedia } from '../releaseMedia';
 import { selectionState, setMany, toggle } from '../../shared/bulk';
 import { jobLabel } from './Jobs';
 
@@ -74,7 +77,7 @@ function ClipCard({ job, clip, pub, onPub, onError, onInfo, selecting, selected,
     <article className={`clip ${selected ? 'selected' : ''}`} aria-label={`Clip ${clip.index}: ${clip.title}`}>
       {selecting && (
         <label className="select-box clip-select">
-          <input type="checkbox" checked={selected} onChange={onToggle} disabled={!clip.file || clip.dirty} aria-label={`Seleccionar el clip ${clip.index}`} />
+          <input type="checkbox" checked={selected} onChange={onToggle} aria-label={`Seleccionar el clip ${clip.index}`} />
         </label>
       )}
       {videoSrc ? <video src={videoSrc} controls preload="metadata" /> : <div className="video-ph">{clip.exportDeletedAfterPublish ? 'Exportado eliminado tras publicar' : 'Sin renderizar'}</div>}
@@ -123,7 +126,126 @@ function ClipCard({ job, clip, pub, onPub, onError, onInfo, selecting, selected,
   );
 }
 
-export function ResultsPage(props: { jobs: Job[]; selected: string | null; onSelect: (id: string) => void }) {
+/** Confirmación de borrado de clips: cuántos, cuánto se recupera y qué pasa con los exportados. */
+function ClipDeleteModal(props: { jobId: string; ids: string[]; onClose: () => void; onDone: (r: { batchId: string; clips: number; bytes: number; wholeJob: boolean; undoUntil: string }) => void; onLocked: (msg: string, retry: () => Promise<boolean>) => void; onError: (msg: string) => void }) {
+  const open = props.ids.length > 0;
+  const [delExports, setDelExports] = useState(false);
+  const [plan, setPlan] = useState<ClipPlan | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  useEffect(() => {
+    if (open) setDelExports(false);
+  }, [open]);
+  useEffect(() => {
+    if (!open) return;
+    setPlan(null);
+    setErr('');
+    void api()
+      .clipsDeletePlan(props.jobId, props.ids, { deleteExports: delExports })
+      .then(setPlan)
+      .catch((e) => setErr(errMsg(e)));
+  }, [open, props.jobId, props.ids, delExports]);
+  /**
+   * `retrying`: llamada desde el aviso «Cerrar vista previa y reintentar», con el modal ya cerrado; los errores
+   * van a un aviso visible y el resultado le dice al aviso si debe cerrarse (true) o seguir con su botón (false).
+   */
+  const run = async (retrying = false): Promise<boolean> => {
+    const fail = (m: string, isLocked: boolean): false => {
+      if (retrying) props.onError(isLocked ? `Sigue bloqueado. ${m}` : m);
+      else if (isLocked) props.onLocked(m, () => run(true));
+      else setErr(m);
+      return false;
+    };
+    setBusy(true);
+    setErr('');
+    // Los reproductores de la página tienen los MP4 abiertos: se liberan antes de mover nada.
+    const restore = releaseMedia();
+    try {
+      const r = await api().clipsDelete(props.jobId, props.ids, { deleteExports: delExports });
+      // Trabajo completo que no se pudo mover (bloqueado): no es un éxito; se ofrece reintentar.
+      if (r.wholeJob && r.deletedIds.length === 0) {
+        const m = r.errors[0] ?? 'No se pudo eliminar el trabajo.';
+        // Bloqueado: en el reintento el aviso sigue con su botón; otro error lo cierra (ya se ha mostrado).
+        return fail(m, r.locked.length > 0) || (retrying && !r.locked.length);
+      }
+      props.onDone({ batchId: r.batchId, clips: r.clips, bytes: r.freedBytes, wholeJob: r.wholeJob, undoUntil: r.undoUntil });
+      return true;
+    } catch (e) {
+      const m = errMsg(e);
+      const isLocked = /vista previa/.test(m);
+      return fail(m, isLocked) || (retrying && !isLocked);
+    } finally {
+      setBusy(false);
+      // Los reproductores que siguen (fallo o clips no borrados) vuelven a tener su vídeo.
+      setTimeout(restore, 0);
+    }
+  };
+  const hasExports = !!plan && plan.exportCount + plan.keptExports > 0;
+  return (
+    <Modal
+      open={open}
+      onClose={() => !busy && props.onClose()}
+      size="sm"
+      title={plan?.wholeJob ? 'Eliminar todos los clips de este trabajo' : 'Eliminar clips seleccionados'}
+      footer={
+        <>
+          <Button variant="ghost" onClick={props.onClose} disabled={busy}>
+            Cancelar
+          </Button>
+          <Button variant={delExports ? 'danger-solid' : 'danger'} icon="trash" loading={busy} disabled={!plan} onClick={() => void run()}>
+            Enviar a la Papelera
+          </Button>
+        </>
+      }
+    >
+      {err && (
+        <div className="banner error small" role="alert">
+          {err}
+        </div>
+      )}
+      {!plan && !err && <p className="small muted">Calculando…</p>}
+      {plan && (
+        <>
+          <ul className="summary-list">
+            <li>
+              <span>Clips</span>
+              <b>{plan.clips}</b>
+            </li>
+            <li>
+              <span>Espacio recuperable</span>
+              <b>{humanSize(plan.bytes + plan.exportBytes)}</b>
+            </li>
+            <li>
+              <span>MP4 exportados</span>
+              <b>{delExports ? `${plan.exportCount} a la Papelera (${humanSize(plan.exportBytes)})` : `${plan.keptExports} se conservan`}</b>
+            </li>
+          </ul>
+          {hasExports && (
+            <fieldset className="cleanup-options">
+              <legend className="small">Archivos exportados de estos clips</legend>
+              <label className="check">
+                <input type="radio" name="clipexp" checked={!delExports} onChange={() => setDelExports(false)} />
+                <span>Conservar los archivos exportados</span>
+              </label>
+              <label className="check">
+                <input type="radio" name="clipexp" checked={delExports} onChange={() => setDelExports(true)} />
+                <span>Enviar también los archivos exportados a la Papelera</span>
+              </label>
+            </fieldset>
+          )}
+          {plan.wholeJob && (
+            <div className="banner warn small" role="status">
+              Son todos los clips del trabajo: se eliminará el <b>trabajo completo</b> (vídeo original, transcripción e historial), para no dejar un registro vacío.
+            </div>
+          )}
+          <p className="small muted">Todo va a la Papelera de reciclaje y tendrás unos segundos para deshacerlo. El espacio se libera definitivamente al vaciar la Papelera de Windows.</p>
+        </>
+      )}
+    </Modal>
+  );
+}
+
+export function ResultsPage(props: { jobs: Job[]; selected: string | null; onSelect: (id: string) => void; toast?: (t: Omit<ToastData, 'id'>) => void; onJobsChanged?: () => void }) {
   const done = props.jobs.filter((j) => j.status === 'completed');
   const job = done.find((j) => j.id === props.selected) ?? done[0];
   const [msg, setMsg] = useState<{ kind: 'error' | 'info'; text: string } | null>(null);
@@ -135,6 +257,7 @@ export function ResultsPage(props: { jobs: Job[]; selected: string | null; onSel
   const [selecting, setSelecting] = useState(false);
   const [sel, setSel] = useState<Set<string>>(new Set());
   const [bulkBusy, setBulkBusy] = useState(false);
+  const [delIds, setDelIds] = useState<string[]>([]);
   useEffect(() => setSel(new Set()), [job?.id]);
 
   if (!job)
@@ -148,7 +271,7 @@ export function ResultsPage(props: { jobs: Job[]; selected: string | null; onSel
     );
   const { ready, total } = readyCount(job.clips);
   const exportable = job.clips.filter((c) => c.file && !c.dirty).map((c) => c.id);
-  const selState = selectionState(sel, exportable);
+  const selState = selectionState(sel, job.clips.map((c) => c.id));
 
   return (
     <section className="page">
@@ -183,6 +306,7 @@ export function ResultsPage(props: { jobs: Job[]; selected: string | null; onSel
                 { label: 'Abrir carpeta de resultados', onSelect: () => void api().openJobFolder(job.id).catch((e) => setMsg({ kind: 'error', text: errMsg(e) })) },
                 { label: 'Abrir carpeta de exportación', onSelect: () => void api().openExportFolder() },
                 { label: 'Reprocesar transcripción…', onSelect: () => setRetrOpen(true) },
+                { label: 'Eliminar todos los clips de este trabajo…', danger: true, onSelect: () => setDelIds(job.clips.map((c) => c.id)) },
               ]}
             />
           </>
@@ -202,6 +326,7 @@ export function ResultsPage(props: { jobs: Job[]; selected: string | null; onSel
               let n = 0;
               let fail = '';
               for (const id of sel) {
+                if (!exportable.includes(id)) continue;
                 try {
                   await api().exportClip(job.id, id);
                   n++;
@@ -215,6 +340,9 @@ export function ResultsPage(props: { jobs: Job[]; selected: string | null; onSel
             }}
           >
             Exportar seleccionados
+          </Button>
+          <Button variant="danger" icon="trash" aria-haspopup="dialog" onClick={() => setDelIds([...sel])}>
+            Eliminar seleccionados…
           </Button>
           <Button variant="ghost" onClick={() => setSel(new Set())}>
             Deseleccionar
@@ -230,11 +358,11 @@ export function ResultsPage(props: { jobs: Job[]; selected: string | null; onSel
               ref={(el) => {
                 if (el) el.indeterminate = selState === 'some';
               }}
-              onChange={(e) => setSel((x) => setMany(x, exportable, e.target.checked))}
+              onChange={(e) => setSel((x) => setMany(x, job.clips.map((c) => c.id), e.target.checked))}
             />
-            <span>Seleccionar todos los clips listos ({exportable.length})</span>
+            <span>Seleccionar todos los clips ({job.clips.length})</span>
           </label>
-          <span className="small muted">Para borrar trabajos completos usa «Seleccionar» en Trabajos.</span>
+          <span className="small muted">Si eliges todos los clips, se elimina el trabajo completo.</span>
         </div>
       )}
       <div style={{ display: 'contents' }}>
@@ -300,6 +428,41 @@ export function ResultsPage(props: { jobs: Job[]; selected: string | null; onSel
           <ClipCard key={c.id} job={job} clip={c} selecting={selecting} selected={sel.has(c.id)} onToggle={() => setSel((x) => toggle(x, c.id))} pub={pub[c.id]} onPub={(d) => setPub(job.id, d)} onError={(t) => setMsg({ kind: 'error', text: t })} onInfo={(t) => setMsg({ kind: 'info', text: t })} />
         ))}
       </div>
+      <ClipDeleteModal
+        jobId={job.id}
+        ids={delIds}
+        onClose={() => setDelIds([])}
+        onLocked={(m, retry) => {
+          setDelIds([]);
+          // El aviso espera al reintento: sólo se cierra si terminó (con éxito o con un error ya mostrado).
+          props.toast?.({ kind: 'error', text: m, ttl: 0, action: { label: 'Cerrar vista previa y reintentar', run: retry } });
+        }}
+        onError={(m) => props.toast?.({ kind: 'error', text: m })}
+        onDone={(r) => {
+          setDelIds([]);
+          setSel(new Set());
+          if (r.wholeJob) props.onJobsChanged?.();
+          const undoToast = (text: string, until: string): void =>
+            props.toast?.({
+              text,
+              expiresAt: Date.parse(until),
+              action: {
+                label: 'Deshacer',
+                run: () =>
+                  api()
+                    .bulkUndo(r.batchId)
+                    .then(({ pending, undoUntil: again, message }) => {
+                      props.onJobsChanged?.();
+                      // Con pendientes, el plazo se renovó: un aviso nuevo con su botón sustituye a éste.
+                      if (pending && again) undoToast(message ?? 'Vuelve a pulsar «Deshacer».', again);
+                      return true;
+                    })
+                    .catch((e) => (props.toast?.({ kind: 'error', text: errMsg(e) }), false)),
+              },
+            });
+          undoToast(`${r.clips} clip${r.clips === 1 ? '' : 's'} enviado${r.clips === 1 ? '' : 's'} a la Papelera · ${humanSize(r.bytes)} recuperables${r.wholeJob ? ' (trabajo completo)' : ''}. El espacio se liberará definitivamente cuando vacíes la Papelera de Windows.`, r.undoUntil);
+        }}
+      />
     </section>
   );
 }

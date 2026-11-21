@@ -21,3 +21,10 @@ La interfaz se había quedado apretada (puntos pequeños en el pipeline, control
 ## Consecuencias
 - En Resultados la selección es de clips (exportar varios a la vez); borrar trabajos completos se hace desde Trabajos.
 - «Deshacer» sólo existe durante 15 s; después, lo borrado está en la Papelera de reciclaje.
+
+## Revisión (2026-11-21): una sola ruta de borrado
+- La ruta antigua `jobs:delete` (diálogo nativo + `fs.rmSync` de la carpeta del trabajo) se redirigió al mismo `BulkDeleter`: apartar → quitar del historial → «Deshacer» 15 s → Papelera. Ya no hay borrado permanente de datos del usuario.
+- Los traslados reintentan con espera (100 ms → 2 s) ante `EPERM`, `EBUSY`, `ENOTEMPTY` y `EACCES`. Si siguen bloqueados, el trabajo se conserva intacto (nunca se quita del historial sin haber movido su carpeta) y el aviso ofrece «Cerrar vista previa y reintentar».
+- Antes de borrar, la interfaz pausa y descarga los reproductores de la página, que eran la causa habitual del bloqueo en Windows.
+- Borrado de clips desde Resultados (`clips:delete`): se apartan su MP4 interno, sus subtítulos y su miniatura, y el trabajo se actualiza. Se puede deshacer. Si se eligen todos los clips, se elimina el trabajo completo, para no dejar registros vacíos. Los exportados se conservan o van a la Papelera, según la elección del modal.
+- Los duplicados del solape de los directos también van a la Papelera.

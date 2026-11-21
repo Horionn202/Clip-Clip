@@ -568,12 +568,14 @@ export function registerIpc(ctx: IpcContext): void {
   // Al cerrar la app se aborta la retranscripción (sin procesos de Whisper huérfanos).
   ctx.onShutdown?.(() => retranscribeCtrl?.abort());
   h('jobs:retranscribe', async (id: unknown, opts: unknown) => {
+    await bulk.settle(idSchema.parse(id));
     const job = requireJob(ctx, id);
     const precise = z.object({ precise: z.boolean().optional() }).strict().optional().parse(opts ?? undefined)?.precise === true;
     if (job.status !== 'completed') throw new UserFacingError('Sólo se puede volver a transcribir un trabajo completado.');
     // Una sola inferencia pesada a la vez (GPUs de 6 GB): ni con trabajos en curso ni con otra retranscripción.
     if (retranscribing || ctx.queue.activeCount > 0) throw new UserFacingError('Hay otra transcripción o trabajo en curso; espera a que termine.');
     if (rerendering.has(job.id)) throw new UserFacingError('Se está renderizando un clip de este trabajo; espera a que termine.');
+    if (bulk.isDeleting(job.id)) throw new UserFacingError('Se está eliminando este trabajo o alguno de sus clips; espera a que termine.');
     if (cleaning) throw new UserFacingError('Hay una limpieza de almacenamiento en curso; espera a que termine.');
     if (setupCtrl) throw new UserFacingError('Se está instalando o verificando la aceleración GPU. Espera a que termine.');
     if (generating) throw new UserFacingError('Se están generando textos de publicación con la IA; espera a que termine.');
@@ -627,7 +629,7 @@ export function registerIpc(ctx: IpcContext): void {
       const job = ctx.jobs.get(jobId);
       if (!job) return;
       const dir = path.join(jobDir(ctx.jobsDir, jobId), 'clips');
-      for (const c of job.clips.filter((x) => ids.includes(x.id))) if (c.file && !c.exportedPath) fs.rmSync(path.join(dir, c.file), { force: true });
+      for (const c of job.clips.filter((x) => ids.includes(x.id))) if (c.file && !c.exportedPath) void shell.trashItem(path.join(dir, c.file)).catch((e) => log.error('directo: duplicado no enviado a la Papelera', e));
       const next = { ...job, clips: job.clips.filter((c) => !ids.includes(c.id) || !!c.exportedPath) };
       ctx.jobs.put(next);
       emitJob(next);
@@ -771,6 +773,7 @@ export function registerIpc(ctx: IpcContext): void {
     pendingDir: path.join(ctx.userDataDir, 'pending-delete'),
     getJobs: () => ctx.jobs.list(),
     putJob: (j) => (ctx.jobs.put(j), emitJob(j)),
+    flushJobs: () => ctx.jobs.flush(),
     removeJob: (id) => ctx.jobs.delete(id),
     forgetPublish: (id) => ctx.publish.deleteJob(id),
     trash: (p) => shell.trashItem(p),
@@ -782,35 +785,32 @@ export function registerIpc(ctx: IpcContext): void {
   const bulkIds = z.array(idSchema).min(1).max(5000);
   const bulkOpts = z.object({ deleteExports: z.boolean() }).strict();
   h('jobs:bulkPlan', (ids: unknown, opts: unknown) => bulk.plan(bulkIds.parse(ids), bulkOpts.parse(opts)));
-  h('jobs:bulkDelete', (ids: unknown, opts: unknown, typed: unknown) => {
+  h('jobs:bulkDelete', async (ids: unknown, opts: unknown, typed: unknown) => {
     if (cleaning) throw new UserFacingError('Hay una limpieza de almacenamiento en curso; espera a que termine.');
-    return bulk.delete(bulkIds.parse(ids), bulkOpts.parse(opts), typed == null ? undefined : z.string().max(20).parse(typed));
+    return await bulk.delete(bulkIds.parse(ids), bulkOpts.parse(opts), typed == null ? undefined : z.string().max(20).parse(typed));
   });
   h('jobs:bulkUndo', (batchId: unknown) => bulk.undo(z.string().uuid().parse(batchId)));
+  // Ruta antigua de borrado individual: ahora usa el MISMO borrado con «Deshacer» y Papelera (nunca fs.rmSync).
   h('jobs:delete', async (id: unknown) => {
-    const job = requireJob(ctx, id);
-    if (!['completed', 'cancelled', 'failed'].includes(job.status)) throw new UserFacingError('Cancela el trabajo antes de borrarlo.');
-    const win = BrowserWindow.getFocusedWindow();
-    const opts = {
-      type: 'warning' as const,
-      buttons: ['Cancelar', 'Borrar'],
-      defaultId: 0,
-      cancelId: 0,
-      title: 'Borrar trabajo',
-      message: '¿Borrar este trabajo del historial?',
-      detail: 'Se eliminarán el vídeo descargado, la transcripción y los clips de la carpeta interna de la app. Los clips ya exportados no se tocarán.',
-    };
-    const r = win ? await dialog.showMessageBox(win, opts) : await dialog.showMessageBox(opts);
-    if (r.response !== 1) return false;
-    const dir = jobDir(ctx.jobsDir, job.id);
-    if (isInside(ctx.jobsDir, dir) && dir !== path.resolve(ctx.jobsDir)) fs.rmSync(dir, { recursive: true, force: true });
-    ctx.jobs.delete(job.id);
-    ctx.publish.deleteJob(job.id);
+    const r = await bulk.delete([idSchema.parse(id)], { deleteExports: false });
+    if (!r.deletedIds.length) throw new UserFacingError(r.errors[0] ?? 'No se pudo eliminar el trabajo.');
     return true;
   });
-  h('clips:rename', (...args: unknown[]) => {
+  // ---- Borrado de clips sueltos (Resultados) ----
+  const clipIds = z.array(idSchema).min(1).max(1000);
+  h('clips:deletePlan', (jobId: unknown, ids: unknown, opts: unknown) => bulk.planClips(idSchema.parse(jobId), clipIds.parse(ids), bulkOpts.parse(opts)));
+  h('clips:delete', async (jobId: unknown, ids: unknown, opts: unknown) => {
+    const id = idSchema.parse(jobId);
+    if (rerendering.has(id)) throw new UserFacingError('Se está renderizando un clip de este trabajo; espera a que termine.');
+    // Sin rechazo previo por «borrado en curso»: deleteClips hace cola, termina antes las recuperaciones pendientes
+    // de este trabajo y sólo rechaza si siguen sin poder completarse.
+    return bulk.deleteClips(id, clipIds.parse(ids), bulkOpts.parse(opts));
+  });
+  h('clips:rename', async (...args: unknown[]) => {
     const [jobId, clipId, title] = renameClipSchema.parse(args);
+    await bulk.settle(jobId);
     const job = requireJob(ctx, jobId);
+    if (bulk.isDeleting(job.id)) throw new UserFacingError('Se está eliminando este trabajo o alguno de sus clips; espera a que termine.');
     const clip = job.clips.find((c) => c.id === clipId);
     if (!clip) throw new UserFacingError('El clip no existe.');
     clip.title = title.replace(/[\u0000-\u001f]/g, ' ');
@@ -818,13 +818,15 @@ export function registerIpc(ctx: IpcContext): void {
     emitJob(job);
     return job;
   });
-  h('clips:update', (jobId: unknown, clipId: unknown, patch: unknown) => {
+  h('clips:update', async (jobId: unknown, clipId: unknown, patch: unknown) => {
+    await bulk.settle(idSchema.parse(jobId));
     const job = requireJob(ctx, jobId);
     const id = idSchema.parse(clipId);
     const p = clipPatchSchema.parse(patch) as ClipPatch;
     if (!TERMINAL.includes(job.status)) throw new UserFacingError('Espera a que el trabajo termine para editar sus clips.');
     // Mientras se re-renderiza un clip del trabajo no se aceptan cambios (evita perder el resultado del render).
     if (rerendering.has(job.id)) throw new UserFacingError('Se está volviendo a renderizar un clip de este trabajo; espera a que termine.');
+    if (bulk.isDeleting(job.id)) throw new UserFacingError('Se está eliminando este trabajo o alguno de sus clips; espera a que termine.');
     const next = applyClipPatch(id, p, { clips: job.clips, preset: job.preset, sourceDuration: job.sourceDuration ?? 0 });
     // Un cambio que exige re-render sólo se guarda si se puede renderizar (vídeo original, transcripción…);
     // así nunca queda un clip marcado como pendiente sin forma de resolverlo. Los cambios de título/hook siempre se permiten.
@@ -836,12 +838,14 @@ export function registerIpc(ctx: IpcContext): void {
     return job;
   });
   h('clips:rerender', async (jobId: unknown, clipId: unknown) => {
+    await bulk.settle(idSchema.parse(jobId));
     const job = requireJob(ctx, jobId);
     const id = idSchema.parse(clipId);
     const clip = job.clips.find((c) => c.id === id);
     if (!clip) throw new UserFacingError('El clip no existe.');
     if (job.status !== 'completed') throw new UserFacingError('Sólo se pueden re-renderizar clips de trabajos completados.');
     if (rerendering.has(job.id)) throw new UserFacingError('Ya se está re-renderizando un clip de este trabajo.');
+    if (bulk.isDeleting(job.id)) throw new UserFacingError('Se está eliminando este trabajo o alguno de sus clips; espera a que termine.');
     if (cleaning) throw new UserFacingError('Hay una limpieza de almacenamiento en curso; espera a que termine.');
     const env = renderEnvFor(ctx, job);
     rerendering.add(job.id);
