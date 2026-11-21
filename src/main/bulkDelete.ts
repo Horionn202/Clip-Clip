@@ -150,6 +150,8 @@ interface Batch {
   undoing?: boolean;
   /** «Deshacer» de trabajos ya empezado (intención en disco): el plazo nunca lo manda a la Papelera. */
   restoring?: boolean;
+  /** Todos los trabajos del lote cuando empezó la recuperación (protegidos hasta quitar el manifiesto). */
+  restoreIds?: string[];
 }
 
 export class BulkDeleter {
@@ -283,7 +285,7 @@ export class BulkDeleter {
 
   /** Hay una recuperación («Deshacer») empezada y sin terminar que afecta a este trabajo. */
   private restoringJob(jobId: string): boolean {
-    return [...this.batches.values()].some((b) => (b.clips?.undoStarted && b.clips.before.id === jobId) || (b.restoring && b.jobs.some((j) => j.id === jobId)));
+    return [...this.batches.values()].some((b) => (b.clips?.undoStarted && b.clips.before.id === jobId) || (b.restoring && (b.restoreIds ?? b.jobs.map((j) => j.id)).includes(jobId)));
   }
 
   private async deleteClipsNow(jobId: string, clipIds: readonly string[], o: BulkOptions): Promise<BulkResult & { locked: string[]; wholeJob: boolean }> {
@@ -464,6 +466,7 @@ export class BulkDeleter {
     if (!b.restoring && !writeManifest(src, [], [], undefined, b.jobs)) {
       return { restored: 0, pending: b.jobs.length, undoUntil: rearm(), message: 'No se pudo preparar la recuperación (¿disco lleno?). Vuelve a pulsar «Deshacer».' };
     }
+    if (!b.restoring) b.restoreIds = b.jobs.map((j) => j.id);
     b.restoring = true;
     const pending: Job[] = [];
     let restored = 0;
