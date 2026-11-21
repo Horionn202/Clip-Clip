@@ -162,6 +162,25 @@ export class BulkDeleter {
 
   /** Aparta los trabajos (se pueden recuperar con `undo` durante UNDO_MS) y programa el borrado definitivo. */
   async delete(ids: readonly string[], o: BulkOptions, typed?: string): Promise<BulkResult & { locked: string[] }> {
+    return this.withJobs(ids, () => this.deleteNow(ids, o, typed));
+  }
+
+  /**
+   * Un borrado por trabajo a la vez (trabajos completos y clips sueltos comparten la cola): si dos se solapan
+   * (uno esperando un bloqueo), el segundo se planifica sobre el resultado del primero.
+   */
+  private withJobs<T>(ids: readonly string[], fn: () => Promise<T>): Promise<T> {
+    const prev = Promise.all(ids.map((i) => this.jobLocks.get(i) ?? Promise.resolve()));
+    const run = prev.then(fn);
+    const tail = run.catch(() => undefined);
+    for (const i of ids) this.jobLocks.set(i, tail);
+    void tail.then(() => {
+      for (const i of ids) if (this.jobLocks.get(i) === tail) this.jobLocks.delete(i);
+    });
+    return run;
+  }
+
+  private async deleteNow(ids: readonly string[], o: BulkOptions, typed?: string): Promise<BulkResult & { locked: string[] }> {
     const plan = this.plan(ids, o);
     if (!plan.jobs.length) throw new UserFacingError(plan.skipped.length ? `No se puede borrar: ${plan.skipped[0].title} ${plan.skipped[0].reason}.` : 'No hay trabajos seleccionados.');
     if (!typedConfirmOk(plan.jobs.length, plan.clipCount, typed)) throw new UserFacingError('Para borrar tantos elementos escribe BORRAR.');
@@ -248,19 +267,13 @@ export class BulkDeleter {
    * vacíos). Los archivos del clip se apartan (con reintentos ante bloqueos) y, pasado el plazo, van a la Papelera.
    */
   async deleteClips(jobId: string, clipIds: readonly string[], o: BulkOptions): Promise<BulkResult & { locked: string[]; wholeJob: boolean }> {
-    // Un borrado por trabajo a la vez: si dos se solapan (uno esperando un bloqueo), el segundo se planifica sobre
-    // el resultado del primero (p. ej. pasa a ser «trabajo completo» si ya no quedan otros clips).
-    const prev = this.jobLocks.get(jobId) ?? Promise.resolve();
-    const run = prev.catch(() => undefined).then(() => this.deleteClipsNow(jobId, clipIds, o));
-    const tail = run.catch(() => undefined);
-    this.jobLocks.set(jobId, tail);
-    void tail.then(() => this.jobLocks.get(jobId) === tail && this.jobLocks.delete(jobId));
-    return run;
+    // En la misma cola que los borrados de trabajos completos (p. ej. pasa a ser «trabajo completo» si ya no quedan otros clips).
+    return this.withJobs([jobId], () => this.deleteClipsNow(jobId, clipIds, o));
   }
 
   private async deleteClipsNow(jobId: string, clipIds: readonly string[], o: BulkOptions): Promise<BulkResult & { locked: string[]; wholeJob: boolean }> {
     const plan = this.planClips(jobId, clipIds, o);
-    if (plan.wholeJob) return { ...(await this.delete([jobId], o)), wholeJob: true };
+    if (plan.wholeJob) return { ...(await this.deleteNow([jobId], o)), wholeJob: true };
     const job = this.d.getJobs().find((j) => j.id === jobId)!;
     if (!DELETABLE_STATUSES.includes(job.status) || this.d.busy().has(jobId)) throw new UserFacingError('El trabajo está en curso o renderizándose: espera a que termine.');
     const id = randomUUID();
