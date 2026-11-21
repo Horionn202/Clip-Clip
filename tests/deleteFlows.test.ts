@@ -385,6 +385,24 @@ describe('borrado de clips desde Resultados', () => {
     expect(await d.undo(r.batchId)).toEqual({ restored: 1, pending: 0 });
   });
 
+  it('revisión Codex: «Deshacer» guarda el historial en disco antes de quitar el lote', async () => {
+    seedJob('job-000001');
+    let fail = false;
+    let flushes = 0;
+    const d = deleter({ flushJobs: () => { if (fail) throw new Error('EIO'); flushes++; } });
+    const r = await d.deleteClips('job-000001', ['job-000001-c1'], { deleteExports: false });
+    fail = true;
+    const u = await d.undo(r.batchId);
+    expect(u.pending).toBeGreaterThan(0);
+    expect(u.undoUntil).toBeTruthy();
+    expect(fs.existsSync(path.join(pendingDir, r.batchId, 'manifest.json'))).toBe(true); // sigue siendo recuperable
+    fail = false;
+    const before = flushes;
+    expect(await d.undo(r.batchId)).toEqual({ restored: 1, pending: 0 });
+    expect(flushes).toBe(before + 1);
+    expect(store.get('job-000001')!.clips).toHaveLength(2);
+  });
+
   it('todos los clips del trabajo: se elimina el trabajo completo (sin registros vacíos)', async () => {
     seedJob('job-000001');
     const d = deleter();

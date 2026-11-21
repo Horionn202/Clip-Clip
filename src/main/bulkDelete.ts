@@ -319,6 +319,16 @@ export class BulkDeleter {
     return { batchId: id, deletedIds: [], jobs: 0, clips: plan.clips, freedBytes: plan.bytes + plan.exportBytes, exportsDeleted: toTrash.length, undoUntil: new Date(Date.now() + UNDO_MS).toISOString(), errors: [], locked: [], wholeJob: false };
   }
 
+  /** Guarda el historial en disco ya; devuelve el error si no se pudo. */
+  private saveJobs(): string | null {
+    try {
+      this.d.flushJobs?.();
+      return null;
+    } catch (e) {
+      return (e as Error).message;
+    }
+  }
+
   /** Recupera un lote apartado (carpetas y entradas del historial). */
   async undo(batchId: string): Promise<UndoResult> {
     const b = this.batches.get(batchId);
@@ -356,6 +366,9 @@ export class BulkDeleter {
       const clips = b.clips.before.clips.flatMap((c) => (ids.has(c.id) ? [c] : now.has(c.id) ? [now.get(c.id)!] : []));
       for (const c of cur?.clips ?? []) if (!clips.some((x) => x.id === c.id)) clips.push(c);
       this.d.putJob({ ...(cur ?? b.clips.before), clips });
+      // El historial recuperado debe quedar en disco antes de quitar el lote y su manifiesto.
+      const saveErr = this.saveJobs();
+      if (saveErr) return { restored: 0, pending: b.clips.ids.length, undoUntil: rearm(), message: `No se pudo guardar el historial (${saveErr}). Vuelve a pulsar «Deshacer».` };
       (this.d.clearTimer ?? ((t) => clearTimeout(t as NodeJS.Timeout)))(b.timer);
       this.batches.delete(batchId);
       // Sin manifiesto: un borrado deshecho no puede decidir nada en el próximo inicio (p. ej. borrar exportados).
@@ -386,6 +399,9 @@ export class BulkDeleter {
       this.d.log?.('borrado masivo: deshacer incompleto', { batch: batchId, restored, pending: pending.length, e: lastErr });
       return { restored, pending: pending.length, undoUntil, message: restored ? `Faltan ${pending.length}: vuelve a pulsar «Deshacer».` : `No se pudo recuperar ningún trabajo todavía (${lastErr}). Vuelve a pulsar «Deshacer».` };
     }
+    // Igual que con los clips: sin historial en disco el lote sigue siendo recuperable.
+    const saveErr = this.saveJobs();
+    if (saveErr) return { restored: 0, pending: b.jobs.length, undoUntil: rearm(), message: `No se pudo guardar el historial (${saveErr}). Vuelve a pulsar «Deshacer».` };
     (this.d.clearTimer ?? ((t) => clearTimeout(t as NodeJS.Timeout)))(b.timer);
     this.batches.delete(batchId);
     clearUndoneBatch(src);
