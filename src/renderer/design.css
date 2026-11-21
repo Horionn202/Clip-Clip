@@ -1631,3 +1631,42 @@ details summary {
 .fit-choice .check {
   margin: var(--s-2) 0;
 }
+
+/* ---------- Centro de almacenamiento ---------- */
+.storage-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  gap: var(--s-3);
+}
+.storage-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+  padding: var(--s-4);
+  border-radius: var(--r-md);
+  background: var(--c-bg-2);
+  border: 1px solid var(--c-border);
+}
+.storage-card .sc-icon {
+  width: 30px;
+  height: 30px;
+  border-radius: var(--r-sm);
+  display: grid;
+  place-items: center;
+  background: var(--c-primary-soft);
+  color: var(--c-accent-text);
+}
+.storage-card .storage-size {
+  font-size: var(--fs-xl);
+  font-weight: 700;
+}
+.storage-card p {
+  margin: 0;
+}
+.storage-card button {
+  white-space: normal;
+  text-align: left;
+  height: auto;
+  padding-top: 6px;
+  padding-bottom: 6px;
+}

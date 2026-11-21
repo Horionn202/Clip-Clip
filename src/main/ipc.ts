@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import { z } from 'zod';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { BrowserWindow, clipboard, dialog, ipcMain, shell, type IpcMainInvokeEvent } from 'electron';
+import { BrowserWindow, clipboard, dialog, ipcMain, shell, type IpcMainInvokeEvent, session } from 'electron';
 import type { ClipPatch, GpuInfo, GpuSetupInfo, Job, Settings } from '../shared/types';
 import { MAX_CLIPS } from '../shared/types';
 import { UserFacingError, validateVideoUrl } from '../shared/validation';
@@ -298,6 +298,13 @@ export function registerIpc(ctx: IpcContext): void {
     }
   });
 
+  h('storage:cacheSize', async () => session.defaultSession.getCacheSize());
+  h('storage:clearCache', async () => {
+    const before = await session.defaultSession.getCacheSize();
+    await session.defaultSession.clearCache();
+    await session.defaultSession.clearCodeCaches({}).catch(() => undefined);
+    return Math.max(0, before - (await session.defaultSession.getCacheSize()));
+  });
   h('app:startupNotice', () => ctx.takeStartupNotice());
   h('app:version', () => ({ version: ctx.appVersion, name: 'Clip Clip' }));
 
@@ -596,12 +603,18 @@ export function registerIpc(ctx: IpcContext): void {
       return null;
     },
     log: (msg, x) => (log.info(msg, x), event('live', { msg, ...(x as object) })),
+    limits: () => {
+      const s = ctx.settings.get();
+      return { tempLimitBytes: s.liveTempLimitMB * 1024 * 1024, minFreeBytes: s.minFreeDiskMB * 1024 * 1024 };
+    },
+    freeDiskBytes,
+    autoClean: () => ctx.settings.get().autoCleanLiveTemps !== false,
   });
   ctx.onShutdown?.(() => live.shutdown());
   h('live:list', () => live.list());
   h('live:create', (url: unknown, settings: unknown, ack: unknown) => {
     const u = validateVideoUrl(url);
-    const st = z.object({ blockSec: z.number().optional(), overlapSec: z.number().optional(), preset: z.number().optional(), maxClipsPerBlock: z.number().optional(), pollSec: z.number().optional(), keepSegments: z.boolean().optional() }).strict().parse(settings ?? {});
+    const st = z.object({ blockSec: z.number().optional(), overlapSec: z.number().optional(), preset: z.number().optional(), maxClipsPerBlock: z.number().optional(), pollSec: z.number().optional(), retention: z.enum(['none', 'last10', 'last30', 'cap', 'all']).optional(), retentionCapMB: z.number().optional() }).strict().parse(settings ?? {});
     try {
       return live.create(u, st as never, ack === true);
     } catch (e) {
@@ -612,6 +625,8 @@ export function registerIpc(ctx: IpcContext): void {
   h('live:resume', (id: unknown) => live.resume(idSchema.parse(id)));
   h('live:stop', (id: unknown) => live.stop(idSchema.parse(id)));
   h('live:remove', (id: unknown) => live.remove(idSchema.parse(id)));
+  h('live:freeTemps', (id: unknown) => live.freeTemps(id == null ? undefined : idSchema.parse(id)));
+  h('live:usage', () => live.usage());
   h('live:retryBlock', (id: unknown, index: unknown) => live.retryBlock(idSchema.parse(id), z.number().int().min(0).max(1_000_000).parse(index)));
 
   // Reintentar desde un paso: el trabajo nuevo reutiliza (enlace duro o copia) lo ya producido antes de ese paso.

@@ -28,11 +28,97 @@ export interface LiveSettings {
   maxClipsPerBlock: number;
   /** Cada cuánto se comprueba si el canal empezó un directo (s). */
   pollSec: number;
-  /** Conservar los segmentos grabados tras procesarlos (por defecto no). */
-  keepSegments: boolean;
+  /** «Conservar grabación temporal del directo para edición/reintentos»: cuánto se guarda tras procesar. */
+  retention: SegmentRetention;
+  /** Tope para `retention: 'cap'` (MB). */
+  retentionCapMB: number;
+  /** Obsoleto (monitores antiguos): true equivalía a guardarlo todo; ahora se traduce a un tope de 2 GB. */
+  keepSegments?: boolean;
 }
 
-export const LIVE_DEFAULTS: LiveSettings = { blockSec: 60, overlapSec: 4, preset: 15, maxClipsPerBlock: 2, pollSec: 120, keepSegments: false };
+/**
+ * Qué se conserva de la grabación temporal tras procesar cada bloque. Por defecto nada (los clips viven en sus
+ * trabajos y no necesitan los segmentos). «Todo» es avanzado: igualmente lo frena el límite global de temporales.
+ */
+export type SegmentRetention = 'none' | 'last10' | 'last30' | 'cap' | 'all';
+export const RETENTION_LABELS: Record<SegmentRetention, string> = {
+  none: 'No conservar segmentos (recomendado)',
+  last10: 'Conservar los últimos 10 minutos',
+  last30: 'Conservar los últimos 30 minutos',
+  cap: 'Conservar hasta 2 GB',
+  all: 'Conservar todo (avanzado)',
+};
+
+export const LIVE_DEFAULTS: LiveSettings = { blockSec: 60, overlapSec: 4, preset: 15, maxClipsPerBlock: 2, pollSec: 120, retention: 'none', retentionCapMB: 2048 };
+
+/** Bitrate típico de un directo a 720p (vídeo + audio) para estimar disco: ≈ 3,5 Mbit/s → ≈ 1,6 GB por hora. */
+export const LIVE_BYTES_PER_SEC = 437_500;
+export function estimateLiveBytes(seconds: number, bytesPerSec = LIVE_BYTES_PER_SEC): number {
+  return Math.round(seconds * bytesPerSec);
+}
+
+export interface SegFile {
+  name: string;
+  bytes: number;
+}
+
+/**
+ * Qué archivos temporales de un monitor se pueden borrar ahora (puro). Nunca un segmento que aún no se procesó (salvo
+ * al cerrar el directo), ni el último procesado (lo necesita el solape del siguiente bloque), ni los de bloques en
+ * proceso o en error (para «Reintentar bloque»), ni el vídeo de un bloque cuyo trabajo sigue activo.
+ * Después aplica la retención elegida, borrando primero lo más antiguo.
+ */
+export function planSegmentCleanup(
+  files: SegFile[],
+  blocks: Pick<LiveBlock, 'index' | 'status'>[],
+  o: { retention: SegmentRetention; blockSec: number; capBytes: number; final: boolean; busyBlocks: ReadonlySet<number> },
+): string[] {
+  const out: string[] = [];
+  const st = new Map(blocks.map((b) => [b.index, b.status]));
+  const processed = (i: number) => st.get(i) === 'procesado' || st.get(i) === 'omitido';
+  // Archivos de bloque (vídeo y lista de concat) y restos temporales.
+  for (const f of files) {
+    const b = f.name.match(/^block_(\d+)\.(mp4|txt)$/);
+    if (b) {
+      if (!o.busyBlocks.has(Number(b[1]))) out.push(f.name);
+    } else if (/\.(part|tmp)$/i.test(f.name) && o.final) out.push(f.name);
+  }
+  const segs = files
+    .map((f) => ({ ...f, index: segmentIndex(f.name) }))
+    .filter((f): f is SegFile & { index: number } => f.index !== null)
+    .sort((a, b) => a.index - b.index);
+  const lastProcessed = Math.max(-1, ...segs.filter((f) => processed(f.index)).map((f) => f.index));
+  const keep = new Set<number>();
+  const candidates: (SegFile & { index: number })[] = [];
+  for (const f of segs) {
+    const busy = o.busyBlocks.has(f.index) || st.get(f.index) === 'procesando' || st.get(f.index) === 'en-cola';
+    if (busy) keep.add(f.index);
+    else if (o.final) candidates.push(f);
+    else if (!processed(f.index) || f.index === lastProcessed) keep.add(f.index); // pendiente, error o solape
+    else candidates.push(f);
+  }
+  // Retención: se conservan los candidatos más recientes que entren; el resto (lo más antiguo) se borra.
+  let keepN = 0;
+  if (o.retention === 'all') keepN = candidates.length;
+  else if (o.retention === 'last10' || o.retention === 'last30') keepN = Math.ceil(((o.retention === 'last10' ? 10 : 30) * 60) / Math.max(1, o.blockSec));
+  else if (o.retention === 'cap') {
+    let used = segs.filter((f) => keep.has(f.index)).reduce((a, f) => a + f.bytes, 0);
+    for (let i = candidates.length - 1; i >= 0 && used + candidates[i].bytes <= o.capBytes; i--) {
+      used += candidates[i].bytes;
+      keepN++;
+    }
+  }
+  const drop = candidates.slice(0, Math.max(0, candidates.length - keepN));
+  for (const f of drop) out.push(f.name);
+  return out;
+}
+
+/** Nivel de uso de los temporales frente al límite: aviso al 75 %, aviso fuerte al 90 %, pausa al 100 %. */
+export function storageLevel(tempBytes: number, limitBytes: number): 'ok' | 'warn' | 'high' | 'full' {
+  if (limitBytes <= 0) return 'ok';
+  const r = tempBytes / limitBytes;
+  return r >= 1 ? 'full' : r >= 0.9 ? 'high' : r >= 0.75 ? 'warn' : 'ok';
+}
 
 export interface LiveBlock {
   index: number;
@@ -66,6 +152,8 @@ export interface LiveMonitor {
   duplicatesSkipped: number;
   tempBytes: number;
   freedBytes: number;
+  /** Disco del monitor: límite de temporales, espacio libre y estimación hasta llegar al límite. */
+  storage?: { limitBytes: number; freeBytes?: number; level: 'ok' | 'warn' | 'high' | 'full'; etaSec?: number };
   /** Huecos sin grabar (pausa, cierre de la app, reconexión): sin DVR no se recuperan. */
   gaps: { at: string; reason: string }[];
   notice?: string;
@@ -191,6 +279,8 @@ export function validateLiveSettings(s: Partial<LiveSettings>): LiveSettings {
     preset,
     maxClipsPerBlock: n(s.maxClipsPerBlock, 1, 5, LIVE_DEFAULTS.maxClipsPerBlock),
     pollSec: n(s.pollSec, 30, 1800, LIVE_DEFAULTS.pollSec),
-    keepSegments: s.keepSegments === true,
+    // Los monitores antiguos con «conservar segmentos» pasan a un tope de 2 GB (nunca a «todo» sin confirmarlo).
+    retention: (['none', 'last10', 'last30', 'cap', 'all'] as const).find((r) => r === s.retention) ?? (s.keepSegments ? 'cap' : 'none'),
+    retentionCapMB: n(s.retentionCapMB, 256, 20480, LIVE_DEFAULTS.retentionCapMB),
   };
 }

@@ -203,3 +203,31 @@ describe('migración de ajustes de limpieza (no destructiva)', () => {
     expect(migrateSettings(defaults, { deleteSourceAfterCompletion: true, keepSource: 'siempre' }).keepSource).toBe('siempre');
   });
 });
+
+describe('revisión Codex: «Borrar fuentes de trabajos ya exportados»', () => {
+  it('no borra el vídeo si algún clip elegido no se renderizó (todavía lo necesita)', async () => {
+    const { planCleanup } = await import('../src/main/storageManager');
+    const fsx = await import('node:fs');
+    const osx = await import('node:os');
+    const px = await import('node:path');
+    const root = fsx.mkdtempSync(px.join(osx.tmpdir(), 'cc-srcexp-'));
+    try {
+      const jobsDir = px.join(root, 'jobs');
+      const exp = px.join(root, 'exports');
+      fsx.mkdirSync(px.join(jobsDir, 'job-000001', 'clips'), { recursive: true });
+      fsx.mkdirSync(exp, { recursive: true });
+      fsx.writeFileSync(px.join(jobsDir, 'job-000001', 'source.mp4'), Buffer.alloc(100));
+      fsx.writeFileSync(px.join(jobsDir, 'job-000001', 'clips', '01.mp4'), Buffer.alloc(10));
+      fsx.writeFileSync(px.join(exp, '01.mp4'), Buffer.alloc(10));
+      const job = (clips: object[]) => ({ id: 'job-000001', status: 'completed', clips } as never);
+      const rendered = { id: 'c1', start: 0, end: 15, file: '01.mp4', exportedPath: px.join(exp, '01.mp4') };
+      const opts = { source: true, sourceOnlyExported: true, audio: false, frames: false, temp: false, transcript: false, internalClips: false };
+      // Un clip renderizado y exportado, otro elegido pero sin renderizar (render fallido o cancelado).
+      expect(planCleanup([job([rendered, { id: 'c2', start: 20, end: 35 }])], jobsDir, opts).recoverableBytes).toBe(0);
+      // Con todos exportados, sí.
+      expect(planCleanup([job([rendered])], jobsDir, opts).recoverableBytes).toBe(100);
+    } finally {
+      fsx.rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
