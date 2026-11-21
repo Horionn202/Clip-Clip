@@ -203,7 +203,7 @@ export class BulkDeleter {
     for (const pj of plan.jobs) {
       let job = all.get(pj.id)!;
       try {
-        if ([...this.batches.values()].some((b) => b.clips?.undoStarted && b.clips.before.id === job.id)) {
+        if (this.restoringJob(job.id)) {
           throw new UserFacingError('tiene una recuperación de clips a medias; pulsa «Deshacer» de nuevo cuando se libere el archivo y vuelve a intentarlo.');
         }
         const dir = safeJobDir(this.d.jobsDir, job.id);
@@ -281,7 +281,13 @@ export class BulkDeleter {
     return this.withJobs([jobId], () => this.deleteClipsNow(jobId, clipIds, o));
   }
 
+  /** Hay una recuperación («Deshacer») empezada y sin terminar que afecta a este trabajo. */
+  private restoringJob(jobId: string): boolean {
+    return [...this.batches.values()].some((b) => (b.clips?.undoStarted && b.clips.before.id === jobId) || (b.restoring && b.jobs.some((j) => j.id === jobId)));
+  }
+
   private async deleteClipsNow(jobId: string, clipIds: readonly string[], o: BulkOptions): Promise<BulkResult & { locked: string[]; wholeJob: boolean }> {
+    if (this.restoringJob(jobId)) throw new UserFacingError('Este trabajo tiene una recuperación a medias. Vuelve a pulsar «Deshacer» y, cuando termine, inténtalo de nuevo.');
     const plan = this.planClips(jobId, clipIds, o);
     if (plan.wholeJob) return { ...(await this.deleteNow([jobId], o)), wholeJob: true };
     const job = this.d.getJobs().find((j) => j.id === jobId)!;

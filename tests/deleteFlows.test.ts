@@ -761,6 +761,21 @@ describe('borrado de clips desde Resultados', () => {
     expect(store.has('job-000002')).toBe(true);
   });
 
+  it('revisión Codex: con una recuperación de clips a medias no se pueden volver a borrar clips del trabajo', async () => {
+    const j = seedJob('job-000001');
+    w(path.join(jobsDir, 'job-000001', 'clips', '03_c.mp4'), 100);
+    store.set('job-000001', { ...j, clips: [...j.clips, clip('job-000001-c3', 3)] });
+    let fail = false;
+    const d = deleter({ flushJobs: () => { if (fail) throw new Error('ENOSPC'); } });
+    const a = await d.deleteClips('job-000001', ['job-000001-c1'], { deleteExports: false });
+    fail = true;
+    expect((await d.undo(a.batchId)).pending).toBeGreaterThan(0);
+    fail = false;
+    await expect(d.deleteClips('job-000001', ['job-000001-c1'], { deleteExports: false })).rejects.toThrow(/recuperación a medias/);
+    expect(await d.undo(a.batchId)).toEqual({ restored: 1, pending: 0 });
+    expect((await d.deleteClips('job-000001', ['job-000001-c1'], { deleteExports: false })).clips).toBe(1);
+  });
+
   it('todos los clips del trabajo: se elimina el trabajo completo (sin registros vacíos)', async () => {
     seedJob('job-000001');
     const d = deleter();
