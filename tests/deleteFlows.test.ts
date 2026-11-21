@@ -811,6 +811,29 @@ describe('borrado de clips desde Resultados', () => {
     expect(d.isDeleting('job-000001')).toBe(false);
   });
 
+  it('revisión Codex: una recuperación del arranque sin terminar protege todos sus trabajos', async () => {
+    seedJob('job-000001');
+    seedJob('job-000002');
+    const d = deleter({ retryWaits: [] });
+    const r = await d.delete(['job-000001', 'job-000002'], { deleteExports: false });
+    const orig = fs.renameSync;
+    const lock = ((x: fs.PathLike, y: fs.PathLike) => {
+      if (String(x) === path.join(pendingDir, r.batchId, 'job-000002')) throw Object.assign(new Error('EBUSY'), { code: 'EBUSY' });
+      return orig(x, y);
+    }) as typeof fs.renameSync;
+    (fs as unknown as { renameSync: typeof fs.renameSync }).renameSync = lock;
+    const boot = deleter({ retryWaits: [] });
+    try {
+      await d.undo(r.batchId);
+      await boot.sweepLeftovers(); // «arranque» con B aún bloqueado
+    } finally {
+      (fs as unknown as { renameSync: typeof fs.renameSync }).renameSync = orig;
+    }
+    expect(boot.isDeleting('job-000001')).toBe(true);
+    const again = await boot.delete(['job-000001'], { deleteExports: false });
+    expect(again.deletedIds).toEqual([]);
+  });
+
   it('todos los clips del trabajo: se elimina el trabajo completo (sin registros vacíos)', async () => {
     seedJob('job-000001');
     const d = deleter();

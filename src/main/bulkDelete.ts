@@ -158,6 +158,8 @@ export class BulkDeleter {
   private batches = new Map<string, Batch>();
   /** Cola de borrados de clips por trabajo (se ejecutan de uno en uno). */
   private jobLocks = new Map<string, Promise<unknown>>();
+  /** Trabajos con una recuperación del arranque sin terminar (manifiesto conservado): protegidos como los lotes vivos. */
+  private diskRestoring = new Set<string>();
   constructor(private d: DeleterDeps) {}
 
   plan(ids: readonly string[], o: BulkOptions): BulkPlan {
@@ -286,6 +288,7 @@ export class BulkDeleter {
 
   /** Hay una recuperación («Deshacer») empezada y sin terminar que afecta a este trabajo. */
   private restoringJob(jobId: string): boolean {
+    if (this.diskRestoring.has(jobId)) return true;
     return [...this.batches.values()].some((b) => (b.clips?.undoStarted && b.clips.before.id === jobId) || (b.restoring && (b.restoreIds ?? b.jobs.map((j) => j.id)).includes(jobId)));
   }
 
@@ -576,12 +579,16 @@ export class BulkDeleter {
             const to = safeJobDir(this.d.jobsDir, j.id);
             if (!isInside(p, from)) continue;
             if (fs.existsSync(from) && !fs.existsSync(to)) await moveWithRetry(from, to, 'la carpeta del trabajo', this.d.retryWaits);
-            if (!this.d.getJobs().some((x) => x.id === j.id)) this.d.putJob(j);
+            // El registro sólo vuelve con su carpeta (nunca un trabajo sin archivos).
+            if (fs.existsSync(to) && !this.d.getJobs().some((x) => x.id === j.id)) this.d.putJob(j);
           } catch {
             left++;
           }
         }
-        if (!left && !this.saveJobs()) clearUndoneBatch(p);
+        if (!left && !this.saveJobs()) {
+          clearUndoneBatch(p);
+          for (const j of jobsBack) this.diskRestoring.delete(j.id);
+        } else for (const j of jobsBack) this.diskRestoring.add(j.id);
         continue;
       }
       if (restore.length || readRestoreClips(p)) {
@@ -595,8 +602,10 @@ export class BulkDeleter {
             left++;
           }
         }
+        const rc = readRestoreClips(p);
+        // Mientras no termine, el trabajo queda protegido (ni borrar ni editar), igual que con un lote vivo.
+        if (rc) this.diskRestoring.add(rc.jobId);
         if (!left) {
-          const rc = readRestoreClips(p);
           const job = rc && this.d.getJobs().find((j) => j.id === rc.jobId);
           if (rc && job) {
             try {
@@ -607,6 +616,7 @@ export class BulkDeleter {
             }
           }
           clearUndoneBatch(p);
+          if (rc) this.diskRestoring.delete(rc.jobId);
         }
         continue;
       }
