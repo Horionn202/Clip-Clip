@@ -864,6 +864,36 @@ describe('borrado de clips desde Resultados', () => {
     expect(boot.isDeleting('job-000001')).toBe(true);
   });
 
+  it('revisión Codex: el arranque reserva los trabajos antes de la primera espera', async () => {
+    const j = seedJob('job-000001');
+    const dir = path.join(pendingDir, 'b0000000-0000-4000-8000-000000000003');
+    fs.mkdirSync(dir, { recursive: true });
+    const from = path.join(jobsDir, 'job-000001', 'clips', '01.ass');
+    const staged = path.join(dir, 'clips', '01.ass');
+    fs.mkdirSync(path.dirname(staged), { recursive: true });
+    fs.renameSync(from, staged);
+    fs.writeFileSync(path.join(dir, 'manifest.json'), JSON.stringify({ exports: [], restore: [{ from, to: staged }], restoreClips: { jobId: 'job-000001', clips: [j.clips[0]] } }));
+    const orig = fs.renameSync;
+    let once = true;
+    (fs as unknown as { renameSync: typeof fs.renameSync }).renameSync = ((x: fs.PathLike, y: fs.PathLike) => {
+      if (once && String(x) === staged) {
+        once = false;
+        throw Object.assign(new Error('EBUSY'), { code: 'EBUSY' });
+      }
+      return orig(x, y);
+    }) as typeof fs.renameSync;
+    const boot = deleter({ retryWaits: [20] });
+    try {
+      const p = boot.sweepLeftovers();
+      await new Promise((r) => setTimeout(r, 5)); // el arranque está esperando el bloqueo
+      expect(boot.isDeleting('job-000001')).toBe(true);
+      await p;
+    } finally {
+      (fs as unknown as { renameSync: typeof fs.renameSync }).renameSync = orig;
+    }
+    expect(boot.isDeleting('job-000001')).toBe(false);
+  });
+
   it('todos los clips del trabajo: se elimina el trabajo completo (sin registros vacíos)', async () => {
     seedJob('job-000001');
     const d = deleter();

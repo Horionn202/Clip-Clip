@@ -564,6 +564,14 @@ export class BulkDeleter {
     } catch {
       return;
     }
+    // Antes de la primera espera: se reservan todos los trabajos con una recuperación pendiente (sin esto, un borrado
+    // lanzado mientras el arranque espera un bloqueo podría llevarse archivos ya devueltos).
+    for (const e of entries) {
+      const p = path.join(this.d.pendingDir, e);
+      if (this.batches.has(e) || !isInside(this.d.pendingDir, p)) continue;
+      const ids = [...readRestoreJobs(p).map((j) => j.id), ...(readRestoreClips(p) ? [readRestoreClips(p)!.jobId] : [])];
+      if (ids.length) this.diskRestoring.set(e, ids);
+    }
     for (const e of entries) {
       const p = path.join(this.d.pendingDir, e);
       if (this.batches.has(e) || !isInside(this.d.pendingDir, p)) continue;
