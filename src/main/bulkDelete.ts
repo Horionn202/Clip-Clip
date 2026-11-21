@@ -311,8 +311,18 @@ export class BulkDeleter {
       throw e;
     }
     const batch: Batch = { id, jobs: [], exports: toTrash, timer: null, clips: { before: job, ids: [...want], moved } };
-    // Historial guardado: ahora sí es un borrado confirmado (sin «restore»).
-    writeManifest(path.join(this.d.pendingDir, id), toTrash);
+    // Historial guardado: ahora sí es un borrado confirmado (sin «restore»). Si no se puede escribir, se deshace
+    // todo: un manifiesto de intención con el historial ya reducido dejaría archivos huérfanos al arrancar.
+    if (!writeManifest(path.join(this.d.pendingDir, id), toTrash)) {
+      try {
+        this.d.putJob(cur);
+        this.d.flushJobs?.();
+      } catch {
+        /* ignorar */
+      }
+      rollback();
+      throw new UserFacingError('No se pudo completar el borrado (¿disco lleno?). Los clips siguen en su sitio.');
+    }
     batch.timer = (this.d.setTimer ?? ((fn, ms) => setTimeout(fn, ms)))(() => void this.finalize(id), UNDO_MS);
     this.batches.set(id, batch);
     this.d.log?.('borrado de clips', { batch: id, trabajo: job.id, clips: plan.clips, exports: toTrash.length });
@@ -347,6 +357,11 @@ export class BulkDeleter {
       // Clips sueltos: antes de mover nada queda en disco la intención de recuperarlos (archivos e historial),
       // para que un cierre a mitad termine la recuperación al arrancar en vez de mandarlos a la Papelera.
       if (!b.clips.undoStarted) {
+        // El trabajo se eliminó entero después: su carpeta está en otro lote. Hay que recuperar antes ése.
+        if (!this.d.getJobs().some((j) => j.id === b.clips!.before.id)) {
+          rearm();
+          throw new UserFacingError('Después se eliminó el trabajo completo. Deshaz primero ese borrado y luego podrás recuperar este clip.');
+        }
         const back = b.clips.before.clips.filter((c) => b.clips!.ids.includes(c.id));
         if (!writeManifest(src, [], b.clips.moved, { jobId: b.clips.before.id, clips: back })) {
           return { restored: 0, pending: b.clips.moved.length, undoUntil: rearm(), message: 'No se pudo preparar la recuperación (¿disco lleno?). Vuelve a pulsar «Deshacer».' };

@@ -425,6 +425,36 @@ describe('borrado de clips desde Resultados', () => {
     expect(trashed).toEqual([]);
   });
 
+  it('revisión Codex: si falla el manifiesto confirmado, el borrado de clips se deshace', async () => {
+    seedJob('job-000001');
+    const origW = fs.writeFileSync;
+    let n = 0;
+    (fs as unknown as { writeFileSync: typeof fs.writeFileSync }).writeFileSync = ((f: fs.PathOrFileDescriptor, ...r: unknown[]) => {
+      if (String(f).endsWith('manifest.json') && ++n === 2) throw Object.assign(new Error('ENOSPC'), { code: 'ENOSPC' });
+      return (origW as (...a: unknown[]) => void)(f, ...r);
+    }) as typeof fs.writeFileSync;
+    try {
+      await expect(deleter().deleteClips('job-000001', ['job-000001-c1'], { deleteExports: false })).rejects.toThrow(/disco lleno/);
+    } finally {
+      (fs as unknown as { writeFileSync: typeof fs.writeFileSync }).writeFileSync = origW;
+    }
+    expect(store.get('job-000001')!.clips).toHaveLength(2);
+    expect(fs.existsSync(path.join(jobsDir, 'job-000001', 'clips', '01_c.mp4'))).toBe(true);
+  });
+
+  it('revisión Codex: deshacer un clip de un trabajo eliminado entero después pide deshacer antes ese borrado', async () => {
+    seedJob('job-000001');
+    const d = deleter();
+    const a = await d.deleteClips('job-000001', ['job-000001-c1'], { deleteExports: false });
+    const b = await d.deleteClips('job-000001', ['job-000001-c2'], { deleteExports: false });
+    expect(b.wholeJob).toBe(true);
+    await expect(d.undo(a.batchId)).rejects.toThrow(/trabajo completo/);
+    await d.undo(b.batchId);
+    expect(await d.undo(a.batchId)).toEqual({ restored: 1, pending: 0 });
+    expect(store.get('job-000001')!.clips.map((c) => c.id)).toEqual(['job-000001-c1', 'job-000001-c2']);
+    expect(fs.existsSync(path.join(jobsDir, 'job-000001', 'clips', '01_c.mp4'))).toBe(true);
+  });
+
   it('todos los clips del trabajo: se elimina el trabajo completo (sin registros vacíos)', async () => {
     seedJob('job-000001');
     const d = deleter();
