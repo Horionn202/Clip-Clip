@@ -304,7 +304,7 @@ interface NewJob {
   id: string;
   sourceCleaned?: boolean;
   tempCleaned?: boolean;
-  clips?: { file?: string; archived?: boolean }[];
+  clips?: { file?: string; archived?: boolean; thumb?: string }[];
 }
 
 function readJson<T>(f: string): T | null {
@@ -387,7 +387,8 @@ export function classifyMissing(oldDir: string, newDir: string): { missing: { re
         const cleaned =
           (!job && migratedBefore && wasMigrated(parts[0])) || // trabajo migrado y eliminado después en Clip Clip
           (!!job && kind === 'source' && !!job.sourceCleaned) ||
-          (!!job && (kind === 'audio' || kind === 'frames' || kind === 'temp') && !!job.tempCleaned) ||
+          // Las miniaturas de los clips se conservan al liberar temporales: si faltan, no es un borrado a propósito.
+          (!!job && (kind === 'audio' || kind === 'frames' || kind === 'temp') && !!job.tempCleaned && !job.clips?.some((c) => c.thumb && inJob === `frames/${c.thumb}`)) ||
           (!!job && kind === 'internalClip' && !!job.clips?.some((c) => c.archived && inJob === `clips/${c.file}`));
         if (cleaned) {
           intentional++;

@@ -298,6 +298,18 @@ describe('migración reparable', () => {
     expect(c.install?.keptInUse.some((k) => k.endsWith('python-env'))).toBe(true);
   });
 
+  it('revisión Codex: una miniatura de clip que falta se repara aunque el trabajo liberara temporales', () => {
+    migrateAll();
+    marker();
+    neu('data/jobs.json', JSON.stringify([{ id: 'job-000001', tempCleaned: true, clips: [{ file: '01_a.mp4', thumb: '01.jpg' }] }]));
+    fs.rmSync(path.join(prot.userData, 'jobs/job-000001/frames/01.jpg'));
+    const c = checkLegacy(lp, prot);
+    expect(c.missing.map((m) => m.rel)).toContain('jobs/job-000001/frames/01.jpg');
+    const r = repairLegacy(lp, prot);
+    expect(fs.existsSync(path.join(prot.userData, 'jobs/job-000001/frames/01.jpg'))).toBe(true);
+    expect(r.check.state).toBe('verified');
+  });
+
   it('error de lectura: estado parcial, se explica qué carpeta y no se libera nada', () => {
     migrateAll();
     marker();
