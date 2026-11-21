@@ -159,7 +159,7 @@ export class BulkDeleter {
   /** Cola de borrados de clips por trabajo (se ejecutan de uno en uno). */
   private jobLocks = new Map<string, Promise<unknown>>();
   /** Trabajos con una recuperación del arranque sin terminar (manifiesto conservado): protegidos como los lotes vivos. */
-  private diskRestoring = new Set<string>();
+  private diskRestoring = new Map<string, string[]>(); // lote → trabajos afectados
   constructor(private d: DeleterDeps) {}
 
   plan(ids: readonly string[], o: BulkOptions): BulkPlan {
@@ -288,7 +288,7 @@ export class BulkDeleter {
 
   /** Hay una recuperación («Deshacer») empezada y sin terminar que afecta a este trabajo. */
   private restoringJob(jobId: string): boolean {
-    if (this.diskRestoring.has(jobId)) return true;
+    if ([...this.diskRestoring.values()].some((ids) => ids.includes(jobId))) return true;
     return [...this.batches.values()].some((b) => (b.clips?.undoStarted && b.clips.before.id === jobId) || (b.restoring && (b.restoreIds ?? b.jobs.map((j) => j.id)).includes(jobId)));
   }
 
@@ -587,8 +587,8 @@ export class BulkDeleter {
         }
         if (!left && !this.saveJobs()) {
           clearUndoneBatch(p);
-          for (const j of jobsBack) this.diskRestoring.delete(j.id);
-        } else for (const j of jobsBack) this.diskRestoring.add(j.id);
+          this.diskRestoring.delete(e);
+        } else this.diskRestoring.set(e, jobsBack.map((j) => j.id));
         continue;
       }
       if (restore.length || readRestoreClips(p)) {
@@ -604,7 +604,7 @@ export class BulkDeleter {
         }
         const rc = readRestoreClips(p);
         // Mientras no termine, el trabajo queda protegido (ni borrar ni editar), igual que con un lote vivo.
-        if (rc) this.diskRestoring.add(rc.jobId);
+        if (rc) this.diskRestoring.set(e, [rc.jobId]);
         if (!left) {
           const job = rc && this.d.getJobs().find((j) => j.id === rc.jobId);
           if (rc && job) {
@@ -616,7 +616,7 @@ export class BulkDeleter {
             }
           }
           clearUndoneBatch(p);
-          if (rc) this.diskRestoring.delete(rc.jobId);
+          this.diskRestoring.delete(e);
         }
         continue;
       }

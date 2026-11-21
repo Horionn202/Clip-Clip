@@ -834,6 +834,36 @@ describe('borrado de clips desde Resultados', () => {
     expect(again.deletedIds).toEqual([]);
   });
 
+  it('revisión Codex: terminar una recuperación del arranque no desprotege otra del mismo trabajo', async () => {
+    const j = seedJob('job-000001');
+    const mk = (id: string, restore: unknown[], clips: Clip[]) => {
+      const dir = path.join(pendingDir, id);
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, 'manifest.json'), JSON.stringify({ exports: [], restore, restoreClips: { jobId: 'job-000001', clips } }));
+      return dir;
+    };
+    // Lote 1: un archivo que no puede volver (fuera de la carpeta: se cuenta como pendiente al fallar).
+    const d1 = mk('b0000000-0000-4000-8000-000000000001', [], [j.clips[0]]);
+    const staged = path.join(d1, 'clips', '01.ass');
+    w(staged, 5);
+    fs.rmSync(path.join(jobsDir, 'job-000001', 'clips', '01.ass'));
+    fs.writeFileSync(path.join(d1, 'manifest.json'), JSON.stringify({ exports: [], restore: [{ from: path.join(jobsDir, 'job-000001', 'clips', '01.ass'), to: staged }], restoreClips: { jobId: 'job-000001', clips: [j.clips[0]] } }));
+    mk('b0000000-0000-4000-8000-000000000002', [], [j.clips[1]]);
+    const orig = fs.renameSync;
+    (fs as unknown as { renameSync: typeof fs.renameSync }).renameSync = ((x: fs.PathLike, y: fs.PathLike) => {
+      if (String(x) === staged) throw Object.assign(new Error('EBUSY'), { code: 'EBUSY' });
+      return orig(x, y);
+    }) as typeof fs.renameSync;
+    const boot = deleter({ retryWaits: [] });
+    try {
+      await boot.sweepLeftovers();
+    } finally {
+      (fs as unknown as { renameSync: typeof fs.renameSync }).renameSync = orig;
+    }
+    expect(fs.existsSync(path.join(d1, 'manifest.json'))).toBe(true);
+    expect(boot.isDeleting('job-000001')).toBe(true);
+  });
+
   it('todos los clips del trabajo: se elimina el trabajo completo (sin registros vacíos)', async () => {
     seedJob('job-000001');
     const d = deleter();
