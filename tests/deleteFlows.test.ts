@@ -920,6 +920,32 @@ describe('borrado de clips desde Resultados', () => {
     expect(fs.existsSync(path.join(jobsDir, 'job-000001', 'clips', '01.ass'))).toBe(true);
   });
 
+  it('revisión Codex: «settle» termina una vuelta atrás pendiente y libera el trabajo; clips:delete no la rechaza antes', async () => {
+    seedJob('job-000001');
+    const orig = fs.renameSync;
+    let block = true;
+    (fs as unknown as { renameSync: typeof fs.renameSync }).renameSync = ((a: fs.PathLike, b: fs.PathLike) => {
+      if (block && (String(a).endsWith('01.ass') || (String(a).startsWith(pendingDir) && String(a).endsWith('01_c.mp4')))) throw Object.assign(new Error('EBUSY'), { code: 'EBUSY' });
+      return orig(a, b);
+    }) as typeof fs.renameSync;
+    const d = deleter({ retryWaits: [] });
+    try {
+      await expect(d.deleteClips('job-000001', ['job-000001-c1'], { deleteExports: false })).rejects.toThrow(/vista previa/);
+    } finally {
+      (fs as unknown as { renameSync: typeof fs.renameSync }).renameSync = orig;
+      block = false;
+    }
+    expect(d.isDeleting('job-000001')).toBe(true);
+    await d.settle('job-000001');
+    await new Promise((r) => setTimeout(r, 0));
+    expect(d.isDeleting('job-000001')).toBe(false);
+    expect(fs.existsSync(path.join(jobsDir, 'job-000001', 'clips', '01_c.mp4'))).toBe(true);
+    const ipc = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'ipc.ts'), 'utf8');
+    const del = ipc.slice(ipc.indexOf("h('clips:delete'"), ipc.indexOf("h('clips:rename'"));
+    expect(del).not.toMatch(/isDeleting/);
+    expect(ipc.split('await bulk.settle(').length - 1).toBeGreaterThanOrEqual(4);
+  });
+
   it('todos los clips del trabajo: se elimina el trabajo completo (sin registros vacíos)', async () => {
     seedJob('job-000001');
     const d = deleter();

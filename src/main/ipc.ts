@@ -568,6 +568,7 @@ export function registerIpc(ctx: IpcContext): void {
   // Al cerrar la app se aborta la retranscripción (sin procesos de Whisper huérfanos).
   ctx.onShutdown?.(() => retranscribeCtrl?.abort());
   h('jobs:retranscribe', async (id: unknown, opts: unknown) => {
+    await bulk.settle(idSchema.parse(id));
     const job = requireJob(ctx, id);
     const precise = z.object({ precise: z.boolean().optional() }).strict().optional().parse(opts ?? undefined)?.precise === true;
     if (job.status !== 'completed') throw new UserFacingError('Sólo se puede volver a transcribir un trabajo completado.');
@@ -801,12 +802,15 @@ export function registerIpc(ctx: IpcContext): void {
   h('clips:delete', async (jobId: unknown, ids: unknown, opts: unknown) => {
     const id = idSchema.parse(jobId);
     if (rerendering.has(id)) throw new UserFacingError('Se está renderizando un clip de este trabajo; espera a que termine.');
-    if (bulk.isDeleting(id)) throw new UserFacingError('Se está eliminando este trabajo o alguno de sus clips; espera a que termine.');
+    // Sin rechazo previo por «borrado en curso»: deleteClips hace cola, termina antes las recuperaciones pendientes
+    // de este trabajo y sólo rechaza si siguen sin poder completarse.
     return bulk.deleteClips(id, clipIds.parse(ids), bulkOpts.parse(opts));
   });
-  h('clips:rename', (...args: unknown[]) => {
+  h('clips:rename', async (...args: unknown[]) => {
     const [jobId, clipId, title] = renameClipSchema.parse(args);
+    await bulk.settle(jobId);
     const job = requireJob(ctx, jobId);
+    if (bulk.isDeleting(job.id)) throw new UserFacingError('Se está eliminando este trabajo o alguno de sus clips; espera a que termine.');
     const clip = job.clips.find((c) => c.id === clipId);
     if (!clip) throw new UserFacingError('El clip no existe.');
     clip.title = title.replace(/[\u0000-\u001f]/g, ' ');
@@ -814,7 +818,8 @@ export function registerIpc(ctx: IpcContext): void {
     emitJob(job);
     return job;
   });
-  h('clips:update', (jobId: unknown, clipId: unknown, patch: unknown) => {
+  h('clips:update', async (jobId: unknown, clipId: unknown, patch: unknown) => {
+    await bulk.settle(idSchema.parse(jobId));
     const job = requireJob(ctx, jobId);
     const id = idSchema.parse(clipId);
     const p = clipPatchSchema.parse(patch) as ClipPatch;
@@ -833,6 +838,7 @@ export function registerIpc(ctx: IpcContext): void {
     return job;
   });
   h('clips:rerender', async (jobId: unknown, clipId: unknown) => {
+    await bulk.settle(idSchema.parse(jobId));
     const job = requireJob(ctx, jobId);
     const id = idSchema.parse(clipId);
     const clip = job.clips.find((c) => c.id === id);

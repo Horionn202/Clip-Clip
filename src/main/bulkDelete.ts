@@ -194,6 +194,15 @@ export class BulkDeleter {
     return run;
   }
 
+  /**
+   * Antes de editar, renderizar o transcribir un trabajo: si tiene una recuperación en disco pendiente, se intenta
+   * terminar ahora (en su cola). Si sigue pendiente, `isDeleting` seguirá protegiéndolo.
+   */
+  async settle(jobId: string): Promise<void> {
+    if (this.jobLocks.has(jobId) || ![...this.diskRestoring.values()].some((ids) => ids.includes(jobId))) return;
+    await this.withJobs([jobId], () => this.finishDiskRestores([jobId])).catch(() => undefined);
+  }
+
   /** Reintenta las recuperaciones pendientes en disco de estos trabajos (sólo ésas: ni lotes vivos ni otros trabajos). */
   private async finishDiskRestores(jobIds: readonly string[]): Promise<void> {
     const mine = [...this.diskRestoring].filter(([, ids]) => ids.some((i) => jobIds.includes(i))).map(([b]) => b);
