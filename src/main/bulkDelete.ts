@@ -510,7 +510,8 @@ export class BulkDeleter {
       const p = path.join(this.d.pendingDir, e);
       if (this.batches.has(e) || !isInside(this.d.pendingDir, p)) continue;
       const restore = readRestore(p);
-      if (restore.length) {
+      // Hay intención de recuperar si hay archivos que devolver O clips que devolver al historial (puede no haber archivos).
+      if (restore.length || readRestoreClips(p)) {
         // Una vuelta atrás interrumpida: los archivos vuelven a su trabajo (validados dentro de las carpetas internas).
         let left = 0;
         for (const r of restore) {

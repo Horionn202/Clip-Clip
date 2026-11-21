@@ -480,6 +480,18 @@ describe('borrado de clips desde Resultados', () => {
     expect(store.get('job-000001')).toBeUndefined();
   });
 
+  it('revisión Codex: el arranque devuelve al historial un clip sin archivos que mover', async () => {
+    const j = seedJob('job-000001');
+    store.set('job-000001', { ...j, clips: j.clips.filter((c) => c.id !== 'job-000001-c1') });
+    const dir = path.join(pendingDir, 'b0000000-0000-4000-8000-000000000001');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'manifest.json'), JSON.stringify({ exports: [], restore: [], restoreClips: { jobId: 'job-000001', clips: [j.clips[0]] } }));
+    await deleter().sweepLeftovers();
+    expect(store.get('job-000001')!.clips.map((c) => c.id)).toEqual(['job-000001-c1', 'job-000001-c2']);
+    expect(fs.existsSync(dir)).toBe(false);
+    expect(trashed).toEqual([]);
+  });
+
   it('todos los clips del trabajo: se elimina el trabajo completo (sin registros vacíos)', async () => {
     seedJob('job-000001');
     const d = deleter();
