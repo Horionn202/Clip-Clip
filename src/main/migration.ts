@@ -10,7 +10,7 @@ export const MARKER = path.join('data', 'migration-clipsvirales.json');
 /** Carpetas que se migran. El entorno Python de la app (python-env, varios GB) no se toca: se sigue usando desde su ruta. */
 export const MIGRATED_DIRS = ['data', 'jobs', 'logs'];
 /** Archivos grandes que se enlazan en vez de copiarse. */
-const LINKABLE = /\.(mp4|mkv|webm|mov|wav)$/i;
+export const LINKABLE = /\.(mp4|mkv|webm|mov|wav)$/i;
 
 export interface MigrationReport {
   status: 'none' | 'already' | 'migrated' | 'partial' | 'failed';
@@ -66,10 +66,19 @@ const realFs: MigrationFs = {
   copy: (s, d) => fs.copyFileSync(s, d, fs.constants.COPYFILE_EXCL),
 };
 
-export function migrateLegacyData(oldDir: string, newDir: string, io: MigrationFs = realFs): MigrationReport {
+export interface MigrateOptions {
+  /** Reparación: se ejecuta aunque exista el marcador (la existencia del marcador ya no significa «terminado»). */
+  repair?: boolean;
+  /** Sólo estas rutas relativas (p. ej. los archivos que faltan). Nunca se sobrescribe nada que ya exista. */
+  only?: ReadonlySet<string>;
+  /** Al fusionar historial y publicación: sólo estas entradas antiguas (la reparación nunca resucita lo borrado a propósito). */
+  keepEntry?: (id: string) => boolean;
+}
+
+export function migrateLegacyData(oldDir: string, newDir: string, io: MigrationFs = realFs, opts: MigrateOptions = {}): MigrationReport {
   const report: MigrationReport = { status: 'none', from: oldDir, to: newDir, linked: 0, copied: 0, skippedExisting: 0, mergedJobs: 0, errors: [], at: new Date().toISOString() };
   if (path.resolve(oldDir) === path.resolve(newDir) || !fs.existsSync(oldDir)) return report;
-  if (fs.existsSync(path.join(newDir, MARKER))) return { ...report, status: 'already' };
+  if (!opts.repair && fs.existsSync(path.join(newDir, MARKER))) return { ...report, status: 'already' };
 
   for (const top of MIGRATED_DIRS) {
     const enumErrors: string[] = [];
@@ -77,6 +86,7 @@ export function migrateLegacyData(oldDir: string, newDir: string, io: MigrationF
     report.errors.push(...enumErrors.map((e) => `${top}/${e}`));
     for (const rel of files) {
       const relPath = path.join(top, rel);
+      if (opts.only && !opts.only.has(relPath)) continue;
       const src = path.join(oldDir, relPath);
       const dst = path.join(newDir, relPath);
       try {
@@ -85,7 +95,8 @@ export function migrateLegacyData(oldDir: string, newDir: string, io: MigrationF
           // Historial en ambos sitios: se fusiona (sin perder trabajos de ninguno).
           const a = JSON.parse(fs.readFileSync(dst, 'utf8')) as JobLike[];
           const b = JSON.parse(fs.readFileSync(src, 'utf8')) as JobLike[];
-          const { jobs, added } = mergeJobs(Array.isArray(a) ? a : [], Array.isArray(b) ? b : []);
+          const legacy = (Array.isArray(b) ? b : []).filter((j) => !opts.keepEntry || (j && opts.keepEntry(j.id)));
+          const { jobs, added } = mergeJobs(Array.isArray(a) ? a : [], legacy);
           if (added > 0) {
             const tmp = `${dst}.migr.tmp`;
             fs.writeFileSync(tmp, JSON.stringify(jobs, null, 2), 'utf8');
@@ -98,16 +109,25 @@ export function migrateLegacyData(oldDir: string, newDir: string, io: MigrationF
           // Metadatos de publicación en ambos sitios: se fusionan por trabajo (gana el directorio nuevo).
           const a = JSON.parse(fs.readFileSync(dst, 'utf8')) as Record<string, unknown>;
           const b = JSON.parse(fs.readFileSync(src, 'utf8')) as Record<string, unknown>;
-          const extra = Object.keys(b ?? {}).filter((k) => !(k in (a ?? {})));
+          const extra = Object.keys(b ?? {}).filter((k) => !(k in (a ?? {})) && (!opts.keepEntry || opts.keepEntry(k)));
           if (extra.length) {
             const tmp = `${dst}.migr.tmp`;
-            fs.writeFileSync(tmp, JSON.stringify({ ...b, ...a }, null, 2), 'utf8');
+            fs.writeFileSync(tmp, JSON.stringify({ ...Object.fromEntries(extra.map((k) => [k, b[k]])), ...a }, null, 2), 'utf8');
             fs.renameSync(tmp, dst);
           }
           continue;
         }
         if (fs.existsSync(dst)) {
           report.skippedExisting++;
+          continue;
+        }
+        // Reparación sin historial o publicación en Clip Clip: se crean sólo con las entradas que faltan.
+        if (opts.keepEntry && (relPath === path.join('data', 'jobs.json') || relPath === path.join('data', 'publish.json'))) {
+          const b = JSON.parse(fs.readFileSync(src, 'utf8')) as unknown;
+          const out = Array.isArray(b) ? b.filter((j: JobLike) => j && opts.keepEntry!(j.id)) : Object.fromEntries(Object.entries((b ?? {}) as Record<string, unknown>).filter(([k]) => opts.keepEntry!(k)));
+          fs.writeFileSync(dst, JSON.stringify(out, null, 2), 'utf8');
+          if (Array.isArray(out)) report.mergedJobs += out.length;
+          else report.copied++;
           continue;
         }
         // Vídeos y audio de los trabajos: enlace duro (mismo contenido sin ocupar más disco). La app nunca los
@@ -135,10 +155,17 @@ export function migrateLegacyData(oldDir: string, newDir: string, io: MigrationF
   const moved = report.linked + report.copied + report.mergedJobs;
   report.status = report.errors.length === 0 ? (moved > 0 || report.skippedExisting > 0 ? 'migrated' : 'none') : moved > 0 ? 'partial' : 'failed';
   // Sólo se marca como hecha si no hubo errores: así un fallo se reintenta en el siguiente inicio.
-  if (report.errors.length === 0) {
+  if (report.errors.length === 0 && !opts.repair) {
     try {
       fs.mkdirSync(path.join(newDir, 'data'), { recursive: true });
-      fs.writeFileSync(path.join(newDir, MARKER), JSON.stringify(report, null, 2), 'utf8');
+      let migratedJobIds: string[] = [];
+      try {
+        const old = JSON.parse(fs.readFileSync(path.join(oldDir, 'data', 'jobs.json'), 'utf8')) as JobLike[];
+        migratedJobIds = Array.isArray(old) ? old.filter((j) => j && typeof j.id === 'string').map((j) => j.id) : [];
+      } catch {
+        /* sin historial antiguo */
+      }
+      fs.writeFileSync(path.join(newDir, MARKER), JSON.stringify({ ...report, state: 'completed', migratedJobIds }, null, 2), 'utf8');
     } catch (e) {
       report.errors.push(`marcador: ${(e as Error).message}`);
       report.status = 'partial';

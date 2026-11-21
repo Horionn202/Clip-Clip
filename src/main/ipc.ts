@@ -20,7 +20,7 @@ import { BulkDeleter } from './bulkDelete';
 import { retryOptions } from '../shared/jobView';
 import { availability, isModelCached, selectEngine } from './transcribe';
 import { compositionErrors, compositionOf } from '../shared/composition';
-import { readState, runLegacyMigration, scanLegacy, writeState, type LegacyPaths } from './legacy';
+import { readState, runLegacyMigration, scanLegacy, writeState, type LegacyPaths, checkLegacy, freeLegacy, repairLegacy } from './legacy';
 import { deletePublishedExports, findPublishedExports, markExportDeleted, recoverableBytes } from './publishedExports';
 import { listConnections } from './publishers';
 import { PLATFORMS, PLATFORM_LABELS, applyMeta, applyStatus, copyPart, restoreVersion, type Platform } from '../shared/publish';
@@ -311,6 +311,46 @@ export function registerIpc(ctx: IpcContext): void {
   // ---- Datos de la versión anterior («ClipsVirales»): sólo con la elección del usuario en el modal ----
   let migratingLegacy = false;
   h('legacy:scan', () => scanLegacy(ctx.legacy, ctx.userDataDir));
+  /** Protecciones: datos, instalación y exportación actuales y ejecutables en uso (nunca rutas del renderer). */
+  const legacyProt = () => {
+    const s = ctx.settings.get();
+    return { userData: ctx.userDataDir, installDir: ctx.installDir, exportDir: s.exportDir, inUse: [s.pythonPath, s.whisperPath, s.gpuVerifiedPython ?? '', s.ffmpegPath, s.ffprobePath, s.ytDlpPath].filter(Boolean) };
+  };
+  const legacyTarget = z.enum(['data', 'install', 'exports']);
+  h('legacy:check', () => checkLegacy(ctx.legacy, legacyProt()));
+  h('legacy:repair', () => {
+    if (migratingLegacy) throw new UserFacingError('Ya hay una migración en curso.');
+    if (ctx.queue.activeCount > 0) throw new UserFacingError('Espera a que terminen los trabajos en curso antes de reparar.');
+    migratingLegacy = true;
+    try {
+      ctx.jobs.flush();
+      const r = repairLegacy(ctx.legacy, legacyProt());
+      ctx.reloadStores();
+      event('legacy_repair', { enlazados: r.linked, copiados: r.copied, bytes: r.copiedBytes, errores: r.errors.length, estado: r.check.state });
+      return r;
+    } finally {
+      migratingLegacy = false;
+    }
+  });
+  h('legacy:free', async (target: unknown) => {
+    const t = legacyTarget.parse(target);
+    if (migratingLegacy) throw new UserFacingError('Ya hay una migración en curso.');
+    migratingLegacy = true;
+    try {
+      return await freeLegacy(t, ctx.legacy, legacyProt(), { trash: (p) => shell.trashItem(p), log: (m, x) => (log.info(m, x), event('legacy', { msg: m, ...(x as object) })) });
+    } catch (e) {
+      throw e instanceof UserFacingError ? e : new UserFacingError((e as Error).message);
+    } finally {
+      migratingLegacy = false;
+    }
+  });
+  h('legacy:open', async (kind: unknown) => {
+    const k = legacyTarget.parse(kind);
+    const p = ctx.legacy[k];
+    if (!fs.existsSync(p)) throw new UserFacingError('Esa carpeta ya no existe.');
+    const err = await shell.openPath(p);
+    if (err) throw new UserFacingError(`No se pudo abrir la carpeta (${err}).`);
+  });
   h('legacy:dismiss', () => {
     writeState(ctx.userDataDir, { ...readState(ctx.userDataDir), dismissed: true });
     event('legacy_dismiss', {});

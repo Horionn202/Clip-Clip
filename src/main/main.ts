@@ -29,7 +29,11 @@ const paths = buildAppPaths(app.getPath('userData'));
 for (const d of [paths.jobsDir, paths.dataDir, paths.logsDir]) fs.mkdirSync(d, { recursive: true });
 initLogger(paths.logsDir);
 let startupNotice: { kind: 'info' | 'error'; text: string } | null = null;
-const legacy = legacyPaths(app.getPath('appData'), process.env.LOCALAPPDATA || path.join(app.getPath('home'), 'AppData', 'Local'), app.getPath('videos'));
+// Sólo en desarrollo: carpetas de la versión anterior simuladas (las pruebas nunca tocan los datos reales).
+const legacyRoot = !app.isPackaged ? process.env.CLIP_CLIP_LEGACY_ROOT : undefined;
+const legacy = legacyRoot
+  ? legacyPaths(path.join(legacyRoot, 'Roaming'), path.join(legacyRoot, 'Local'), path.join(legacyRoot, 'Videos'))
+  : legacyPaths(app.getPath('appData'), process.env.LOCALAPPDATA || path.join(app.getPath('home'), 'AppData', 'Local'), app.getPath('videos'));
 
 const defaults = () => defaultSettings(path.join(app.getPath('videos'), 'Clip Clip'));
 const settings = new SettingsStore(paths.dataDir, defaults());
