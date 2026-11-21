@@ -248,6 +248,19 @@ export class BulkDeleter {
     const dir = safeJobDir(this.d.jobsDir, job.id);
     const want = new Set(clipIds);
     const moved: { from: string; to: string }[] = [];
+    /** Lo ya movido vuelve a su sitio; lo que no pueda volver queda anotado y el próximo arranque lo devuelve (nunca a la Papelera). */
+    const rollback = (): void => {
+      const stuck: { from: string; to: string }[] = [];
+      for (const m of [...moved].reverse()) {
+        try {
+          fs.renameSync(m.to, m.from);
+        } catch {
+          stuck.push(m);
+        }
+      }
+      if (stuck.length) writeManifest(path.join(this.d.pendingDir, id), [], stuck);
+      else clearUndoneBatch(path.join(this.d.pendingDir, id));
+    };
     // Antes de mover nada: si la app se cierra a mitad, el arranque DEVUELVE estos archivos (no los manda a la Papelera).
     const intent = job.clips.filter((x) => want.has(x.id)).flatMap((c) => clipFiles(dir, c).map((f) => ({ from: f, to: path.join(dest, path.relative(dir, f)) })));
     writeManifest(path.join(this.d.pendingDir, id), [], intent);
@@ -262,18 +275,7 @@ export class BulkDeleter {
         }
       }
     } catch (e) {
-      // Algo sigue bloqueado: lo ya movido vuelve a su sitio y el trabajo queda como estaba.
-      const stuck: { from: string; to: string }[] = [];
-      for (const m of moved.reverse()) {
-        try {
-          fs.renameSync(m.to, m.from);
-        } catch {
-          stuck.push(m);
-        }
-      }
-      // Lo que no pudo volver queda anotado como «a restaurar»: el próximo arranque lo devuelve (nunca a la Papelera).
-      if (stuck.length) writeManifest(path.join(this.d.pendingDir, id), [], stuck);
-      else clearUndoneBatch(path.join(this.d.pendingDir, id));
+      rollback();
       throw e;
     }
     const toTrash: string[] = [];
@@ -283,9 +285,20 @@ export class BulkDeleter {
     }
     // Estado ACTUAL del trabajo (tras los reintentos pudo haber un «Deshacer» u otras ediciones): sólo se quitan estos clips.
     const cur = this.d.getJobs().find((j) => j.id === job.id) ?? job;
-    this.d.putJob({ ...cur, clips: cur.clips.filter((c) => !want.has(c.id)) });
-    // El historial debe quedar en disco antes de confirmar el borrado en el manifiesto.
-    this.d.flushJobs?.();
+    try {
+      this.d.putJob({ ...cur, clips: cur.clips.filter((c) => !want.has(c.id)) });
+      // El historial debe quedar en disco antes de confirmar el borrado en el manifiesto.
+      this.d.flushJobs?.();
+    } catch (e) {
+      // No se pudo guardar el historial (p. ej. disco lleno): los clips y sus archivos vuelven a su sitio.
+      try {
+        this.d.putJob(cur);
+      } catch {
+        /* ignorar */
+      }
+      rollback();
+      throw e;
+    }
     const batch: Batch = { id, jobs: [], exports: toTrash, timer: null, clips: { before: job, ids: [...want], moved } };
     // Historial guardado: ahora sí es un borrado confirmado (sin «restore»).
     writeManifest(path.join(this.d.pendingDir, id), toTrash);

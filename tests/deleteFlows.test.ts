@@ -340,6 +340,16 @@ describe('borrado de clips desde Resultados', () => {
     expect(store.get('job-000001')!.clips.map((c) => c.id)).toEqual(['job-000001-c1', 'job-000001-c2']);
   });
 
+  it('revisión Codex: si no se puede guardar el historial, el clip y sus archivos vuelven a su sitio', async () => {
+    seedJob('job-000001');
+    const d = deleter({ flushJobs: () => { throw Object.assign(new Error('ENOSPC'), { code: 'ENOSPC' }); } });
+    await expect(d.deleteClips('job-000001', ['job-000001-c1'], { deleteExports: false })).rejects.toThrow(/ENOSPC/);
+    expect(store.get('job-000001')!.clips).toHaveLength(2);
+    expect(fs.existsSync(path.join(jobsDir, 'job-000001', 'clips', '01_c.mp4'))).toBe(true);
+    await deleter().sweepLeftovers();
+    expect(trashed).toEqual([]);
+  });
+
   it('todos los clips del trabajo: se elimina el trabajo completo (sin registros vacíos)', async () => {
     seedJob('job-000001');
     const d = deleter();
