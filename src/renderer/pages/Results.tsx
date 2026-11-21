@@ -149,9 +149,16 @@ function ClipDeleteModal(props: { jobId: string; ids: string[]; onClose: () => v
     setBusy(true);
     setErr('');
     // Los reproductores de la página tienen los MP4 abiertos: se liberan antes de mover nada.
-    releaseMedia();
+    const restore = releaseMedia();
     try {
       const r = await api().clipsDelete(props.jobId, props.ids, { deleteExports: delExports });
+      // Trabajo completo que no se pudo mover (bloqueado): no es un éxito; se ofrece reintentar.
+      if (r.wholeJob && r.deletedIds.length === 0) {
+        const m = r.errors[0] ?? 'No se pudo eliminar el trabajo.';
+        if (r.locked.length) props.onLocked(m, () => void run());
+        else setErr(m);
+        return;
+      }
       props.onDone({ batchId: r.batchId, clips: r.clips, bytes: r.freedBytes, wholeJob: r.wholeJob, undoUntil: r.undoUntil });
     } catch (e) {
       const m = errMsg(e);
@@ -159,6 +166,8 @@ function ClipDeleteModal(props: { jobId: string; ids: string[]; onClose: () => v
       else setErr(m);
     } finally {
       setBusy(false);
+      // Los reproductores que siguen (fallo o clips no borrados) vuelven a tener su vídeo.
+      setTimeout(restore, 0);
     }
   };
   const hasExports = !!plan && plan.exportCount + plan.keptExports > 0;
@@ -415,7 +424,7 @@ export function ResultsPage(props: { jobs: Job[]; selected: string | null; onSel
         onClose={() => setDelIds([])}
         onLocked={(m, retry) => {
           setDelIds([]);
-          props.toast?.({ kind: 'error', text: m, ttl: 0, action: { label: 'Cerrar vista previa y reintentar', run: () => (releaseMedia(), retry()) } });
+          props.toast?.({ kind: 'error', text: m, ttl: 0, action: { label: 'Cerrar vista previa y reintentar', run: () => retry() } });
         }}
         onDone={(r) => {
           setDelIds([]);

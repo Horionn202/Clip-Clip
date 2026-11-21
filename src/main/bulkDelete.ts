@@ -135,7 +135,7 @@ interface Batch {
   exports: string[];
   timer: unknown;
   /** Borrado de clips sueltos: estado anterior del trabajo y archivos apartados (para «Deshacer»). */
-  clips?: { before: Job; moved: { from: string; to: string }[] };
+  clips?: { before: Job; ids: string[]; moved: { from: string; to: string }[] };
 }
 
 export class BulkDeleter {
@@ -269,7 +269,7 @@ export class BulkDeleter {
       for (const c of job.clips) if (want.has(c.id) && deletableExport(c.exportedPath, this.d.jobsDir) && !others.has(path.resolve(c.exportedPath).toLowerCase())) exports.push(c.exportedPath);
     }
     this.d.putJob({ ...job, clips: job.clips.filter((c) => !want.has(c.id)) });
-    const batch: Batch = { id, jobs: [], exports, timer: null, clips: { before: job, moved } };
+    const batch: Batch = { id, jobs: [], exports, timer: null, clips: { before: job, ids: [...want], moved } };
     writeManifest(path.join(this.d.pendingDir, id), exports);
     batch.timer = (this.d.setTimer ?? ((fn, ms) => setTimeout(fn, ms)))(() => void this.finalize(id), UNDO_MS);
     this.batches.set(id, batch);
@@ -296,7 +296,14 @@ export class BulkDeleter {
         b.clips.moved = left;
         throw new UserFacingError(`No se pudieron recuperar ${left.length} archivo(s) todavía. Vuelve a pulsar «Deshacer».`);
       }
-      this.d.putJob(b.clips.before);
+      // Sólo vuelven los clips de este lote, en su posición original, sobre el estado ACTUAL del trabajo
+      // (se respetan otros borrados y las ediciones hechas mientras tanto).
+      const ids = new Set(b.clips.ids);
+      const cur = this.d.getJobs().find((j) => j.id === b.clips!.before.id);
+      const now = new Map((cur?.clips ?? []).map((c) => [c.id, c]));
+      const clips = b.clips.before.clips.flatMap((c) => (ids.has(c.id) ? [c] : now.has(c.id) ? [now.get(c.id)!] : []));
+      for (const c of cur?.clips ?? []) if (!clips.some((x) => x.id === c.id)) clips.push(c);
+      this.d.putJob({ ...(cur ?? b.clips.before), clips });
       (this.d.clearTimer ?? ((t) => clearTimeout(t as NodeJS.Timeout)))(b.timer);
       this.batches.delete(batchId);
       this.d.log?.('borrado de clips deshecho', { batch: batchId, trabajo: b.clips.before.id });

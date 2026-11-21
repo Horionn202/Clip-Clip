@@ -179,6 +179,18 @@ describe('borrado de clips desde Resultados', () => {
     expect(fs.existsSync(path.join(exportDir, 'job-000001_2.mp4'))).toBe(true);
   });
 
+  it('revisión Codex: deshacer un borrado de clips no resucita otro clip borrado después', async () => {
+    const j = seedJob('job-000001');
+    // Tercer clip para poder borrar dos sin llegar al trabajo completo.
+    w(path.join(jobsDir, 'job-000001', 'clips', '03_c.mp4'), 100);
+    store.set('job-000001', { ...j, clips: [...j.clips, clip('job-000001-c3', 3)] });
+    const d = deleter();
+    const a = await d.deleteClips('job-000001', ['job-000001-c1'], { deleteExports: false });
+    await d.deleteClips('job-000001', ['job-000001-c2'], { deleteExports: false });
+    await d.undo(a.batchId);
+    expect(store.get('job-000001')!.clips.map((c) => c.id)).toEqual(['job-000001-c1', 'job-000001-c3']);
+  });
+
   it('todos los clips del trabajo: se elimina el trabajo completo (sin registros vacíos)', async () => {
     seedJob('job-000001');
     const d = deleter();

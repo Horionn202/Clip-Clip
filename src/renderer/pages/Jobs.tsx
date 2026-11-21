@@ -308,8 +308,8 @@ export function BulkDeleteModal(props: { ids: string[]; mode: 'history' | 'full'
     setErr('');
     try {
       // Los reproductores de la página tienen archivos abiertos: se liberan antes de mover nada.
-      releaseMedia();
-      const r = await api().bulkDelete(plan.jobs.map((j) => j.id), { deleteExports }, plan.needsTypedConfirm ? typed : undefined);
+      const restore = releaseMedia();
+      const r = await api().bulkDelete(plan.jobs.map((j) => j.id), { deleteExports }, plan.needsTypedConfirm ? typed : undefined).finally(() => setTimeout(restore, 0));
       const other = r.errors.length - r.locked.length;
       props.onDone(
         r.deletedIds,
@@ -613,9 +613,9 @@ export function JobsPage(props: {
           props.onDeleted(deleted);
           if (locked.ids.length) {
             const retry = async (): Promise<boolean> => {
-              releaseMedia();
+              const restore = releaseMedia();
               try {
-                const r = await api().bulkDelete(locked.ids, { deleteExports: locked.deleteExports });
+                const r = await api().bulkDelete(locked.ids, { deleteExports: locked.deleteExports }).finally(() => setTimeout(restore, 0));
                 props.onDeleted(r.deletedIds);
                 if (r.locked.length) {
                   props.toast({ kind: 'error', text: `Siguen bloqueados ${r.locked.length}. Cierra la vista previa o el reproductor que los usa y vuelve a intentarlo.` });
