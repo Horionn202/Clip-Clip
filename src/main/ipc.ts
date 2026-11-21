@@ -771,6 +771,7 @@ export function registerIpc(ctx: IpcContext): void {
     pendingDir: path.join(ctx.userDataDir, 'pending-delete'),
     getJobs: () => ctx.jobs.list(),
     putJob: (j) => (ctx.jobs.put(j), emitJob(j)),
+    flushJobs: () => ctx.jobs.flush(),
     removeJob: (id) => ctx.jobs.delete(id),
     forgetPublish: (id) => ctx.publish.deleteJob(id),
     trash: (p) => shell.trashItem(p),

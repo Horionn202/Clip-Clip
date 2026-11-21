@@ -273,6 +273,48 @@ describe('borrado de clips desde Resultados', () => {
     expect(trashed).toEqual([]);
   });
 
+  it('revisión Codex: un borrado de clips que reintenta respeta un «Deshacer» hecho mientras tanto', async () => {
+    const j = seedJob('job-000001');
+    w(path.join(jobsDir, 'job-000001', 'clips', '03_c.mp4'), 100);
+    store.set('job-000001', { ...j, clips: [...j.clips, clip('job-000001-c3', 3)] });
+    const d = deleter();
+    const a = await d.deleteClips('job-000001', ['job-000001-c1'], { deleteExports: false });
+    const orig = fs.renameSync;
+    let undone: Promise<unknown> | null = null;
+    (fs as unknown as { renameSync: typeof fs.renameSync }).renameSync = ((x: fs.PathLike, y: fs.PathLike) => {
+      if (!undone && String(x).endsWith('02_c.mp4')) {
+        (fs as unknown as { renameSync: typeof fs.renameSync }).renameSync = orig;
+        undone = d.undo(a.batchId);
+        throw Object.assign(new Error('EBUSY'), { code: 'EBUSY' });
+      }
+      return orig(x, y);
+    }) as typeof fs.renameSync;
+    try {
+      await d.deleteClips('job-000001', ['job-000001-c2'], { deleteExports: false });
+      await undone;
+    } finally {
+      (fs as unknown as { renameSync: typeof fs.renameSync }).renameSync = orig;
+    }
+    expect(store.get('job-000001')!.clips.map((c) => c.id)).toEqual(['job-000001-c1', 'job-000001-c3']);
+  });
+
+  it('revisión Codex: el historial se guarda en disco antes de confirmar el borrado de clips', async () => {
+    seedJob('job-000001');
+    const order: string[] = [];
+    const d = deleter({ flushJobs: () => order.push('flush') });
+    const origW = fs.writeFileSync;
+    (fs as unknown as { writeFileSync: typeof fs.writeFileSync }).writeFileSync = ((f: fs.PathOrFileDescriptor, ...r: unknown[]) => {
+      if (String(f).endsWith('manifest.json')) order.push('manifest');
+      return (origW as (...a: unknown[]) => void)(f, ...r);
+    }) as typeof fs.writeFileSync;
+    try {
+      await d.deleteClips('job-000001', ['job-000001-c1'], { deleteExports: false });
+    } finally {
+      (fs as unknown as { writeFileSync: typeof fs.writeFileSync }).writeFileSync = origW;
+    }
+    expect(order).toEqual(['manifest', 'flush', 'manifest']);
+  });
+
   it('todos los clips del trabajo: se elimina el trabajo completo (sin registros vacíos)', async () => {
     seedJob('job-000001');
     const d = deleter();
@@ -303,7 +345,7 @@ describe('ningún borrado de datos de usuario con fs.rmSync', () => {
   it('bulkDelete y la ruta de borrado de trabajos no usan fs.rmSync sobre carpetas de trabajo', () => {
     const bd = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'bulkDelete.ts'), 'utf8');
     // Sólo se permite borrar el manifiesto propio del lote.
-    expect(bd.match(/fs\.rmSync\([^\n]*/g) ?? []).toEqual(['fs.rmSync(path.join(src, MANIFEST), { force: true });']);
+    expect(bd.match(/fs\.rmSync\([^\r\n]*/g) ?? []).toEqual(['fs.rmSync(path.join(src, MANIFEST), { force: true });']);
     const ipc = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'ipc.ts'), 'utf8');
     const block = ipc.slice(ipc.indexOf("h('jobs:delete'"), ipc.indexOf("h('clips:rename'"));
     expect(block).not.toMatch(/rmSync|unlinkSync/);

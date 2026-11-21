@@ -117,6 +117,8 @@ export interface DeleterDeps {
   pendingDir: string;
   getJobs: () => Job[];
   putJob: (j: Job) => void;
+  /** Guarda el historial en disco ya (el almacén lo escribe con retraso). */
+  flushJobs?: () => void;
   removeJob: (id: string) => void;
   /** Datos de publicación de un trabajo: se borran al confirmar (no antes, para poder deshacer). */
   forgetPublish: (id: string) => void;
@@ -277,7 +279,11 @@ export class BulkDeleter {
       const others = new Set(this.d.getJobs().flatMap((j) => j.clips.filter((c) => j.id !== job.id || !want.has(c.id)).map((c) => c.exportedPath)).filter(Boolean).map((p) => path.resolve(p!).toLowerCase()));
       for (const c of job.clips) if (want.has(c.id) && deletableExport(c.exportedPath, this.d.jobsDir) && !others.has(path.resolve(c.exportedPath).toLowerCase())) toTrash.push(c.exportedPath);
     }
-    this.d.putJob({ ...job, clips: job.clips.filter((c) => !want.has(c.id)) });
+    // Estado ACTUAL del trabajo (tras los reintentos pudo haber un «Deshacer» u otras ediciones): sólo se quitan estos clips.
+    const cur = this.d.getJobs().find((j) => j.id === job.id) ?? job;
+    this.d.putJob({ ...cur, clips: cur.clips.filter((c) => !want.has(c.id)) });
+    // El historial debe quedar en disco antes de confirmar el borrado en el manifiesto.
+    this.d.flushJobs?.();
     const batch: Batch = { id, jobs: [], exports: toTrash, timer: null, clips: { before: job, ids: [...want], moved } };
     // Historial guardado: ahora sí es un borrado confirmado (sin «restore»).
     writeManifest(path.join(this.d.pendingDir, id), toTrash);
