@@ -568,6 +568,52 @@ describe('borrado de clips desde Resultados', () => {
     expect(fs.existsSync(path.join(jobsDir, 'job-000001', 'clips', '01.ass'))).toBe(true);
   });
 
+  it('revisión Codex: cierre entre guardar el historial y confirmar el borrado: el arranque devuelve archivos y clip', async () => {
+    seedJob('job-000001');
+    // Se captura el manifiesto de intención tal como queda en disco justo cuando se guarda el historial.
+    let intent = '';
+    let mf = '';
+    const r = await deleter({
+      flushJobs: () => {
+        mf = path.join(pendingDir, fs.readdirSync(pendingDir)[0], 'manifest.json');
+        intent = fs.readFileSync(mf, 'utf8');
+      },
+    }).deleteClips('job-000001', ['job-000001-c1'], { deleteExports: false });
+    expect(r.clips).toBe(1);
+    // La app se cerró ahí: historial ya sin el clip, archivos apartados y sólo el manifiesto de intención.
+    fs.writeFileSync(mf, intent);
+    expect(store.get('job-000001')!.clips).toHaveLength(1);
+    await deleter().sweepLeftovers();
+    expect(store.get('job-000001')!.clips.map((c) => c.id)).toEqual(['job-000001-c1', 'job-000001-c2']);
+    expect(fs.existsSync(path.join(jobsDir, 'job-000001', 'clips', '01_c.mp4'))).toBe(true);
+    expect(trashed).toEqual([]);
+  });
+
+  it('revisión Codex: «Deshacer» en cola suspende el plazo del lote mientras espera', async () => {
+    const j = seedJob('job-000001');
+    w(path.join(jobsDir, 'job-000001', 'clips', '03_c.mp4'), 100);
+    store.set('job-000001', { ...j, clips: [...j.clips, clip('job-000001-c3', 3)] });
+    const d = deleter({ retryWaits: [5, 5, 5, 5, 5, 5, 5, 5] });
+    const a = await d.deleteClips('job-000001', ['job-000001-c1'], { deleteExports: false });
+    const orig = fs.renameSync;
+    let blocked = true;
+    (fs as unknown as { renameSync: typeof fs.renameSync }).renameSync = ((x: fs.PathLike, y: fs.PathLike) => {
+      if (blocked && String(x).endsWith('02_c.mp4')) throw Object.assign(new Error('EBUSY'), { code: 'EBUSY' });
+      return orig(x, y);
+    }) as typeof fs.renameSync;
+    try {
+      const pb = d.deleteClips('job-000001', ['job-000001-c2'], { deleteExports: false });
+      const pu = d.undo(a.batchId);
+      timers[0]?.(); // vence el plazo original de A mientras su «Deshacer» espera en la cola
+      blocked = false;
+      await pb;
+      expect(await pu).toEqual({ restored: 1, pending: 0 });
+    } finally {
+      (fs as unknown as { renameSync: typeof fs.renameSync }).renameSync = orig;
+    }
+    expect(store.get('job-000001')!.clips.map((c) => c.id)).toEqual(['job-000001-c1', 'job-000001-c3']);
+  });
+
   it('todos los clips del trabajo: se elimina el trabajo completo (sin registros vacíos)', async () => {
     seedJob('job-000001');
     const d = deleter();

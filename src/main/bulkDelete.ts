@@ -297,7 +297,7 @@ export class BulkDeleter {
     };
     // Antes de mover nada: si la app se cierra a mitad, el arranque DEVUELVE estos archivos (no los manda a la Papelera).
     const intent = job.clips.filter((x) => want.has(x.id)).flatMap((c) => clipFiles(dir, c).map((f) => ({ from: f, to: path.join(dest, path.relative(dir, f)) })));
-    if (!writeManifest(path.join(this.d.pendingDir, id), [], intent)) {
+    if (!writeManifest(path.join(this.d.pendingDir, id), [], intent, { jobId: job.id, clips: job.clips.filter((x) => want.has(x.id)) })) {
       clearUndoneBatch(path.join(this.d.pendingDir, id));
       throw new UserFacingError('No se pudo preparar el borrado (¿disco lleno?). No se ha tocado ningún archivo.');
     }
@@ -369,6 +369,10 @@ export class BulkDeleter {
   async undo(batchId: string): Promise<UndoResult> {
     const b = this.batches.get(batchId);
     if (!b) throw new UserFacingError('Ya no se puede deshacer: el plazo terminó.');
+    // Se reserva ya (antes de esperar en la cola): el plazo no puede mandarlo a la Papelera mientras espera.
+    (this.d.clearTimer ?? ((t) => clearTimeout(t as NodeJS.Timeout)))(b.timer);
+    b.timer = null;
+    b.undoing = true;
     // En la cola de sus trabajos: un borrado no puede llevarse archivos que «Deshacer» está devolviendo.
     return this.withJobs(b.clips ? [b.clips.before.id] : b.jobs.map((j) => j.id), () => this.undoNow(batchId));
   }
