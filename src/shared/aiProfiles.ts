@@ -20,6 +20,25 @@ export const AI_PROFILES: AiProfile[] = [
   { id: 'calidad', label: 'Calidad', model: 'llama3.1:8b', downloadGB: 4.9, memoryGB: 6.1, quality: 'La más fina en títulos y hooks.', speed: 'La más lenta; con 6 GB de VRAM suele ir parcialmente en CPU.' },
 ];
 
+/** Modelo recomendado para selección editorial y verificación de destacados. Nunca se pone solo. */
+export const EDITORIAL_MODEL = 'qwen2.5:7b';
+
+export const EDITORIAL_MODEL_GUIDE: { model: string; text: string }[] = [
+  { model: 'llama3.2:3b', text: 'rápido, menor precisión editorial.' },
+  { model: EDITORIAL_MODEL, text: 'recomendado para títulos, contexto y destacados.' },
+  { model: 'llama3.1:8b', text: 'mayor calidad potencial, pero puede ir lento o parcialmente por CPU en GPUs de 6 GB.' },
+];
+
+/** Verifica con el recomendado si está descargado; si no, con el modelo del usuario. */
+export function verifierModel(installed: readonly string[], selected: string): string {
+  return installed.includes(EDITORIAL_MODEL) ? EDITORIAL_MODEL : selected;
+}
+
+/** Modelos que Clip Clip puede haber cargado (los únicos que descarga de la VRAM). */
+export function appModels(selected: string): string[] {
+  return [...new Set([selected, ...EDITORIAL_MODEL_GUIDE.map((m) => m.model), ...AI_PROFILES.map((p) => p.model)])];
+}
+
 export const BIGGER_IS_NOT_ALWAYS_BETTER =
   'Un modelo mayor puede mejorar la selección y el cumplimiento del formato, pero usa más RAM/VRAM y puede tardar más.';
 

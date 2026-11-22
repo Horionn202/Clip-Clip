@@ -1855,3 +1855,29 @@ details summary {
   font-size: var(--fs-sm, 14px);
   color: var(--c-text-2);
 }
+.clip-other {
+  padding: 1px 8px;
+  border-radius: var(--r-pill);
+  border: 1px solid var(--c-border-strong);
+  color: var(--c-muted);
+}
+.clip-evidence {
+  border-left: 2px solid #00c285;
+  padding-left: var(--s-2);
+}
+.editorial-model {
+  border: 1px solid rgba(0, 194, 133, 0.35);
+  border-radius: var(--r-md);
+  padding: var(--s-4);
+  margin: var(--s-3) 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+}
+.editorial-model ul {
+  margin: 0;
+  padding-left: 18px;
+}
+.editorial-model li {
+  overflow-wrap: anywhere;
+}

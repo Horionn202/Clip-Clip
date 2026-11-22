@@ -87,11 +87,42 @@ export interface Clip {
   editorial?: ClipEditorial;
 }
 
+/** Tipo de evento según el verificador de destacados. */
+export type HighlightEvent =
+  | 'introduccion'
+  | 'preparacion'
+  | 'desplazamiento'
+  | 'llegada'
+  | 'contexto'
+  | 'inicio_real'
+  | 'accion_activa'
+  | 'choque_accion'
+  | 'resultado'
+  | 'reaccion'
+  | 'revelacion'
+  | 'explicacion'
+  | 'humor';
+
+/** Prueba de un destacado: la cita existe en la transcripción, al principio del clip. */
+export interface HighlightVerification {
+  model: string;
+  confidence: number;
+  eventType: HighlightEvent;
+  /** Cita tal como está en la transcripción. */
+  quote: string;
+  /** Segundo real de la cita en el vídeo (localizado en la transcripción, no el que diga la IA). */
+  evidenceStart: number;
+  evidenceEnd: number;
+}
+
 /** Criterios editoriales con los que se eligió un clip (0–100). */
 export interface ClipEditorial {
   score: number;
-  /** Supera el filtro de calidad: se muestra con estrella y primero. */
+  /** En la selección: aspira a destacado. En un trabajo terminado: destacado, válido sólo con `verification`. */
   featured?: boolean;
+  verification?: HighlightVerification;
+  /** Por qué un aspirante se quedó como «Otro momento». */
+  notVerified?: string;
   topicRelevance: number;
   hookStrength: number;
   payoffStrength: number;
@@ -305,10 +336,12 @@ export interface AnalysisReport {
   partialReason?: string;
   /** Brief editorial (tema, eventos, promesa del título) usado en todas las rondas. */
   brief?: import('./editorialBrief').EditorialBrief;
-  /** Puntuación mínima para marcar un clip como destacado (0–100). */
+  /** Puntuación mínima para aspirar a destacado (0–100). */
   minScore?: number;
-  /** Clips que superan el filtro (destacados). */
+  /** Destacados verificados. */
   featured?: number;
+  /** Fase B: qué modelo verificó y por qué cayó cada aspirante. */
+  verification?: { model: string; checked: number; rejected: { start: number; title: string; reason: string }[] };
   /** «Otros momentos» que añadió la app porque la IA no propuso suficientes. */
   added?: number;
   quality?: import('./editorialBrief').SelectionQuality;

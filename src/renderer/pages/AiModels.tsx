@@ -1,7 +1,10 @@
 import { useEffect, useState } from 'react';
 import type { Diagnostics, PullProgress, Settings } from '../../shared/types';
 import {
+  AI_PROFILES,
   BIGGER_IS_NOT_ALWAYS_BETTER,
+  EDITORIAL_MODEL,
+  EDITORIAL_MODEL_GUIDE,
   evaluateProfiles,
   placementLabel,
   recommendProfile,
@@ -71,6 +74,22 @@ export function AiModelPanel(props: {
       setErr(errMsg(e));
     }
   };
+  const editorial = AI_PROFILES.find((p) => p.model === EDITORIAL_MODEL)!;
+  const editorialFit = fits.find((f) => f.profile.model === EDITORIAL_MODEL);
+  /** Descargar y seleccionar: sólo por este botón, nunca automáticamente. */
+  const useEditorial = async () => {
+    setErr('');
+    try {
+      if (!has(EDITORIAL_MODEL)) {
+        await download(EDITORIAL_MODEL, editorial.downloadGB);
+        // Descarga cancelada, rechazada o fallida: no se selecciona un modelo que no está.
+        if (!(await api().listOllamaModels()).includes(EDITORIAL_MODEL)) return;
+      }
+      await props.patch({ ollamaModel: EDITORIAL_MODEL });
+    } catch (e) {
+      setErr(errMsg(e));
+    }
+  };
   const runBench = async (model: string) => {
     setErr('');
     setBenching(model);
@@ -94,6 +113,34 @@ export function AiModelPanel(props: {
         </p>
       )}
       {err && <div className="banner error">{err}</div>}
+      <section className="editorial-model" aria-label="Modelo para selección editorial">
+        <header className="row">
+          <h3 className="grow">Qwen 2.5 7B</h3>
+          <span className="badge completed">Recomendado para selección editorial</span>
+        </header>
+        <ul className="small">
+          {EDITORIAL_MODEL_GUIDE.map((m) => (
+            <li key={m.model}>
+              <code>{m.model}</code>: {m.text}
+            </li>
+          ))}
+        </ul>
+        <p className="small muted">
+          Si está descargado, verifica los destacados aunque elijas otro modelo para la selección. La transcripción (Whisper) y el render van aparte. Antes de cargarlo se libera de la GPU el modelo anterior.
+        </p>
+        {editorialFit && editorialFit.fit !== 'gpu' && <p className="banner warn small">{editorialFit.note}</p>}
+        <div className="row">
+          <button className="primary" disabled={pulling || s.ollamaModel === EDITORIAL_MODEL} onClick={() => void useEditorial()}>
+            {pulling && pull?.model === EDITORIAL_MODEL
+              ? `Descargando${pct !== null ? ` ${pct} %` : '…'}`
+              : s.ollamaModel === EDITORIAL_MODEL
+                ? 'Qwen 2.5 7B en uso'
+                : has(EDITORIAL_MODEL)
+                  ? 'Usar Qwen 2.5 7B'
+                  : 'Descargar y usar Qwen 2.5 7B (≈ 4,7 GB)'}
+          </button>
+        </div>
+      </section>
       <div className="profiles">
         {fits.map(({ profile: p, fit, note }) => {
           const active = s.ollamaModel === p.model;
@@ -102,7 +149,7 @@ export function AiModelPanel(props: {
             <section key={p.id} className={`profile ${active ? 'active' : ''}`} aria-label={`Perfil ${p.label}`}>
               <header className="row">
                 <h3 className="grow">
-                  {p.label} {p.id === recommended && <span className="badge completed">Recomendado</span>}
+                  {p.label} {p.id === recommended && <span className="badge">Mejor ajuste a tu memoria</span>}
                 </h3>
                 <span className={`badge fit-${fit}`}>{FIT_LABEL[fit]}</span>
               </header>

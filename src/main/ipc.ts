@@ -12,6 +12,7 @@ import { readSourceInfo } from './source';
 import { isInside } from './paths';
 import { log } from './logger';
 import { runDiagnostics, type ResolvedTools } from './deps';
+import { editorialAfterEdit } from '../shared/highlights';
 import { benchmarkModel, chatJson, listModels, pullModel, unloadModel } from './ollama';
 import { PublishStore } from './publishStore';
 import { retranscribeJob } from './retranscribe';
@@ -813,7 +814,9 @@ export function registerIpc(ctx: IpcContext): void {
     if (bulk.isDeleting(job.id)) throw new UserFacingError('Se está eliminando este trabajo o alguno de sus clips; espera a que termine.');
     const clip = job.clips.find((c) => c.id === clipId);
     if (!clip) throw new UserFacingError('El clip no existe.');
+    const before = { title: clip.title };
     clip.title = title.replace(/[\u0000-\u001f]/g, ' ');
+    if (clip.editorial) clip.editorial = editorialAfterEdit(clip.editorial, before, clip);
     ctx.jobs.put(job);
     emitJob(job);
     return job;
