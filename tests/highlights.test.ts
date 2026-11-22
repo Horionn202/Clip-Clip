@@ -173,6 +173,17 @@ describe('reglas que el modelo no puede saltarse', () => {
     expect(decide(v, candidate(500), c2).kind).toBe('rejected');
   });
 
+  it('revisión Codex: un título de victoria no se verifica con una derrota (ni al revés)', () => {
+    const loss: TimedWord[] = [];
+    'He perdido la carrera de motos y he quedado último.'.split(' ').forEach((w, i) => loss.push({ start: 500 + i * 0.3, end: 500 + i * 0.3 + 0.25, text: ` ${w}` }));
+    const seg = { start: 500, end: loss[loss.length - 1].end, text: ' He perdido la carrera de motos y he quedado último.' };
+    const c2 = { ...ctx, words: [...words.filter((w) => w.start < 500 || w.start > 560), ...loss], segments: [...segments.filter((s) => s.start < 500 || s.start > 560), seg].sort((x, y) => x.start - y.start) };
+    const quote = 'He perdido la carrera de motos y he quedado último';
+    expect(decide(verdict({ event: 'resultado', title: 'Victoria en la carrera de motos', quote, evidenceStart: 500 }), candidate(500), c2).kind).toBe('rejected');
+    expect(decide(verdict({ event: 'resultado', title: 'Pierdo la carrera de motos', quote, evidenceStart: 500 }), candidate(500), c2).kind).toBe('verified');
+    expect(decide(verdict({ event: 'resultado', title: 'Pierdo la carrera de motos', quote: 'He ganado la carrera de motos', evidenceStart: 700 }), candidate(700), ctx).kind).toBe('rejected');
+  });
+
   it('revisión Codex: dos destacados que se pisan unos milisegundos no pasan juntos el control del render', async () => {
     const twoWins = [...segments.filter((s) => s.start < 600 || s.start > 700)];
     const ws = [...words.filter((w) => w.start < 600 || w.start > 700)];

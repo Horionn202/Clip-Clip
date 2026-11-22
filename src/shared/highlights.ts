@@ -77,7 +77,10 @@ function happens(text: string, cue: RegExp): boolean {
 const START_EXPLICIT = /\b(salimos(?! (de|del|a|al|para|hacia|por)\b)|vamos a correr|arrancamos|tres dos uno|3 2 1|mi primer\w* \w+( \w+){0,3} ahora si|ahora si( \w+){0,2} mi primer\w*|here we go|lets race)\b/g;
 /** Inicios que sólo valen si la frase nombra el tema («empezó la carrera», no «empezó a llover»). */
 const START_WITH_TOPIC = /\b(empieza(?! a)|empezo(?! a)|empezamos|empezando ya|ha empezado(?! a)|comienza(?! a)|comenzo(?! a)|ha comenzado(?! a)|arranca la (carrera|partida)|arranca el (reto|partido|combate)|it begins|starts now|has started)\b/g;
-const RESULT = /\b(he ganado|hemos ganado|ha ganado|gane|ganamos|he perdido|hemos perdido|he quedado|hemos quedado|lo consegui|lo he conseguido|lo logre|victoria|i won|we won|i lost)\b/g;
+/** Ganar y perder se distinguen: un título de victoria no se verifica con una derrota. */
+const WIN = /\b(he ganado|hemos ganado|ha ganado|gane|ganamos|lo consegui|lo he conseguido|lo hemos conseguido|lo logre|victoria|i won|we won)\b/g;
+const LOSS = /\b(he perdido|hemos perdido|ha perdido|perdi|perdimos|derrota|he quedado ultimo|hemos quedado ultimos|i lost|we lost)\b/g;
+const RESULT = new RegExp(`${WIN.source}|${LOSS.source}|\\b(he quedado|hemos quedado)\\b`, 'g');
 const IMPACT = /\b(choque|choco|choca|chocado|chocamos|me estrello|me estrelle|estrellado|me caigo|me he caido|me la pego|accidente|golpazo|la que le metio|crash|crashed)\b/g;
 
 const startsTopic = (text: string, keywords: string[]): boolean => topicHits(text, keywords) > 0 && happens(text, START_WITH_TOPIC);
@@ -86,21 +89,28 @@ export const saysStart = (text: string, keywords: string[]): boolean => happens(
 /** Títulos que describen el clip o la verificación en vez del evento. */
 const META_TITLE = /\b(candidato|candidata|clip|fragmento|tramo|transcripcion|verificador|evidencia|el video muestra|este video|segmento)\b/;
 
-type Claim = 'inicio' | 'resultado' | 'choque';
-const CLAIM_LABEL: Record<Claim, string> = { inicio: 'un inicio', resultado: 'un resultado', choque: 'un choque' };
+type Claim = 'inicio' | 'victoria' | 'derrota' | 'resultado' | 'choque';
+const CLAIM_LABEL: Record<Claim, string> = { inicio: 'un inicio', victoria: 'una victoria', derrota: 'una derrota', resultado: 'un resultado', choque: 'un choque' };
 
 /** Qué eventos afirma un título. */
 export function titleClaims(title: string): Claim[] {
   const t = plain(title);
   const out: Claim[] = [];
   if (/\b(inicio|comienzo|comienza|comenzo|empieza|empezo|empezamos|arranque|arranca|arrancamos|salida|salimos|start|starts|begins)\b/.test(t)) out.push('inicio');
-  if (/\b(victoria|gana|gane|gano|ganar|ganado|ganamos|resultado|triunfo|derrota|pierde|perdio|perdido|podio|wins|win|won)\b/.test(t)) out.push('resultado');
+  const win = /\b(victoria|gana|gane|gano|ganar|ganado|ganamos|triunfo|podio|wins|win|won)\b/.test(t);
+  const loss = /\b(derrota|pierdo|pierde|pierden|perdemos|perdio|perdido|perder|perdi|ultimo|loses|lost)\b/.test(t);
+  if (win) out.push('victoria');
+  if (loss) out.push('derrota');
+  if (!win && !loss && /\b(resultado|clasificacion)\b/.test(t)) out.push('resultado');
   if (/\b(choque|choca|choco|chocamos|accidente|estrella contra|se estrella|crash|crashes)\b/.test(t)) out.push('choque');
   return out;
 }
 
 function saysClaim(text: string, claim: Claim, keywords: string[]): boolean {
   if (claim === 'inicio') return saysStart(text, keywords);
+  // Una victoria no se demuestra con «he perdido» (ni con «no he ganado», que ya filtra `happens`).
+  if (claim === 'victoria') return happens(text, WIN) && !happens(text, LOSS);
+  if (claim === 'derrota') return happens(text, LOSS) && !happens(text, WIN);
   return happens(text, claim === 'resultado' ? RESULT : IMPACT);
 }
 
