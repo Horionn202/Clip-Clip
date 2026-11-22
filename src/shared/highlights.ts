@@ -3,7 +3,7 @@
 // cerca de su inicio, de un evento que ya ocurre (no preparación, trayecto ni intención) y confianza ≥ 80.
 // Todo lo que no lo demuestre sigue disponible como «Otro momento».
 import type { ClipEditorial, DurationPreset, HighlightEvent } from './types';
-import { formatTime, presetRange } from './validation';
+import { formatTime, overlaps, presetRange } from './validation';
 import { MIN_WORDS_PER_SEC, isGenericText, localScore, speechRate, titleFromSentence, type Candidate, type TimedWord } from './selection';
 import { editorialScore, normWords, topicHits, type EditorialBrief } from './editorialBrief';
 
@@ -267,6 +267,12 @@ export function locateQuote(quote: string, clip: { start: number; end: number },
   return found;
 }
 
+/** Frase completa (segmentos de la transcripción) que contiene la cita. */
+function sentenceAround(evidence: TimedWord, c: HighlightContext): string {
+  const around = c.segments.filter((s) => s.end > evidence.start - 0.05 && s.start < evidence.end + 0.05);
+  return around.length ? textOf(around) : evidence.text;
+}
+
 export type Decision =
   | { kind: 'verified'; title: string; hook: string; evidence: TimedWord }
   | { kind: 'move'; to: number }
@@ -283,9 +289,11 @@ export function decide(v: Verdict, clip: Candidate, c: HighlightContext, eventAt
   if (!v.reason) return no('Sin motivo.');
   const evidence = locateQuote(v.quote, clip, c, v.evidenceStart);
   if (!evidence) return no('La cita no existe en la transcripción del clip.');
+  // La cita se juzga dentro de su frase completa: un recorte no puede quitar un «no», un «cuando» o un trayecto.
+  const said = { ...evidence, text: sentenceAround(evidence, c) };
   const nWords = normWords(evidence.text).length;
   if (nWords < 3 && !saysStart(evidence.text, c.keywords) && !happens(evidence.text, RESULT)) return no('La cita es demasiado corta para demostrar un evento.');
-  if (isPreparation(evidence.text)) return no('La cita habla de presentación, trayecto o preparativos.');
+  if (isPreparation(said.text)) return no('La cita habla de presentación, trayecto o preparativos.');
   if (eventAt !== null && evidence.start < eventAt - EVIDENCE_WINDOW_SEC) return no(`Ocurre antes de que empiece el evento del título (${formatTime(eventAt)}).`);
 
   // La evidencia tardía mueve el inicio a su frase; el tramo nuevo se vuelve a verificar.
@@ -306,7 +314,7 @@ export function decide(v: Verdict, clip: Candidate, c: HighlightContext, eventAt
   if (v.event === 'inicio_real') needed.add('inicio');
   if (v.event === 'resultado') needed.add('resultado');
   for (const claim of needed) {
-    const early = [...startingIn(c.segments, clip.start, clip.start + EVIDENCE_WINDOW_SEC), evidence];
+    const early = [...startingIn(c.segments, clip.start, clip.start + EVIDENCE_WINDOW_SEC), said];
     if (early.some((s) => saysClaim(s.text, claim, c.keywords))) continue;
     const later = inside.find((s) => saysClaim(s.text, claim, c.keywords));
     if (later) return { kind: 'move', to: later.start };
@@ -427,7 +435,8 @@ export async function verifyHighlights(o: {
 
   const verified: typeof passed = [];
   for (const p of passed.sort((a, b) => b.priority - a.priority || a.clip.start - b.clip.start)) {
-    const clash = verified.some((v) => p.clip.start < v.clip.end - 0.05 && v.clip.start < p.clip.end - 0.05);
+    // La misma regla de solape que comprueba el render (sin margen).
+    const clash = verified.some((v) => overlaps(v.clip, p.clip));
     if (verified.length < o.max && !clash) verified.push(p);
     else {
       const reason = clash ? 'Coincide con otro destacado verificado.' : 'Supera el máximo de clips.';

@@ -16,6 +16,7 @@ import {
   promisedEventStart,
   saysStart,
   verifierUserPrompt,
+  verifyHighlights,
   type HighlightContext,
   type Verdict,
 } from '../src/shared/highlights';
@@ -156,6 +157,47 @@ describe('reglas que el modelo no puede saltarse', () => {
     if (d.kind !== 'verified') throw new Error(d.kind);
     expect(d.title).not.toMatch(/candidato/i);
     expect(d.title).toMatch(/empezó la carrera/i);
+  });
+
+  it('revisión Codex: una cita recortada no borra el «no» de su frase', () => {
+    const neg: TimedWord[] = [];
+    const say = (at: number, text: string) => text.split(' ').forEach((w, i) => neg.push({ start: at + i * 0.3, end: at + i * 0.3 + 0.25, text: ` ${w}` }));
+    say(500, 'No he ganado la carrera de motos esta vez.');
+    say(510, 'Ya me lo esperaba porque iba muy lento.');
+    const segs = [
+      { start: 500, end: 502.4, text: ' No he ganado la carrera de motos esta vez.' },
+      { start: 510, end: 512.4, text: ' Ya me lo esperaba porque iba muy lento.' },
+    ];
+    const c2 = { ...ctx, words: [...words.filter((w) => w.start < 500 || w.start > 560), ...neg], segments: [...segments.filter((s) => s.start < 500 || s.start > 560), ...segs].sort((x, y) => x.start - y.start) };
+    const v = verdict({ event: 'resultado', title: 'He ganado la carrera de motos', quote: 'he ganado la carrera de motos', evidenceStart: 500.3 });
+    expect(decide(v, candidate(500), c2).kind).toBe('rejected');
+  });
+
+  it('revisión Codex: dos destacados que se pisan unos milisegundos no pasan juntos el control del render', async () => {
+    const twoWins = [...segments.filter((s) => s.start < 600 || s.start > 700)];
+    const ws = [...words.filter((w) => w.start < 600 || w.start > 700)];
+    const add = (at: number, text: string) => {
+      const parts = text.split(' ').map((w, i) => ({ start: at + i * 0.3, end: at + i * 0.3 + 0.25, text: ` ${w}` }));
+      ws.push(...parts);
+      twoWins.push({ start: at, end: parts[parts.length - 1].end, text: ` ${text}` });
+    };
+    add(600, 'He ganado la carrera de motos en la playa.');
+    add(659.98, 'He ganado la carrera de motos en el puerto.');
+    const c3 = { ...ctx, words: ws.sort((x, y) => x.start - y.start), segments: twoWins.sort((x, y) => x.start - y.start) };
+    const win = (start: number) => ({ ...candidate(start), end: start + 60 });
+    const r = await verifyHighlights({
+      selected: [win(600), win(659.98)],
+      moments: [],
+      context: c3,
+      max: 5,
+      model: EDITORIAL_MODEL,
+      ask: async (_s, user) => {
+        const at = Number(user.match(/CANDIDATO: de ([\d.]+)/)![1]);
+        return raw(verdict({ event: 'resultado', title: 'He ganado la carrera de motos', quote: 'He ganado la carrera de motos', evidenceStart: at }));
+      },
+    });
+    expect(r.verified).toHaveLength(1);
+    expect(() => assertClipInvariants(r.verified, { preset: 60, maxClips: 5, sourceDuration: D })).not.toThrow();
   });
 
   it('un título que anuncia un resultado que no ocurre en el clip no pasa', () => {
