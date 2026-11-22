@@ -204,10 +204,10 @@ export function verifierSchema(): object {
 }
 
 export function verifierUserPrompt(clip: Candidate, c: HighlightContext): string {
+  // Sólo las palabras que caen en cada tramo: lo que se dice después del final no está en el clip.
   const part = (from: number, to: number): string =>
-    c.segments
-      .filter((s) => s.start >= from && s.start < to)
-      .map((s) => `[${s.start.toFixed(1)}] ${s.text.trim()}`)
+    spoken(c, from, to)
+      .map((p) => `[${p.start.toFixed(1)}] ${p.text}`)
       .join('\n') || '(sin voz)';
   return `TÍTULO ORIGINAL: ${c.title}
 PROMESA DEL TÍTULO: ${c.brief.titlePromise || c.title}
@@ -277,6 +277,29 @@ export function locateQuote(quote: string, clip: { start: number; end: number },
   return found;
 }
 
+interface Spoken {
+  start: number;
+  /** Sólo lo que se dice dentro del tramo. */
+  text: string;
+  /** La frase entera, para no perder un «no» o un «cuando» que quedó fuera. */
+  full: string;
+}
+
+/** Lo que se oye en [from, to], frase a frase, recortado a las palabras que caen dentro. */
+function spoken(c: HighlightContext, from: number, to: number): Spoken[] {
+  const ws = timedWords(c);
+  return c.segments.flatMap((s) => {
+    const inSeg = ws.filter((w) => w.start >= s.start - 0.05 && w.start < s.end + 0.05);
+    const inside = inSeg.filter((w) => w.start >= from - 0.05 && w.end <= to + 0.05);
+    return inside.length ? [{ start: inside[0].start, text: textOf(inside), full: s.text.trim() }] : [];
+  });
+}
+
+/** El evento se dice dentro del tramo y su frase completa no lo niega ni lo pone en futuro. */
+function heardClaim(p: Spoken, claim: Claim, keywords: string[]): boolean {
+  return saysClaim(p.text, claim, keywords) && saysClaim(p.full, claim, keywords);
+}
+
 /** Frase completa (segmentos de la transcripción) que contiene la cita. */
 function sentenceAround(evidence: TimedWord, c: HighlightContext): string {
   const around = c.segments.filter((s) => s.end > evidence.start - 0.05 && s.start < evidence.end + 0.05);
@@ -324,9 +347,9 @@ export function decide(v: Verdict, clip: Candidate, c: HighlightContext, eventAt
   if (v.event === 'inicio_real') needed.add('inicio');
   if (v.event === 'resultado') needed.add('resultado');
   for (const claim of needed) {
-    const early = [...startingIn(c.segments, clip.start, clip.start + EVIDENCE_WINDOW_SEC), said];
-    if (early.some((s) => saysClaim(s.text, claim, c.keywords))) continue;
-    const later = inside.find((s) => saysClaim(s.text, claim, c.keywords));
+    const early = spoken(c, clip.start, Math.min(clip.end, clip.start + EVIDENCE_WINDOW_SEC));
+    if (early.some((p) => heardClaim(p, claim, c.keywords)) || heardClaim({ start: evidence.start, text: evidence.text, full: said.text }, claim, c.keywords)) continue;
+    const later = spoken(c, clip.start, clip.end).find((p) => heardClaim(p, claim, c.keywords));
     if (later) return { kind: 'move', to: later.start };
     return no(`Afirma ${CLAIM_LABEL[claim]} que no se oye en el clip.`);
   }
@@ -343,8 +366,8 @@ export function asOtherMoment(clip: Candidate, c: HighlightContext, rejectedBeca
   if (!clip.editorial) return clip;
   const inside = startingIn(c.segments, clip.start, clip.end);
   const unsupported = titleClaims(clip.title).some((claim) => {
-    const where = claim === 'inicio' ? startingIn(c.segments, clip.start, clip.start + EVIDENCE_WINDOW_SEC) : inside;
-    return !where.some((s) => saysClaim(s.text, claim, c.keywords));
+    const where = spoken(c, clip.start, claim === 'inicio' ? Math.min(clip.end, clip.start + EVIDENCE_WINDOW_SEC) : clip.end);
+    return !where.some((p) => heardClaim(p, claim, c.keywords));
   });
   let title = clip.title;
   if (unsupported) {
@@ -470,8 +493,8 @@ export function editorialAfterEdit(e: ClipEditorial | undefined, before: { title
   const v = e?.verification;
   if (!e || !v) return e;
   const moved = v.evidenceStart < after.start - 0.05 || v.evidenceStart - after.start > EVIDENCE_WINDOW_SEC || v.evidenceEnd > after.end + 0.05;
-  const was = titleClaims(before.title);
-  const newClaim = after.title !== before.title && titleClaims(after.title).some((x) => !was.includes(x));
-  if (!moved && !newClaim) return e;
-  return { ...e, featured: false, verification: undefined, notVerified: moved ? 'Al editar el tramo, la evidencia ya no está al principio del clip.' : 'El título editado afirma un evento sin verificar.' };
+  // La verificación sólo vale para el título verificado: cualquier cambio de palabras la anula (mayúsculas o signos no).
+  const retitled = plain(after.title) !== plain(before.title);
+  if (!moved && !retitled) return e;
+  return { ...e, featured: false, verification: undefined, notVerified: moved ? 'Al editar el tramo, la evidencia ya no está al principio del clip.' : 'Se cambió el título verificado: vuelve a verificarlo para destacarlo.' };
 }

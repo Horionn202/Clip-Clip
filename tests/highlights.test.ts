@@ -173,6 +173,19 @@ describe('reglas que el modelo no puede saltarse', () => {
     expect(decide(v, candidate(500), c2).kind).toBe('rejected');
   });
 
+  it('revisión Codex: lo que se dice después del final del clip no cuenta como evidencia', () => {
+    // Un solo segmento de Whisper de 0 a 25 s; el clip acaba en el 15 y la victoria se dice en el 20.
+    const parts: [number, string][] = [[0, 'Seguimos en la carrera de motos'], [20, 'He ganado la carrera de motos']];
+    const ws = parts.flatMap(([at, text]) => text.split(' ').map((w, i) => ({ start: at + i * 0.4, end: at + i * 0.4 + 0.3, text: ` ${w}` })));
+    const c4 = { ...ctx, preset: 15 as const, duration: 60, words: ws, segments: [{ start: 0, end: 22.5, text: ' Seguimos en la carrera de motos y al final He ganado la carrera de motos' }] };
+    const short = { ...candidate(0), end: 15 };
+    const v = verdict({ event: 'accion_activa', title: 'Victoria en la carrera de motos', quote: 'Seguimos en la carrera de motos', evidenceStart: 0 });
+    expect(decide(v, short, c4).kind).toBe('rejected');
+    const prompt = verifierUserPrompt(short, c4);
+    expect(prompt.split('DESPUÉS')[0].split('DURANTE')[1]).not.toMatch(/He ganado/);
+    expect(prompt.split('DESPUÉS')[1]).toMatch(/He ganado/);
+  });
+
   it('revisión Codex: un título de victoria no se verifica con una derrota (ni al revés)', () => {
     const loss: TimedWord[] = [];
     'He perdido la carrera de motos y he quedado último.'.split(' ').forEach((w, i) => loss.push({ start: 500 + i * 0.3, end: 500 + i * 0.3 + 0.25, text: ` ${w}` }));
@@ -373,6 +386,11 @@ describe('después de verificar', () => {
   });
   it('un título editado que afirma otro evento quita la estrella', () => {
     expect(isVerifiedHighlight(editorialAfterEdit(editorial, clip, { ...clip, title: 'Victoria en la carrera' }))).toBe(false);
+  });
+  it('revisión Codex: cambiar el tema del título o quitar el evento también la quita; mayúsculas y signos no', () => {
+    expect(isVerifiedHighlight(editorialAfterEdit(editorial, clip, { ...clip, title: 'Inicio de la carrera de coches' }))).toBe(false);
+    expect(isVerifiedHighlight(editorialAfterEdit(editorial, clip, { ...clip, title: 'Un paseo por el puerto' }))).toBe(false);
+    expect(isVerifiedHighlight(editorialAfterEdit(editorial, clip, { ...clip, title: '¡INICIO DE LA CARRERA!' }))).toBe(true);
   });
   it('un «destacado» de una versión anterior no cuenta como verificado', () => {
     expect(isVerifiedHighlight(candidate(28).editorial)).toBe(false);
