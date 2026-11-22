@@ -403,9 +403,10 @@ export function evaluateCandidate(raw: unknown, o: EvaluateOptions): Evaluation 
   const payoffStrength = num100(r.payoff_strength ?? r.payoffStrength) ?? llmScore ?? 50;
   const selfContained = num100(r.self_contained ?? r.selfContained) ?? 60;
   const score = editorialScore({ topicRelevance, hookStrength, payoffStrength, selfContained, local: ls });
-  if (score < o.topic.minScore) return { ok: false, reason: 'umbral' };
+  // El umbral no descarta: marca los destacados. El resto se genera igual como «otros momentos».
+  const featured = score >= o.topic.minScore;
   const why = clean(r.why_selected ?? r.whySelected, 300) || reason;
-  const editorial: ClipEditorial = { score, topicRelevance, hookStrength, payoffStrength, selfContained, momentType, why, aligned: aligned.moved || undefined };
+  const editorial: ClipEditorial = { score, featured, topicRelevance, hookStrength, payoffStrength, selfContained, momentType, why, aligned: aligned.moved || undefined };
   return { ok: true, candidate: { start, end, title: finalTitle, hook, reason, llmScore, localScore: ls, score, editorial } };
 }
 

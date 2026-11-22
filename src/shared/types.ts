@@ -90,6 +90,8 @@ export interface Clip {
 /** Criterios editoriales con los que se eligió un clip (0–100). */
 export interface ClipEditorial {
   score: number;
+  /** Supera el filtro de calidad: se muestra con estrella y primero. */
+  featured?: boolean;
   topicRelevance: number;
   hookStrength: number;
   payoffStrength: number;
@@ -108,6 +110,7 @@ export interface RankingEntry {
   score: number;
   topicRelevance?: number;
   momentType?: import('./editorialBrief').MomentType;
+  featured?: boolean;
   accepted: boolean;
   /** Motivo de descarte (si no entró). */
   reason?: string;
@@ -300,8 +303,10 @@ export interface AnalysisReport {
   partialReason?: string;
   /** Brief editorial (tema, eventos, promesa del título) usado en todas las rondas. */
   brief?: import('./editorialBrief').EditorialBrief;
-  /** Puntuación mínima aplicada (0–100). */
+  /** Puntuación mínima para marcar un clip como destacado (0–100). */
   minScore?: number;
+  /** Clips que superan el filtro (destacados). */
+  featured?: number;
   quality?: import('./editorialBrief').SelectionQuality;
   /** Candidatos válidos ordenados, con el motivo de los que no entraron (para diagnóstico). */
   ranking?: RankingEntry[];

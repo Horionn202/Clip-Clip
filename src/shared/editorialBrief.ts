@@ -25,7 +25,7 @@ export const QUALITY_PROFILES: Record<SelectionQuality, { label: string; note: s
   estricta: { label: 'Estricta', note: 'Análisis más profundo (fragmentos más pequeños y más búsquedas). Puede tardar bastante más.', fillRounds: 2, chunkChars: 7000 },
 };
 export const DEFAULT_SELECTION_QUALITY: SelectionQuality = 'equilibrada';
-/** Puntuación editorial mínima (0–100) para renderizar un clip. */
+/** Puntuación editorial mínima (0–100) para marcar un clip como destacado. */
 export const DEFAULT_MIN_CLIP_SCORE = 70;
 
 export interface BriefEvent {
@@ -228,8 +228,9 @@ export function editorialScore(p: { topicRelevance: number; hookStrength: number
   return Math.round(Math.max(0, Math.min(100, s)));
 }
 
-/** Resumen honesto: menos clips que el máximo no es un fallo. */
-export function qualitySummary(obtained: number, max: number): string {
-  if (obtained >= max) return `${obtained} de hasta ${max} clips superaron el filtro de calidad`;
-  return `${obtained} de hasta ${max} clips superaron el filtro de calidad. Se priorizó calidad sobre cantidad.`;
+/** Resumen: cuántos clips se generaron y cuántos son destacados (superan el filtro de calidad). */
+export function qualitySummary(obtained: number, max: number, featured: number): string {
+  const total = `${obtained} clip${obtained === 1 ? '' : 's'} generado${obtained === 1 ? '' : 's'} (hasta ${max})`;
+  if (featured === 0) return `${total}. Ninguno superó el filtro de calidad: revísalos antes de publicar.`;
+  return `${total} · ${featured} destacado${featured === 1 ? '' : 's'} por calidad y relación con el tema.`;
 }

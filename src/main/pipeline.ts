@@ -336,7 +336,7 @@ export function createPipeline(ctx: PipelineContext): JobRunner {
       event('analysis', { job: job.id, ...report });
       if (chosen.length === 0) {
         throw new UserFacingError(
-          `Ningún momento superó el filtro de calidad (${report.minScore ?? 70}/100) para «hasta ${report.effectiveTarget}» clips. Prueba la calidad de selección «Estricta», otro preset u otro modelo de Ollama, o baja el umbral en Configuración.`,
+          `La IA no encontró ningún momento válido (sólo relleno o tramos sin voz). Prueba la calidad de selección «Estricta», otro preset u otro modelo de Ollama.`,
         );
       }
       const clips: Clip[] = chosen.map((c, i) => ({
@@ -350,7 +350,7 @@ export function createPipeline(ctx: PipelineContext): JobRunner {
         score: c.score,
         ...(c.editorial ? { editorial: c.editorial } : {}),
       }));
-      update({ clips, message: qualitySummary(clips.length, report.effectiveTarget) });
+      update({ clips, message: qualitySummary(clips.length, report.effectiveTarget, report.featured ?? 0) });
       check(signal);
 
       // 7. Render
@@ -404,7 +404,7 @@ export function createPipeline(ctx: PipelineContext): JobRunner {
 
       metrics.clipsFinal = clips.length;
       flushMetrics();
-      const summary = report.minScore !== undefined ? qualitySummary(clips.length, report.effectiveTarget) : resultSummary(clips.length, report.effectiveTarget, report.partialReason);
+      const summary = report.minScore !== undefined ? qualitySummary(clips.length, report.effectiveTarget, report.featured ?? 0) : resultSummary(clips.length, report.effectiveTarget, report.partialReason);
       update({ resultSummary: summary, message: summary });
       event('job_done', { job: job.id, summary, metrics });
     } catch (e) {

@@ -1839,3 +1839,19 @@ details summary {
     grid-template-columns: 1fr;
   }
 }
+.clip-featured {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 8px;
+  border-radius: var(--r-pill);
+  background: #00c285;
+  color: #0b0b0b;
+  font-weight: 700;
+}
+.gallery-h {
+  grid-column: 1 / -1;
+  margin: var(--s-2) 0 0;
+  font-size: var(--fs-sm, 14px);
+  color: var(--c-text-2);
+}

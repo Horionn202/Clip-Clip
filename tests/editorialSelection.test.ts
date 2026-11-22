@@ -91,13 +91,17 @@ describe('caso real: «Mi primera carrera» en GTA 6', () => {
     expect(alignToHook(1509, 1569, words, topic.keywords).moved).toBe(false);
   });
 
-  it('el relleno sin relación con el tema no supera el filtro aunque el modelo lo puntúe alto', () => {
+  it('un momento sin relación con el tema no sale destacado aunque el modelo lo puntúe alto; el relleno explícito se descarta', () => {
     const filler = { ...raw, start: 600, end: 660, title: 'Hablando del calor en la ciudad', hook: 'Hoy hace mucho calor en la ciudad', topic_relevance: 80 };
-    expect(evaluateCandidate(filler, { preset: 60, sourceDuration: 1700, words, taken: [], topic })).toEqual({ ok: false, reason: 'umbral' });
+    const ev = evaluateCandidate(filler, { preset: 60, sourceDuration: 1700, words, taken: [], topic });
+    expect(ev.ok).toBe(true);
+    if (ev.ok) expect(ev.candidate.editorial?.featured).toBe(false);
+    const good = evaluateCandidate(raw, { preset: 60, sourceDuration: 1700, words, taken: [], topic });
+    if (good.ok) expect(good.candidate.editorial?.featured).toBe(true);
     expect(evaluateCandidate({ ...raw, moment_type: 'relleno' }, { preset: 60, sourceDuration: 1700, words, taken: [], topic })).toEqual({ ok: false, reason: 'relleno' });
   });
 
-  it('pedir «hasta 20» devuelve sólo los momentos que superan el filtro', async () => {
+  it('pedir 20 genera todos los momentos válidos y marca como destacados sólo los que superan el filtro', async () => {
     const strong = [200, 700, 1200, 1505];
     const SAY = [
       ['Arranca la carrera en el puerto con el súper coche rojo.', 'Salida limpia, adelanto a tres coches antes del puente.'],
@@ -114,11 +118,12 @@ describe('caso real: «Mi primera carrera» en GTA 6', () => {
     const raws = [...strong.map((t, i) => cand(t, 90, i)), ...Array.from({ length: 16 }, (_, k) => cand(80 + k * 75 + (strong.some((s) => Math.abs(s - (80 + k * 75)) < 70) ? 1000 : 0), 80, k + 10)).filter((c) => c.start < 1640)];
     const chat: ChatFn = async (_s, _u, _n, schema) => (schema ? JSON.stringify({ tema_principal: 'Primera carrera con súper coches en GTA 6', subtemas: [], eventos_principales: [], palabras_clave: ['carrera', 'gta 6', 'súper coche'], promesa_titulo: 'Ver la primera carrera', momentos_promesa: [] }) : JSON.stringify({ clips: raws }));
     const r = await analyzeClips({ segments, words: w, duration: 1700, preset: 60, userTarget: 20, chat, title: TITLE, minScore: 70 });
-    expect(r.clips.length).toBe(4);
-    expect(r.clips.map((c) => Math.round(c.start / 100))).toEqual([2, 7, 12, 15]);
-    expect(r.report.partialReason).toMatch(/calidad/);
+    const featured = r.clips.filter((c) => c.editorial?.featured);
+    expect(r.clips.length).toBeGreaterThan(4); // los demás también se generan, sin estrella
+    expect(featured.map((c) => Math.round(c.start / 100))).toEqual([2, 7, 12, 15]);
+    expect(r.report.featured).toBe(4);
     expect(r.report.brief?.source).toBe('ia');
-    expect(qualitySummary(r.clips.length, r.report.effectiveTarget)).toBe('4 de hasta 20 clips superaron el filtro de calidad. Se priorizó calidad sobre cantidad.');
+    expect(qualitySummary(r.clips.length, r.report.effectiveTarget, 4)).toMatch(/4 destacados/);
   });
 });
 

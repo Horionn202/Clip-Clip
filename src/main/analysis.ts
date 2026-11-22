@@ -186,7 +186,7 @@ export async function analyzeClips(input: AnalyzeInput): Promise<AnalyzeResult> 
     chosen.push(...sel.accepted);
     round.accepted += sel.accepted.length;
     mergeRejected(round.rejected, sel.rejected);
-    for (const c of sel.accepted) ranking.push({ start: c.start, end: c.end, title: c.title, score: c.score, topicRelevance: c.editorial?.topicRelevance, momentType: c.editorial?.momentType, accepted: true });
+    for (const c of sel.accepted) ranking.push({ start: c.start, end: c.end, title: c.title, score: c.score, topicRelevance: c.editorial?.topicRelevance, momentType: c.editorial?.momentType, featured: c.editorial?.featured, accepted: true });
   };
 
   const ask = (n: number) => `Devuelve como máximo ${n} candidatos (menos si no hay suficientes momentos buenos).`;
@@ -263,13 +263,14 @@ ${lines(chunk)}`;
     for (const [k, v] of Object.entries(rej)) ranking.push({ start: 0, end: 0, title: `${v} candidato${v === 1 ? '' : 's'}`, score: 0, accepted: false, reason: REJECT_LABELS[k as keyof typeof REJECT_LABELS] ?? k });
     report.ranking = ranking.slice(0, 60);
   }
+  if (editorialMode) report.featured = chosen.filter((c) => c.editorial?.featured).length;
   if (chosen.length < eff) {
     report.partialReason = editorialMode
-      ? `se priorizó calidad sobre cantidad: el resto de momentos no superó el filtro (${report.minScore}/100)`
+      ? 'no se encontraron más momentos distintos que no sean relleno'
       : freeGaps(chosen, duration, preset).length === 0
         ? 'no queda espacio libre en el vídeo para más clips sin solaparse'
         : 'no se encontraron más momentos distintos que cumplan los criterios';
   }
-  input.onProgress?.(1, `${chosen.length} de hasta ${eff} clips superaron el filtro`);
+  input.onProgress?.(1, editorialMode ? `${chosen.length} clips · ${report.featured} destacados` : `${chosen.length}/${eff} clips seleccionados`);
   return { clips: chosen, report };
 }
