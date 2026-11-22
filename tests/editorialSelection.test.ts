@@ -139,6 +139,24 @@ describe('revisión Codex: transcripción sin tiempos por palabra', () => {
   });
 });
 
+describe('revisión Codex: hook_start con una frase del tema justo antes', () => {
+  it('empieza en la frase del hook, no en un trozo de la frase anterior', () => {
+    const { words } = script(
+      [
+        [201.5, 'Hoy compré en la tienda del puerto un súper coche.'],
+        [206, 'Mi primera carrera en GTA 6 empieza ahora mismo, gente.'],
+        [213, 'Acelero el súper coche y adelanto a todos en la curva.'],
+      ],
+      400,
+    );
+    const hookAt = words.find((w) => w.start >= 206)!.start;
+    const raw = { start: 160, end: 220, hook_start: hookAt, title: 'Salida de la primera carrera', hook: 'Mi primera carrera en GTA 6', reason: 'Empieza la carrera con el súper coche', score: 85, topic_relevance: 90, hook_strength: 85, payoff_strength: 85, self_contained: 80, moment_type: 'accion', why_selected: 'Salida' };
+    const ev = evaluateCandidate(raw, { preset: 60, sourceDuration: 400, words, taken: [], topic });
+    if (!ev.ok) throw new Error('rechazado');
+    expect(ev.candidate.start).toBe(hookAt);
+  });
+});
+
 describe('ranking', () => {
   it('la relevancia al tema es lo que más pesa', () => {
     const onTopic = editorialScore({ topicRelevance: 95, hookStrength: 60, payoffStrength: 60, selfContained: 60, local: 50 });

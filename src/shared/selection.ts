@@ -338,7 +338,9 @@ export function evaluateCandidate(raw: unknown, o: EvaluateOptions): Evaluation 
   if (o.topic) {
     if (hookStart !== null && hookStart > start + 3 && hookStart < end) {
       // El modelo indicó dónde empieza la frase gancho: se valida con la transcripción.
-      const s2 = sentencesIn(o.words, hookStart - 2, hookStart + 2).find((x) => x.start >= hookStart - 2);
+      // Frases completas alrededor (no recortadas por la ventana) y la que contiene hook_start, o la primera que empieza después.
+      const around = sentencesIn(o.words, Math.max(start, hookStart - 30), hookStart + 15);
+      const s2 = around.find((x) => x.start <= hookStart + 0.3 && x.end >= hookStart - 0.3) ?? around.find((x) => x.start >= hookStart - 0.3);
       if (s2 && topicHits(s2.text, kws) > 0) aligned = { start: s2.start, moved: true, sentence: s2 };
     }
     if (!aligned.moved) aligned = alignToHook(start, end, o.words, kws);
