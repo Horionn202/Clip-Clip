@@ -1,5 +1,6 @@
 // Selección editorial: brief del vídeo, relevancia al tema, «hasta N», inicio en la frase gancho y edición temporal.
 import { describe, it, expect } from 'vitest';
+import { otherMoments } from '../src/shared/otherMoments';
 import { analyzeClips, type ChatFn } from '../src/main/analysis';
 import { alignToHook, evaluateCandidate, selectRound, type TimedWord } from '../src/shared/selection';
 import { editorialScore, fallbackBrief, parseBrief, qualitySummary, topicKeywords } from '../src/shared/editorialBrief';
@@ -250,5 +251,33 @@ describe('caso real: el modelo propone pocos momentos y se pisan', () => {
   it('sin voz no inventa clips', async () => {
     const r = await analyzeClips({ ...base, words: [], segments: [{ start: 0, end: 50, text: ' Hola.' }], userTarget: 5, chat: model([]) });
     expect(r.clips).toHaveLength(0);
+  });
+});
+
+describe('revisión Codex: cortes de «Otros momentos»', () => {
+  const say = (start: number, end: number, n: number, last = '') => ({ start, end, text: Array.from({ length: n }, (_, i) => `palabra${i}`).join(' ') + last });
+
+  it('prueba los finales intermedios antes de descartar un inicio', () => {
+    const segments = [say(0, 45, 30), say(45, 50, 15), say(50, 60, 20)];
+    const r = otherMoments({ segments, words: [], duration: 120, preset: 60, topic, taken: [{ start: 55, end: 115 }], filler: [], need: 1 });
+    expect(r.map((c) => [c.start, c.end])).toEqual([[0, 50]]);
+  });
+
+  it('corta en frases completas aunque los segmentos de Whisper partan la frase', () => {
+    // Frases de 10 s (25 palabras) y segmentos desplazados 5 s: cada segmento parte una frase.
+    const words = Array.from({ length: 450 }, (_, i) => ({ start: i * 0.4, end: i * 0.4 + 0.36, text: i % 25 === 24 ? ' fin.' : ` palabra${i}` }));
+    const segments = Array.from({ length: 17 }, (_, k) => say(5 + k * 10, 15 + k * 10, 25));
+    const r = otherMoments({ segments, words, duration: 180, preset: 60, topic, taken: [], filler: [], need: 2 });
+    expect(r).toHaveLength(2);
+    for (const c of r) {
+      expect(words.some((w, i) => i % 25 === 0 && Math.abs(w.start - c.start) < 0.02)).toBe(true);
+      expect(words.some((w, i) => i % 25 === 24 && Math.abs(w.end - c.end) < 0.02)).toBe(true);
+    }
+  });
+
+  it('una transcripción sin signos ni pausas sigue llegando al número pedido', () => {
+    const words = Array.from({ length: 750 }, (_, i) => ({ start: i * 0.4, end: i * 0.4 + 0.36, text: ` palabra${i}` }));
+    const segments = Array.from({ length: 60 }, (_, k) => say(k * 5, (k + 1) * 5, 13));
+    expect(otherMoments({ segments, words, duration: 300, preset: 60, topic, taken: [], filler: [], need: 5 })).toHaveLength(5);
   });
 });
