@@ -8,6 +8,7 @@ import { GpuPanel, LastRunPanel } from './Performance';
 import { api, errMsg } from '../api';
 import { PublishedExportsCleanup } from './PublishedExport';
 import { LegacyModal } from './Legacy';
+import { DEFAULT_MIN_CLIP_SCORE, DEFAULT_SELECTION_QUALITY, QUALITY_PROFILES, SELECTION_QUALITIES, type SelectionQuality } from '../../shared/editorialBrief';
 
 export function SettingsPage(props: { settings: Settings; onChange: (s: Settings) => void; diag: Diagnostics | null; refreshDiag: () => Promise<void>; jobs: Job[] }) {
   const s = props.settings;
@@ -116,7 +117,19 @@ export function SettingsPage(props: { settings: Settings; onChange: (s: Settings
       </SectionCard>
       <SectionCard id="ia" icon="sparkle" title="IA local" description="Modelo de Ollama que elige los mejores momentos y redacta títulos.">
         <AiModelPanel settings={s} diag={props.diag} patch={(p) => patch(p).then(props.refreshDiag)} onModelsChanged={() => void props.refreshDiag()} />
-  
+        <h3 className="sub-h">Calidad de selección</h3>
+        <p className="small muted">
+          La IA busca los momentos que cumplen el tema y la promesa del título. Se generan hasta el máximo elegido; los que superan el filtro de calidad salen primero marcados como «Destacado» y el resto como «Otros momentos». Cambiar esto no descarga ni cambia el modelo; un modelo mayor tampoco arregla por sí solo una mala selección.
+        </p>
+        <div className="seg" role="radiogroup" aria-label="Calidad de selección">
+          {SELECTION_QUALITIES.map((q) => (
+            <button key={q} role="radio" aria-checked={(s.selectionQuality ?? DEFAULT_SELECTION_QUALITY) === q} className={(s.selectionQuality ?? DEFAULT_SELECTION_QUALITY) === q ? 'on' : ''} onClick={() => patch({ selectionQuality: q as SelectionQuality })}>
+              {QUALITY_PROFILES[q].label}
+            </button>
+          ))}
+        </div>
+        <p className="small muted">{QUALITY_PROFILES[s.selectionQuality ?? DEFAULT_SELECTION_QUALITY].note}</p>
+        <NumField label="Puntuación mínima para marcar un clip como destacado (0–100, por defecto 70)" value={s.minClipScore ?? DEFAULT_MIN_CLIP_SCORE} min={0} max={100} onSave={(v) => patch({ minClipScore: v })} />
       </SectionCard>
       <SectionCard id="almacenamiento" icon="disk" title="Almacenamiento" description="Dónde se exportan los clips y qué se conserva. Sólo se borran archivos de la app, siempre a la Papelera.">
             <h3 className="sub-h">Carpeta de exportación</h3>

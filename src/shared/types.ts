@@ -83,6 +83,37 @@ export interface Clip {
   subtitleCues?: import('./cues').Cue[];
   /** Fecha en que se envió a la Papelera el export tras publicarlo (se conserva toda la metadata). */
   exportDeletedAfterPublish?: string;
+  /** Por qué se eligió (categoría, puntuación editorial, relación con el tema). Ausente en clips antiguos. */
+  editorial?: ClipEditorial;
+}
+
+/** Criterios editoriales con los que se eligió un clip (0–100). */
+export interface ClipEditorial {
+  score: number;
+  /** Supera el filtro de calidad: se muestra con estrella y primero. */
+  featured?: boolean;
+  topicRelevance: number;
+  hookStrength: number;
+  payoffStrength: number;
+  selfContained: number;
+  momentType?: import('./editorialBrief').MomentType;
+  why: string;
+  /** El inicio se movió a la frase gancho real. */
+  aligned?: boolean;
+}
+
+/** Diagnóstico del ranking: cada candidato válido y si entró o no. */
+export interface RankingEntry {
+  start: number;
+  end: number;
+  title: string;
+  score: number;
+  topicRelevance?: number;
+  momentType?: import('./editorialBrief').MomentType;
+  featured?: boolean;
+  accepted: boolean;
+  /** Motivo de descarte (si no entró). */
+  reason?: string;
 }
 
 export interface PublishedExportInfo {
@@ -270,6 +301,15 @@ export interface AnalysisReport {
   rejected: number;
   obtained: number;
   partialReason?: string;
+  /** Brief editorial (tema, eventos, promesa del título) usado en todas las rondas. */
+  brief?: import('./editorialBrief').EditorialBrief;
+  /** Puntuación mínima para marcar un clip como destacado (0–100). */
+  minScore?: number;
+  /** Clips que superan el filtro (destacados). */
+  featured?: number;
+  quality?: import('./editorialBrief').SelectionQuality;
+  /** Candidatos válidos ordenados, con el motivo de los que no entraron (para diagnóstico). */
+  ranking?: RankingEntry[];
 }
 
 export interface Job {
@@ -283,6 +323,8 @@ export interface Job {
   message: string;
   error?: string;
   sourceTitle?: string;
+  /** Descripción del vídeo de origen (contexto editorial para la IA). */
+  sourceDescription?: string;
   sourceDuration?: number;
   clips: Clip[];
   createdAt: string;
@@ -372,6 +414,10 @@ export interface GpuInfo {
 export interface Settings {
   ollamaHost: string;
   ollamaModel: string;
+  /** Profundidad de la búsqueda de momentos (no cambia el modelo). */
+  selectionQuality?: import('./editorialBrief').SelectionQuality;
+  /** Puntuación editorial mínima para renderizar un clip (0–100). */
+  minClipScore?: number;
   whisperModel: string;
   /** Código ISO ('es' por defecto). 'auto' = autodetectar, sólo si el usuario lo elige. '' (ajustes antiguos) se migra a 'es'. */
   whisperLanguage: string;

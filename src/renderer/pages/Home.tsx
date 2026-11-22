@@ -155,7 +155,7 @@ export function HomePage(props: { ollamaModel?: string; jobs: Job[]; diag: Diagn
       </div>
 
       <div className="field">
-        <span>Meta de clips (hasta {MAX_CLIPS}, no garantizados)</span>
+        <span>Máximo de clips (hasta {MAX_CLIPS}: la IA prioriza calidad sobre cantidad)</span>
         <div className="seg">
           {CLIP_TARGET_PRESETS.map((p) => (
             <button key={p.value} className={target === p.value ? 'on' : ''} onClick={() => setTarget(p.value)}>
@@ -165,13 +165,13 @@ export function HomePage(props: { ollamaModel?: string; jobs: Job[]; diag: Diagn
         </div>
         <div className="row">
           <input type="range" min={1} max={MAX_CLIPS} value={target ?? 1} onChange={(e) => setTarget(Math.min(MAX_CLIPS, Math.max(1, Number(e.target.value))))} />
-          <b>{target === null ? 'Elige una meta' : `Meta seleccionada: ${target} clip${target === 1 ? '' : 's'}`}</b>
+          <b>{target === null ? 'Elige un máximo' : `Hasta ${target} clip${target === 1 ? '' : 's'}`}</b>
         </div>
         {target !== null && (
           <small className="muted">
             {target} clips de {preset} s necesitan al menos {requiredDuration(target, preset)} s de vídeo.
-            {probe && feas !== null && eff !== null && ` Este vídeo admite hasta ${feas} sin solaparse → meta efectiva: ${eff}.`}
-            {!probe && ' Pulsa «Comprobar vídeo» para calcular la meta efectiva.'}
+            {probe && feas !== null && eff !== null && ` Este vídeo admite hasta ${feas} sin solaparse → hasta ${eff}.`}
+            {!probe && ' Pulsa «Comprobar vídeo» para calcular el máximo real.'}
           </small>
         )}
         {advice && <div className="banner warn">{advice}</div>}

@@ -131,6 +131,16 @@ app.whenReady().then(() => {
         if (!c || !exp || !/\.mp4$/i.test(exp) || !fs.existsSync(exp)) return new Response('Not found', { status: 404 });
         return net.fetch(pathToFileURL(exp).toString(), { headers: req.headers });
       }
+      // clip://source/<jobId>/video: vídeo original del trabajo (vista previa del tramo en el editor temporal).
+      // Sólo source.(mp4|mkv|webm|mov) dentro de la carpeta del trabajo; nada de la URL decide la ruta.
+      if (u.hostname === 'source') {
+        if (!/^[a-z0-9-]{8,64}$/.test(jobId ?? '')) return new Response('Bad request', { status: 400 });
+        const dir = jobDir(paths.jobsDir, jobId);
+        const name = fs.existsSync(dir) ? fs.readdirSync(dir).find((f) => /^source\.(mp4|mkv|webm|mov)$/i.test(f)) : undefined;
+        const full = name ? path.join(dir, name) : '';
+        if (!name || !isInside(dir, full)) return new Response('Not found', { status: 404 });
+        return net.fetch(pathToFileURL(full).toString(), { headers: req.headers });
+      }
       // clip://job/<id>/<clip.mp4>  ·  clip://frame/<id>/<fotograma.jpg> (vistas previas y referencia de facecam)
       const isFrame = u.hostname === 'frame';
       const okName = isFrame ? /^[\w.-]+\.jpg$/.test(file ?? '') : /^[\w.() -]+\.mp4$/.test(file ?? '');

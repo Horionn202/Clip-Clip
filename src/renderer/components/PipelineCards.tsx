@@ -2,6 +2,28 @@ import { useState } from 'react';
 import type { Job } from '../../shared/types';
 import { REUSE_LABELS, fmtMs, pipelineCards, type PipelineCard, type RetryOption } from '../../shared/jobView';
 import { Modal } from './Modal';
+import validateSource from '../assets/workflow-icons/validate-source.png';
+import downloadVideo from '../assets/workflow-icons/download-video.png';
+import extractAudio from '../assets/workflow-icons/extract-audio.png';
+import transcribe from '../assets/workflow-icons/transcribe.png';
+import analyzeAi from '../assets/workflow-icons/analyze-ai.png';
+import selectMoments from '../assets/workflow-icons/select-moments.png';
+import renderClips from '../assets/workflow-icons/render-clips.png';
+import preparePublish from '../assets/workflow-icons/prepare-publish.png';
+import completed from '../assets/workflow-icons/completed.png';
+
+/** Icono PNG de cada tarjeta (por `PipelineCard.key`); Vite los incluye en el build. */
+const ICONS: Record<string, string> = {
+  validating: validateSource,
+  downloading: downloadVideo,
+  extractingAudio: extractAudio,
+  transcribing: transcribe,
+  analyzing: analyzeAi,
+  selecting: selectMoments,
+  rendering: renderClips,
+  publishing: preparePublish,
+  done: completed,
+};
 
 /** Oculta la carpeta personal del usuario en los logs mostrados (C:\Users\nombre → %USERPROFILE%). */
 export function redactPaths(s: string): string {
@@ -23,10 +45,10 @@ export function PipelineCards({ job, now, onRetryFrom, retry, details }: { job: 
         {cards.map((c) => (
           <li key={c.key} className={`pipe-card ${c.state}`} aria-current={c.state === 'activo' ? 'step' : undefined}>
             <div className="pipe-head">
-              <span className="pipe-icon" aria-hidden="true">
-                {c.icon}
+              <span className="pipe-icon">
+                {ICONS[c.key] && <img className="pipe-icon-image" src={ICONS[c.key]} alt={`Etapa: ${c.label}`} width={46} height={46} draggable={false} />}
               </span>
-              <b className="grow">{c.label}</b>
+              <b className="grow pipe-title">{c.label}</b>
               <span className="pipe-state">{STATE_LABEL[c.state]}</span>
             </div>
             {c.percent !== undefined && (
@@ -36,7 +58,7 @@ export function PipelineCards({ job, now, onRetryFrom, retry, details }: { job: 
             )}
             <div className="pipe-meta small">
               {c.percent !== undefined && <span>{c.percent} %</span>}
-              {c.elapsedMs !== undefined && <span>⏱ {fmtMs(c.elapsedMs)}</span>}
+              {c.elapsedMs !== undefined && <span className="pipe-time" title="Tiempo transcurrido">{fmtMs(c.elapsedMs)}<span className="sr-only"> transcurridos</span></span>}
               {c.etaMs !== undefined && <span>quedan ≈ {fmtMs(c.etaMs)}</span>}
             </div>
             {c.facts.map((f) => (
