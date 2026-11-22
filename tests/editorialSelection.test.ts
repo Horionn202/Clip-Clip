@@ -1,5 +1,6 @@
 // Selección editorial: brief del vídeo, relevancia al tema, «hasta N», inicio en la frase gancho y edición temporal.
 import { describe, it, expect } from 'vitest';
+import { otherMoments } from '../src/shared/otherMoments';
 import { analyzeClips, type ChatFn } from '../src/main/analysis';
 import { alignToHook, evaluateCandidate, selectRound, type TimedWord } from '../src/shared/selection';
 import { editorialScore, fallbackBrief, parseBrief, qualitySummary, topicKeywords } from '../src/shared/editorialBrief';
@@ -194,5 +195,89 @@ describe('edición temporal del clip', () => {
     expect(next.dirty).toBe(true);
     const back = applyClipPatch('a', { start: 50, end: 80 }, { clips: [next], preset: 30, sourceDuration: 200 });
     expect(back.dirty).toBe(false);
+  });
+});
+
+describe('caso real: el modelo propone pocos momentos y se pisan', () => {
+  const { words, segments } = script(RACE, 1700);
+  const base = { segments, words, duration: 1700, preset: 60 as const, title: TITLE };
+  const item = { start: 1505, end: 1508, title: 'Primera carrera en GTA 6', hook: 'Mi primera carrera en GTA 6', reason: 'Empieza la primera carrera del juego', score: 90, topic_relevance: 95, hook_strength: 90, payoff_strength: 90, self_contained: 85, moment_type: 'accion' };
+  const model = (clips: unknown[]): ChatFn => async (_s, _u, _n, schema) => JSON.stringify(schema ? {} : { clips });
+  const valid = (clips: { start: number; end: number }[]) => {
+    const s = [...clips].sort((a, b) => a.start - b.start);
+    s.forEach((c, i) => {
+      expect(c.end - c.start).toBeGreaterThanOrEqual(45);
+      expect(c.end - c.start).toBeLessThanOrEqual(61);
+      if (i) expect(c.start).toBeGreaterThanOrEqual(s[i - 1].end);
+    });
+  };
+
+  it('frases contiguas que se solapan: completa hasta 20 sin inventar destacados', async () => {
+    const r = await analyzeClips({ ...base, userTarget: 20, chat: model([0, 4, 8, 12].map((d) => ({ ...item, start: 1505 + d, end: 1508 + d }))) });
+    expect(r.clips).toHaveLength(20);
+    expect(r.report.added).toBe(19);
+    expect(r.clips.filter((c) => c.editorial?.auto)).toHaveLength(19);
+    expect(r.report.featured).toBe(1);
+    valid(r.clips);
+  });
+
+  it('la IA no propone nada: salen los pedidos y ninguno destacado', async () => {
+    const r = await analyzeClips({ ...base, userTarget: 7, chat: model([]) });
+    expect(r.clips).toHaveLength(7);
+    expect(r.report.featured).toBe(0);
+    valid(r.clips);
+  });
+
+  it('sin tiempos por palabra también completa', async () => {
+    const r = await analyzeClips({ ...base, words: [], userTarget: 10, chat: model([]) });
+    expect(r.clips).toHaveLength(10);
+    valid(r.clips);
+  });
+
+  it('no empieza clips donde la IA marcó relleno', async () => {
+    const r = await analyzeClips({ ...base, userTarget: 5, chat: model([{ ...item, start: 0, end: 1000, moment_type: 'relleno' }]) });
+    expect(r.clips).toHaveLength(5);
+    for (const c of r.clips) expect(c.start).toBeGreaterThanOrEqual(1000);
+  });
+
+  it('usa duraciones cortas válidas cuando así cabe un clip más', async () => {
+    // En 300 s caben 5 clips de 60 s sólo si alguno se acorta para cerrar en una frase.
+    const short = script([], 300);
+    const r = await analyzeClips({ ...base, ...short, duration: 300, userTarget: 5, chat: model([]) });
+    expect(r.clips).toHaveLength(5);
+    valid(r.clips);
+  });
+
+  it('sin voz no inventa clips', async () => {
+    const r = await analyzeClips({ ...base, words: [], segments: [{ start: 0, end: 50, text: ' Hola.' }], userTarget: 5, chat: model([]) });
+    expect(r.clips).toHaveLength(0);
+  });
+});
+
+describe('revisión Codex: cortes de «Otros momentos»', () => {
+  const say = (start: number, end: number, n: number, last = '') => ({ start, end, text: Array.from({ length: n }, (_, i) => `palabra${i}`).join(' ') + last });
+
+  it('prueba los finales intermedios antes de descartar un inicio', () => {
+    const segments = [say(0, 45, 30), say(45, 50, 15), say(50, 60, 20)];
+    const r = otherMoments({ segments, words: [], duration: 120, preset: 60, topic, taken: [{ start: 55, end: 115 }], filler: [], need: 1 });
+    expect(r.map((c) => [c.start, c.end])).toEqual([[0, 50]]);
+  });
+
+  it('corta en frases completas aunque los segmentos de Whisper partan la frase', () => {
+    // Frases de 10 s (25 palabras) y segmentos desplazados 5 s: cada segmento parte una frase.
+    const words = Array.from({ length: 450 }, (_, i) => ({ start: i * 0.4, end: i * 0.4 + 0.36, text: i % 25 === 24 ? ' fin.' : ` palabra${i}` }));
+    const segments = Array.from({ length: 17 }, (_, k) => say(5 + k * 10, 15 + k * 10, 25));
+    const r = otherMoments({ segments, words, duration: 180, preset: 60, topic, taken: [], filler: [], need: 2 });
+    expect(r).toHaveLength(2);
+    for (const c of r) {
+      expect(words.some((w, i) => i % 25 === 0 && Math.abs(w.start - c.start) < 0.02)).toBe(true);
+      expect(words.some((w, i) => i % 25 === 24 && Math.abs(w.end - c.end) < 0.02)).toBe(true);
+    }
+  });
+
+  it('una transcripción sin signos ni pausas sigue llegando al número pedido', () => {
+    const words = Array.from({ length: 750 }, (_, i) => ({ start: i * 0.4, end: i * 0.4 + 0.36, text: ` palabra${i}` }));
+    const segments = Array.from({ length: 60 }, (_, k) => say(k * 5, (k + 1) * 5, 13));
+    expect(otherMoments({ segments, words, duration: 300, preset: 60, topic, taken: [], filler: [], need: 5 })).toHaveLength(5);
   });
 });

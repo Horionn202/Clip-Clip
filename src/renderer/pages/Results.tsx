@@ -65,6 +65,16 @@ function ExportConfirm({ open, onClose, what, onConfirm }: { open: boolean; onCl
 /** Por qué se eligió: categoría, puntuación editorial, relación con el tema y motivo. */
 function ClipWhy({ e }: { e: ClipEditorial }) {
   const rel = e.topicRelevance >= 75 ? 'Muy ligado al tema' : e.topicRelevance >= 50 ? 'Relacionado con el tema' : 'Poco ligado al tema';
+  if (e.auto)
+    return (
+      <div className="clip-why small">
+        <div className="clip-why-row">
+          <span className="clip-why-tag">Elegido por la app</span>
+          <span className="muted">Sin valorar por la IA</span>
+        </div>
+        <p className="muted clip-why-text">{e.why}</p>
+      </div>
+    );
   return (
     <div className="clip-why small">
       <div className="clip-why-row">

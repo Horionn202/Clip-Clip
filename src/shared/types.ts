@@ -98,6 +98,8 @@ export interface ClipEditorial {
   selfContained: number;
   momentType?: import('./editorialBrief').MomentType;
   why: string;
+  /** Añadido por la app sin valoración de la IA: no se muestra su puntuación. */
+  auto?: boolean;
   /** El inicio se movió a la frase gancho real. */
   aligned?: boolean;
 }
@@ -307,6 +309,8 @@ export interface AnalysisReport {
   minScore?: number;
   /** Clips que superan el filtro (destacados). */
   featured?: number;
+  /** «Otros momentos» que añadió la app porque la IA no propuso suficientes. */
+  added?: number;
   quality?: import('./editorialBrief').SelectionQuality;
   /** Candidatos válidos ordenados, con el motivo de los que no entraron (para diagnóstico). */
   ranking?: RankingEntry[];
