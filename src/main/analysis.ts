@@ -5,6 +5,7 @@ import type { AnalysisReport, AnalysisRound, DurationPreset, RankingEntry } from
 import { MAX_CLIPS } from '../shared/types';
 import { UserFacingError, parseModelResponse } from '../shared/validation';
 import { REJECT_LABELS, effectiveTarget, feasibleMax, freeGaps, selectRound, type Candidate, type TimedWord, type TopicOptions } from '../shared/selection';
+import { otherMoments } from '../shared/otherMoments';
 import {
   BRIEF_SYSTEM_PROMPT,
   DEFAULT_MIN_CLIP_SCORE,
@@ -180,8 +181,13 @@ export async function analyzeClips(input: AnalyzeInput): Promise<AnalyzeResult> 
   };
 
   /** Selecciona por puntuación entre todos los candidatos de una ronda y registra el resultado. */
+  const filler: { start: number; end: number }[] = [];
   const selectInto = (round: AnalysisRound, raws: unknown[]): void => {
     round.received += raws.length;
+    for (const raw of raws) {
+      const r = raw as { start?: unknown; end?: unknown; moment_type?: unknown } | null;
+      if (r?.moment_type === 'relleno' && typeof r.start === 'number' && typeof r.end === 'number') filler.push({ start: r.start, end: r.end });
+    }
     const sel = selectRound(raws, eff - chosen.length, { preset, sourceDuration: duration, words, taken: chosen, topic });
     chosen.push(...sel.accepted);
     round.accepted += sel.accepted.length;
@@ -252,6 +258,16 @@ ${lines(chunk)}`;
     throw new UserFacingError(lastError || 'El modelo de IA devolvió respuestas no válidas. Prueba con otro modelo en Configuración.');
   }
 
+  // La IA decide los destacados; la cantidad no depende de ella: el resto se completa con «Otros momentos».
+  if (topic && chosen.length < eff) {
+    input.checkCancelled?.();
+    const extra = otherMoments({ segments, words, duration, preset, topic, taken: chosen, filler, need: eff - chosen.length });
+    chosen.push(...extra);
+    report.added = extra.length;
+    for (const c of extra) ranking.push({ start: c.start, end: c.end, title: c.title, score: c.score, topicRelevance: c.editorial?.topicRelevance, featured: false, accepted: true });
+    input.log?.('otros momentos añadidos', { añadidos: extra.length });
+  }
+
   chosen.sort((a, b) => a.start - b.start);
   report.obtained = chosen.length;
   report.candidates = report.rounds.reduce((a, r) => a + r.received, 0);
@@ -266,7 +282,7 @@ ${lines(chunk)}`;
   if (editorialMode) report.featured = chosen.filter((c) => c.editorial?.featured).length;
   if (chosen.length < eff) {
     report.partialReason = editorialMode
-      ? 'no se encontraron más momentos distintos que no sean relleno'
+      ? 'no quedan más tramos con voz que quepan sin solaparse'
       : freeGaps(chosen, duration, preset).length === 0
         ? 'no queda espacio libre en el vídeo para más clips sin solaparse'
         : 'no se encontraron más momentos distintos que cumplan los criterios';
