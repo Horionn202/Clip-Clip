@@ -127,6 +127,18 @@ describe('caso real: «Mi primera carrera» en GTA 6', () => {
   });
 });
 
+describe('revisión Codex: transcripción sin tiempos por palabra', () => {
+  it('no penaliza la relevancia cuando no hay palabras con las que contrastar', () => {
+    const raw = { start: 100, end: 160, title: 'Salida de la primera carrera', hook: 'Empieza la primera carrera en GTA 6', reason: 'La carrera empieza y se ve la salida', score: 85, topic_relevance: 85, hook_strength: 85, payoff_strength: 85, self_contained: 85, moment_type: 'accion', why_selected: 'Salida' };
+    const ev = evaluateCandidate(raw, { preset: 60, sourceDuration: 600, words: [], taken: [], topic });
+    expect(ev.ok).toBe(true);
+    if (ev.ok) {
+      expect(ev.candidate.editorial?.topicRelevance).toBe(85);
+      expect(ev.candidate.editorial?.featured).toBe(true);
+    }
+  });
+});
+
 describe('ranking', () => {
   it('la relevancia al tema es lo que más pesa', () => {
     const onTopic = editorialScore({ topicRelevance: 95, hookStrength: 60, payoffStrength: 60, selfContained: 60, local: 50 });

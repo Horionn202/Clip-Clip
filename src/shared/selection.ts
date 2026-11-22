@@ -396,9 +396,10 @@ export function evaluateCandidate(raw: unknown, o: EvaluateOptions): Evaluation 
     return { ok: true, candidate: { start, end, title, hook, reason, llmScore, localScore: ls, score } };
   }
   // Ranking editorial: relevancia al tema (IA contrastada con lo que se dice) > gancho/payoff > autonomía > técnica.
-  const localRel = localTopicRelevance(windowText, kws);
   const llmRel = num100(r.topic_relevance ?? r.topicRelevance);
-  const topicRelevance = Math.round(llmRel === null ? localRel : 0.6 * llmRel + 0.4 * localRel);
+  // Sin tiempos por palabra no hay texto del tramo con el que contrastar: no se penaliza (se usa la valoración de la IA).
+  const localRel = o.words.length ? localTopicRelevance(windowText, kws) : null;
+  const topicRelevance = Math.round(localRel === null ? (llmRel ?? 50) : llmRel === null ? localRel : 0.6 * llmRel + 0.4 * localRel);
   const hookStrength = num100(r.hook_strength ?? r.hookStrength) ?? llmScore ?? ls;
   const payoffStrength = num100(r.payoff_strength ?? r.payoffStrength) ?? llmScore ?? 50;
   const selfContained = num100(r.self_contained ?? r.selfContained) ?? 60;

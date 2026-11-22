@@ -26,6 +26,8 @@ export function TimeRangeEditor(props: {
 }) {
   const { preset, sourceDuration: D, original } = props;
   const [snap, setSnap] = useState(true);
+  /** Texto que se está escribiendo en cada campo (se aplica al salir del campo o con Enter). */
+  const [draft, setDraft] = useState<{ start?: string; end?: string }>({});
   const [words, setWords] = useState<Word[]>([]);
   const track = useRef<HTMLDivElement>(null);
   const drag = useRef<'start' | 'end' | null>(null);
@@ -51,6 +53,12 @@ export function TimeRangeEditor(props: {
   }, [props.jobId, props.clipId, Math.round(w0 / 30), Math.round(w1 / 30)]);
 
   const move = (edge: 'start' | 'end', to: number) => props.onChange(adjustRange({ start: props.start, end: props.end }, { edge, to }, { preset, sourceDuration: D, words, snap }));
+  const commit = (edge: 'start' | 'end') => {
+    const raw = draft[edge];
+    setDraft((d) => ({ ...d, [edge]: undefined }));
+    if (raw === undefined || raw.trim() === '' || !Number.isFinite(Number(raw))) return;
+    move(edge, Number(raw));
+  };
   const timeAt = (clientX: number) => {
     const r = track.current!.getBoundingClientRect();
     return w0 + Math.max(0, Math.min(1, (clientX - r.left) / r.width)) * span;
@@ -71,7 +79,16 @@ export function TimeRangeEditor(props: {
           <div key={edge} className="trange-row">
             <label className="field trange-field">
               <span>{edge === 'start' ? 'Inicio' : 'Fin'}</span>
-              <input type="number" step="0.1" min={0} max={D} value={(edge === 'start' ? props.start : props.end).toFixed(2)} onChange={(e) => move(edge, Number(e.target.value))} />
+              <input
+                type="number"
+                step="0.1"
+                min={0}
+                max={D}
+                value={draft[edge] ?? (edge === 'start' ? props.start : props.end).toFixed(2)}
+                onChange={(e) => setDraft((d) => ({ ...d, [edge]: e.target.value }))}
+                onBlur={() => commit(edge)}
+                onKeyDown={(e) => e.key === 'Enter' && commit(edge)}
+              />
               <small className="muted">{formatTime(edge === 'start' ? props.start : props.end)}</small>
             </label>
             <div className="trange-steps" role="group" aria-label={`Mover el ${edge === 'start' ? 'inicio' : 'fin'}`}>
