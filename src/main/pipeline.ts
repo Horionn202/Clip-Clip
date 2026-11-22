@@ -15,6 +15,7 @@ import type { JobRunner } from './queue';
 import { friendlyYtDlpError } from './ytdlp';
 import { readSourceInfo } from './source';
 import { analyzeClips } from './analysis';
+import { qualitySummary } from '../shared/editorialBrief';
 import { renderClip, renderThumb, type RenderEnv } from './clipRender';
 import { frameEdgeAnalyzer, sampleFrames } from './visual';
 import { decideLayout } from '../shared/layouts';
@@ -120,12 +121,12 @@ export function createPipeline(ctx: PipelineContext): JobRunner {
       const existingSource = () => fs.readdirSync(dir).find((f) => /^source\.(mp4|mkv|webm|mov)$/i.test(f));
       const reuseSource = !!job.localSource || (!!job.reuse?.includes('source') && !!existingSource());
       const info = reuseSource
-        ? { title: job.sourceTitle ?? 'Vídeo', duration: job.sourceDuration ?? 0, clientArgs: [] as string[], filesize: undefined }
+        ? { title: job.sourceTitle ?? 'Vídeo', description: job.sourceDescription, duration: job.sourceDuration ?? 0, clientArgs: [] as string[], filesize: undefined }
         : await readSourceInfo(tools.ytDlp!, job.url, s, signal, () => {
             log.warn(`[${job.id}] YouTube pidió verificación anti-bot; reintentando con cliente alternativo`);
             update({ message: 'YouTube pidió verificación; reintentando con un método alternativo…' });
           });
-      update({ sourceTitle: info.title, sourceDuration: info.duration, progress: 0.6, message: 'Comprobando motor de transcripción…' });
+      update({ sourceTitle: info.title, sourceDescription: info.description, sourceDuration: info.duration, progress: 0.6, message: 'Comprobando motor de transcripción…' });
 
       // Plan de transcripción (antes de descargar nada pesado).
       const selOpts: SelectOptions = {
@@ -318,8 +319,12 @@ export function createPipeline(ctx: PipelineContext): JobRunner {
         duration,
         preset: job.preset,
         userTarget: Math.min(job.maxClips, MAX_CLIPS),
-        chat: (system, user, maxItems) =>
-          chatJson(s.ollamaHost, s.ollamaModel, system, user, signal, { maxItems, numPredict: Math.min(4096, 300 + maxItems * 220) }),
+        title: job.sourceTitle ?? info.title,
+        description: job.sourceDescription ?? info.description,
+        quality: s.selectionQuality,
+        minScore: s.minClipScore,
+        chat: (system, user, maxItems, schema) =>
+          chatJson(s.ollamaHost, s.ollamaModel, system, user, signal, schema ? { schema, numPredict: 1600 } : { maxItems, numPredict: Math.min(4096, 400 + maxItems * 320) }),
         checkCancelled: () => check(signal),
         onProgress: (p, message) => update({ progress: p, message }),
         log: (m, extra) => log.info(`[${job.id}] análisis: ${m}`, extra),
@@ -331,7 +336,7 @@ export function createPipeline(ctx: PipelineContext): JobRunner {
       event('analysis', { job: job.id, ...report });
       if (chosen.length === 0) {
         throw new UserFacingError(
-          `0/${report.effectiveTarget} clips: la IA no propuso ningún momento que cumpla los criterios. Prueba otro preset u otro modelo de Ollama.`,
+          `Ningún momento superó el filtro de calidad (${report.minScore ?? 70}/100) para «hasta ${report.effectiveTarget}» clips. Prueba la calidad de selección «Estricta», otro preset u otro modelo de Ollama, o baja el umbral en Configuración.`,
         );
       }
       const clips: Clip[] = chosen.map((c, i) => ({
@@ -343,8 +348,9 @@ export function createPipeline(ctx: PipelineContext): JobRunner {
         hook: c.hook,
         reason: c.reason,
         score: c.score,
+        ...(c.editorial ? { editorial: c.editorial } : {}),
       }));
-      update({ clips, message: `${clips.length}/${report.effectiveTarget} clips seleccionados` });
+      update({ clips, message: qualitySummary(clips.length, report.effectiveTarget) });
       check(signal);
 
       // 7. Render
@@ -398,7 +404,7 @@ export function createPipeline(ctx: PipelineContext): JobRunner {
 
       metrics.clipsFinal = clips.length;
       flushMetrics();
-      const summary = resultSummary(clips.length, report.effectiveTarget, report.partialReason);
+      const summary = report.minScore !== undefined ? qualitySummary(clips.length, report.effectiveTarget) : resultSummary(clips.length, report.effectiveTarget, report.partialReason);
       update({ resultSummary: summary, message: summary });
       event('job_done', { job: job.id, summary, metrics });
     } catch (e) {

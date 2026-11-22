@@ -2,6 +2,8 @@
 // Puro (sin Node/Electron): lo usan main, renderer y tests.
 import { MAX_CLIPS, type DurationPreset } from './types';
 import { overlaps, presetRange } from './validation';
+import type { ClipEditorial } from './types';
+import { MOMENT_TYPES, editorialScore, localTopicRelevance, topicHits, type EditorialBrief, type MomentType } from './editorialBrief';
 
 /** Máximo matemático de clips sin solapes: floor(duración / preset), con tope 20. */
 export function feasibleMax(durationSec: number, preset: DurationPreset): number {
@@ -49,7 +51,9 @@ export type RejectReason =
   | 'placeholder'
   | 'poca_voz'
   | 'sobrante'
-  | 'repetido';
+  | 'repetido'
+  | 'relleno'
+  | 'umbral';
 
 export const REJECT_LABELS: Record<RejectReason, string> = {
   formato: 'formato inválido',
@@ -63,6 +67,8 @@ export const REJECT_LABELS: Record<RejectReason, string> = {
   poca_voz: 'casi sin voz en el tramo',
   sobrante: 'excede la meta',
   repetido: 'repite una idea ya elegida',
+  relleno: 'relleno sin relación con el tema',
+  umbral: 'no supera el filtro de calidad',
 };
 
 const PLACEHOLDERS = [
@@ -138,6 +144,8 @@ export interface Candidate {
   localScore: number;
   /** Puntuación final usada para ordenar. */
   score: number;
+  /** Criterios editoriales (sólo con tema/brief). */
+  editorial?: ClipEditorial;
 }
 
 const num = (v: unknown): number | null => {
@@ -215,12 +223,88 @@ export function openingPhrase(words: TimedWord[], start: number, end: number): s
   return out.join(' ').replace(/\s+/g, ' ').trim().slice(0, 200);
 }
 
+export interface TopicOptions {
+  /** Palabras clave del tema (título + brief). */
+  keywords: string[];
+  brief?: EditorialBrief;
+  /** Puntuación editorial mínima (0–100). */
+  minScore: number;
+}
+
 export interface EvaluateOptions {
   preset: DurationPreset;
   sourceDuration: number;
   words: TimedWord[];
   /** Clips ya aceptados (para rechazar solapes). */
   taken: { start: number; end: number }[];
+  /** Criterios editoriales: relevancia al tema, umbral y alineación con la frase gancho. */
+  topic?: TopicOptions;
+}
+
+export interface Sentence {
+  start: number;
+  end: number;
+  text: string;
+}
+
+/** Frases habladas en [from, to): cortes en signos de cierre o pausas de más de 0,7 s. */
+export function sentencesIn(words: TimedWord[], from: number, to: number): Sentence[] {
+  const ws = words.filter((w) => w.start >= from - 0.05 && w.start < to);
+  const out: Sentence[] = [];
+  let cur: TimedWord[] = [];
+  const flush = () => {
+    if (cur.length) out.push({ start: cur[0].start, end: cur[cur.length - 1].end, text: cur.map((w) => w.text.trim()).join(' ') });
+    cur = [];
+  };
+  for (const w of ws) {
+    if (cur.length && w.start - cur[cur.length - 1].end > 0.7) flush();
+    cur.push(w);
+    if (/[.?!…]$/.test(w.text.trim())) flush();
+  }
+  flush();
+  return out;
+}
+
+/**
+ * Busca dentro del tramo la frase que de verdad trata el tema (la frase gancho) y, si el clip empieza mucho antes
+ * con relleno, mueve el inicio a esa frase. Sólo añade contexto previo si también habla del tema y está pegado (≤ 6 s).
+ */
+export function alignToHook(start: number, end: number, words: TimedWord[], keywords: string[]): { start: number; moved: boolean; sentence?: Sentence } {
+  if (!keywords.length || !words.length) return { start, moved: false };
+  const ss = sentencesIn(words, start, start + (end - start) * 0.8);
+  if (!ss.length) return { start, moved: false };
+  const hits = ss.map((x) => topicHits(x.text, keywords));
+  const best = Math.max(...hits);
+  if (best < 2) return { start, moved: false };
+  const bi = hits.indexOf(best);
+  // El clip ya abre con el tema (o la frase está casi al principio): no se toca.
+  if (hits[0] >= best || ss[bi].start - start < 4) return { start, moved: false, sentence: ss[bi] };
+  let k = bi;
+  while (k > 0 && hits[k - 1] >= 1 && ss[bi].start - ss[k - 1].start <= 6) k--;
+  return { start: ss[k].start, moved: true, sentence: ss[bi] };
+}
+
+/** Título breve a partir de una frase real (sin repetir palabras seguidas ni signos sueltos). */
+export function titleFromSentence(text: string): string {
+  const ws = text.replace(/[.?!…¡¿]+/g, ' ').replace(/\s+/g, ' ').trim().split(' ');
+  const out: string[] = [];
+  for (const w of ws) {
+    if (out.length >= 9) break;
+    out.push(w);
+  }
+  const t = out.join(' ').replace(/[,;:]+$/, '');
+  return (t.charAt(0).toUpperCase() + t.slice(1)).slice(0, 100);
+}
+
+const num100 = (v: unknown): number | null => {
+  const n = num(v);
+  return n !== null && n >= 0 && n <= 100 ? n : null;
+};
+
+function momentTypeOf(v: unknown): MomentType | undefined {
+  if (typeof v !== 'string') return undefined;
+  const k = v.normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
+  return (MOMENT_TYPES as string[]).includes(k) ? (k as MomentType) : undefined;
 }
 
 export type Evaluation = { ok: true; candidate: Candidate } | { ok: false; reason: RejectReason };
@@ -245,6 +329,25 @@ export function evaluateCandidate(raw: unknown, o: EvaluateOptions): Evaluation 
   const hookNeedsRepair = isGenericText(hook, 12) || normText(hook) === normText(title);
   if (hookNeedsRepair && o.words.length === 0) return { ok: false, reason: 'hook' };
 
+  const kws = o.topic?.keywords ?? [];
+  const momentType = o.topic ? momentTypeOf(r.moment_type ?? r.momentType ?? r.tipo) : undefined;
+  if (o.topic && momentType === 'relleno') return { ok: false, reason: 'relleno' };
+  // Inicio en la frase gancho real (no en el arranque arbitrario de la ventana).
+  const hookStart = o.topic ? num(r.hook_start ?? r.hookStart) : null;
+  let aligned: ReturnType<typeof alignToHook> = { start, moved: false };
+  if (o.topic) {
+    if (hookStart !== null && hookStart > start + 3 && hookStart < end) {
+      // El modelo indicó dónde empieza la frase gancho: se valida con la transcripción.
+      const s2 = sentencesIn(o.words, hookStart - 2, hookStart + 2).find((x) => x.start >= hookStart - 2);
+      if (s2 && topicHits(s2.text, kws) > 0) aligned = { start: s2.start, moved: true, sentence: s2 };
+    }
+    if (!aligned.moved) aligned = alignToHook(start, end, o.words, kws);
+    if (aligned.moved) {
+      end = aligned.start + (end - start);
+      start = aligned.start;
+    }
+  }
+
   // Duración: ajusta al preset desde el inicio y encaja en límites de palabra.
   const { min, max } = presetRange(o.preset);
   start = snap(start, o.words, 'start');
@@ -266,6 +369,20 @@ export function evaluateCandidate(raw: unknown, o: EvaluateOptions): Evaluation 
     hook = openingPhrase(o.words, start, end);
     if (isGenericText(hook, 12)) return { ok: false, reason: 'hook' };
   }
+  let finalTitle = title;
+  const windowText = o.words.filter((w) => w.start >= start - 0.05 && w.end <= end + 0.05).map((w) => w.text).join(' ');
+  if (o.topic && kws.length && o.words.length) {
+    // Hook: si el del modelo es una frase incidental y el clip abre con el tema, se usa la frase real.
+    const opening = openingPhrase(o.words, start, end);
+    if ((aligned.moved || topicHits(hook, kws) === 0) && topicHits(opening, kws) > 0 && !isGenericText(opening, 12)) hook = opening;
+    // Título: describe el evento real, no una frase suelta, cuando el tramo trata claramente el tema.
+    if (topicHits(title, kws) === 0 && topicHits(windowText, kws) >= 2) {
+      const b = o.topic.brief;
+      const ev = b ? [...b.promiseMoments, ...b.keyEvents].find((e) => e.t >= start - 10 && e.t <= end && topicHits(e.label, kws) > 0) : undefined;
+      const fromSentence = aligned.sentence ? titleFromSentence(aligned.sentence.text) : titleFromSentence(opening);
+      finalTitle = ev ? ev.label.slice(0, 100) : fromSentence;
+    }
+  }
 
   // Voz suficiente, comprobada aparte de la puntuación (los bonus de claridad/duración no pueden saltársela):
   // al menos 0,8 palabras/s de media en el tramo (≈ 24 palabras en 30 s).
@@ -274,8 +391,22 @@ export function evaluateCandidate(raw: unknown, o: EvaluateOptions): Evaluation 
   if (o.words.length > 0 && ls < 15) return { ok: false, reason: 'poca_voz' };
   const llm = num(r.score);
   const llmScore = llm !== null && llm >= 0 && llm <= 100 ? llm : null; // scores fuera de rango no cuentan
-  const score = Math.round(llmScore === null ? ls : 0.6 * ls + 0.4 * llmScore);
-  return { ok: true, candidate: { start, end, title, hook, reason, llmScore, localScore: ls, score } };
+  if (!o.topic) {
+    const score = Math.round(llmScore === null ? ls : 0.6 * ls + 0.4 * llmScore);
+    return { ok: true, candidate: { start, end, title, hook, reason, llmScore, localScore: ls, score } };
+  }
+  // Ranking editorial: relevancia al tema (IA contrastada con lo que se dice) > gancho/payoff > autonomía > técnica.
+  const localRel = localTopicRelevance(windowText, kws);
+  const llmRel = num100(r.topic_relevance ?? r.topicRelevance);
+  const topicRelevance = Math.round(llmRel === null ? localRel : 0.6 * llmRel + 0.4 * localRel);
+  const hookStrength = num100(r.hook_strength ?? r.hookStrength) ?? llmScore ?? ls;
+  const payoffStrength = num100(r.payoff_strength ?? r.payoffStrength) ?? llmScore ?? 50;
+  const selfContained = num100(r.self_contained ?? r.selfContained) ?? 60;
+  const score = editorialScore({ topicRelevance, hookStrength, payoffStrength, selfContained, local: ls });
+  if (score < o.topic.minScore) return { ok: false, reason: 'umbral' };
+  const why = clean(r.why_selected ?? r.whySelected, 300) || reason;
+  const editorial: ClipEditorial = { score, topicRelevance, hookStrength, payoffStrength, selfContained, momentType, why, aligned: aligned.moved || undefined };
+  return { ok: true, candidate: { start, end, title: finalTitle, hook, reason, llmScore, localScore: ls, score, editorial } };
 }
 
 export interface RoundSelection {
@@ -301,18 +432,21 @@ export function selectRound(raws: unknown[], need: number, o: Omit<EvaluateOptio
   const accepted: Candidate[] = [];
   const taken = [...o.taken];
   const takenText = (o.taken as { title?: string; hook?: string }[]).filter((t) => t.title).map((t) => `${t.title} ${t.hook ?? ''}`);
-  // Selección voraz con diversidad: en cada paso se elige el mejor «score + bonus de distancia temporal»
-  // a los clips ya elegidos, para no concentrar todo en una parte del vídeo.
+  // Selección voraz por puntuación. La distancia temporal a los ya elegidos sólo DESEMPATA (misma puntuación):
+  // nunca desplaza un momento fuerte por estar cerca de otro.
   const pool = [...valid];
   while (pool.length) {
     let bi = 0;
-    let best = -Infinity;
-    for (let i = 0; i < pool.length; i++) {
-      const v = pool[i].score + diversityBonus(pool[i], taken, o.sourceDuration);
-      if (v > best || (v === best && pool[i].start < pool[bi].start)) {
-        best = v;
-        bi = i;
+    for (let i = 1; i < pool.length; i++) {
+      const a = pool[i];
+      const b = pool[bi];
+      if (a.score !== b.score) {
+        if (a.score > b.score) bi = i;
+        continue;
       }
+      const da = diversityBonus(a, taken, o.sourceDuration);
+      const db = diversityBonus(b, taken, o.sourceDuration);
+      if (da > db || (da === db && a.start < b.start)) bi = i;
     }
     const c = pool.splice(bi, 1)[0];
     if (accepted.length >= need) {

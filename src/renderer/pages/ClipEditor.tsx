@@ -6,6 +6,7 @@ import { activeWordIndex, buildCues, mergeCues, shiftCue, splitCue, wordTimings,
 import { formatTime } from '../../shared/validation';
 import { api, errMsg } from '../api';
 import { Modal } from '../components/Modal';
+import { TimeRangeEditor } from '../components/TimeRangeEditor';
 
 const DEFAULT_CAM: NormRect = { x: 0.7, y: 0.6, w: 0.28, h: 0.36 };
 const CORNERS: [CamCorner, string][] = [
@@ -588,16 +589,21 @@ export function EditClipModal({ open, onClose, job, clip, onError, onInfo }: { o
             <span>Hook</span>
             <input value={hook} maxLength={200} onChange={(e) => setHook(e.target.value)} />
           </label>
-          <div className="grid2">
-            <label className="field">
-              <span>Inicio (s)</span>
-              <input type="number" step="0.1" min={0} value={start} onChange={(e) => setStart(e.target.value)} />
-            </label>
-            <label className="field">
-              <span>Fin (s)</span>
-              <input type="number" step="0.1" min={0} value={end} onChange={(e) => setEnd(e.target.value)} />
-            </label>
-          </div>
+          <h3 className="sub-h">Tramo del vídeo</h3>
+          <TimeRangeEditor
+            jobId={job.id}
+            clipId={clip.id}
+            preset={job.preset}
+            sourceDuration={job.sourceDuration ?? clip.end}
+            original={{ start: clip.start, end: clip.end }}
+            start={Number(start)}
+            end={Number(end)}
+            onChange={(r) => {
+              setStart(r.start.toFixed(2));
+              setEnd(r.end.toFixed(2));
+            }}
+            hasSource={!job.sourceCleaned && !job.archivedExportsOnly}
+          />
           {rangeChanged && cues.length > 0 && !cuesTouched && <p className="small muted">Los subtítulos automáticos se recalculan para el nuevo tramo al renderizar.</p>}
         </>
       )}

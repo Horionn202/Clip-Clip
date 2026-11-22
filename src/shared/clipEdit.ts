@@ -105,3 +105,44 @@ export function differsFromRendered(c: Clip, r: RenderedState): boolean {
 export function readyCount(clips: Clip[]): { ready: number; total: number } {
   return { ready: clips.filter((c) => c.file && !c.dirty).length, total: clips.length };
 }
+
+// ---- Edición temporal (editor de clip) ----
+
+/** Límite de palabra más cercano (inicio de palabra para «start», fin para «end») a menos de `maxDist` s. */
+export function snapTime(t: number, words: { start: number; end: number }[], kind: 'start' | 'end', maxDist = 1.5): number {
+  let best = t;
+  let bestDist = maxDist;
+  for (const w of words) {
+    const v = kind === 'start' ? w.start : w.end;
+    const d = Math.abs(v - t);
+    if (d < bestDist) {
+      bestDist = d;
+      best = v;
+    }
+  }
+  return best;
+}
+
+/**
+ * Mueve un borde del tramo respetando el vídeo y la duración segura del preset; opcionalmente lo ajusta al
+ * límite de palabra de Whisper más cercano. El otro borde no se toca.
+ */
+export function adjustRange(
+  r: { start: number; end: number },
+  change: { edge: 'start' | 'end'; to: number },
+  o: { preset: DurationPreset; sourceDuration: number; words?: { start: number; end: number }[]; snap?: boolean },
+): { start: number; end: number } {
+  const { min, max } = presetRange(o.preset);
+  const D = o.sourceDuration;
+  const round = (x: number) => Math.round(x * 100) / 100;
+  let t = Math.max(0, Math.min(D, change.to));
+  if (o.snap && o.words?.length) t = snapTime(t, o.words, change.edge);
+  if (change.edge === 'start') {
+    t = Math.min(t, r.end - min);
+    t = Math.max(t, r.end - max, 0);
+    return { start: round(t), end: r.end };
+  }
+  t = Math.max(t, r.start + min);
+  t = Math.min(t, r.start + max, D);
+  return { start: r.start, end: round(t) };
+}

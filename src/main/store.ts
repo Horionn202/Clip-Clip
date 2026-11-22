@@ -23,6 +23,8 @@ export function defaultSettings(exportDir: string): Settings {
   return {
     ollamaHost: 'http://127.0.0.1:11434',
     ollamaModel: 'llama3.2:3b',
+    selectionQuality: 'equilibrada',
+    minClipScore: 70,
     whisperModel: 'small',
     whisperLanguage: 'es',
     exportDir,

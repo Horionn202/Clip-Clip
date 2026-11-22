@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
-import type { Clip, Job } from '../../shared/types';
+import type { Clip, ClipEditorial, Job } from '../../shared/types';
+import { MOMENT_LABELS } from '../../shared/editorialBrief';
 import { formatTime } from '../../shared/validation';
 import { LAYOUT_LABELS } from '../../shared/layouts';
 import { EditClipModal } from './ClipEditor';
@@ -61,6 +62,25 @@ function ExportConfirm({ open, onClose, what, onConfirm }: { open: boolean; onCl
   );
 }
 
+/** Por qué se eligió: categoría, puntuación editorial, relación con el tema y motivo. */
+function ClipWhy({ e }: { e: ClipEditorial }) {
+  const rel = e.topicRelevance >= 75 ? 'Muy ligado al tema' : e.topicRelevance >= 50 ? 'Relacionado con el tema' : 'Poco ligado al tema';
+  return (
+    <div className="clip-why small">
+      <div className="clip-why-row">
+        {e.momentType && <span className="clip-why-tag">{MOMENT_LABELS[e.momentType]}</span>}
+        <span className="clip-why-score" title="Puntuación editorial (relevancia 45 %, gancho 20 %, desenlace 20 %, autonomía 10 %, técnica 5 %)">
+          {e.score}/100
+        </span>
+        <span className="muted">
+          {rel} ({e.topicRelevance})
+        </span>
+      </div>
+      {e.why && <p className="muted clip-why-text">{e.why}</p>}
+    </div>
+  );
+}
+
 function ClipCard({ job, clip, pub, onPub, onError, onInfo, selecting, selected, onToggle }: { job: Job; clip: Clip; pub?: ClipPublish; onPub: (d: Record<string, ClipPublish>) => void; onError: (m: string) => void; onInfo: (m: string) => void; selecting: boolean; selected: boolean; onToggle: () => void }) {
   const [modal, setModal] = useState<'' | 'edit' | 'publish' | 'export'>('');
   const close = () => setModal('');
@@ -95,6 +115,7 @@ function ClipCard({ job, clip, pub, onPub, onError, onInfo, selecting, selected,
         <PublishBadges pub={pub} />
       </div>
       {clip.hook && <p className="hook small muted">«{clip.hook}»</p>}
+      {clip.editorial && <ClipWhy e={clip.editorial} />}
       <div className="clip-actions">
         <Button variant="primary" icon="download" disabled={!clip.file || clip.dirty} title={clip.dirty ? 'Vuelve a renderizar el clip antes de exportarlo' : undefined} aria-haspopup="dialog" onClick={() => setModal('export')}>
           Exportar
@@ -416,7 +437,17 @@ export function ResultsPage(props: { jobs: Job[]; selected: string | null; onSel
         </ConfirmModal>
       </div>
       {job.resultSummary && (
-        <div className={`banner ${job.analysis && job.analysis.obtained < job.analysis.effectiveTarget ? 'warn' : 'info'}`}>{job.resultSummary}</div>
+        // Menos clips que el máximo con el filtro de calidad no es un fallo: aviso informativo, no de error.
+        <div className={`banner ${job.analysis && job.analysis.obtained < job.analysis.effectiveTarget && job.analysis.minScore === undefined ? 'warn' : 'info'}`}>
+          {job.resultSummary}
+          {job.analysis?.minScore !== undefined && job.analysis.obtained < job.analysis.effectiveTarget && !/calidad sobre cantidad/.test(job.resultSummary) && ' Se priorizó calidad sobre cantidad.'}
+        </div>
+      )}
+      {job.analysis?.brief && (
+        <p className="small muted">
+          Tema detectado: <b>{job.analysis.brief.mainTopic}</b>
+          {job.analysis.brief.source === 'local' ? ' (deducido del título)' : ''}
+        </p>
       )}
       {msg && (
         <div className={`banner ${msg.kind === 'error' ? 'error' : 'info'}`} role="alert">

@@ -6,6 +6,8 @@ import { FALLBACK_CLIENT_ARGS, friendlyYtDlpError, isBotCheck } from './ytdlp';
 
 export interface SourceInfo {
   title: string;
+  /** Descripción (contexto editorial para la IA), recortada. */
+  description?: string;
   duration: number;
   filesize?: number;
   clientArgs: string[];
@@ -30,7 +32,7 @@ export async function readSourceInfo(
     meta = await read(clientArgs);
   }
   if (meta.code !== 0) throw new UserFacingError(friendlyYtDlpError(meta.stderr), meta.stderr);
-  let info: { title?: string; duration?: number; is_live?: boolean; availability?: string; filesize_approx?: number; filesize?: number };
+  let info: { title?: string; description?: string; duration?: number; is_live?: boolean; availability?: string; filesize_approx?: number; filesize?: number };
   try {
     info = JSON.parse(meta.stdout);
   } catch {
@@ -48,5 +50,5 @@ export async function readSourceInfo(
   if (approx && approx / (1024 * 1024) > s.maxDownloadMB) {
     throw new UserFacingError(`El vídeo supera el tamaño máximo de descarga (${s.maxDownloadMB} MB).`);
   }
-  return { title: (info.title ?? '').slice(0, 200), duration: info.duration, filesize: approx, clientArgs };
+  return { title: (info.title ?? '').slice(0, 200), description: typeof info.description === 'string' ? info.description.slice(0, 2000) : undefined, duration: info.duration, filesize: approx, clientArgs };
 }

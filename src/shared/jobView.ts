@@ -212,7 +212,7 @@ export function pipelineCards(job: Job, now: number): PipelineCard[] {
       if (m?.transcribeSpeed && card.state === 'completado') card.facts.push(`${m.transcribeSpeed.toFixed(1)}× tiempo real`);
       if (m?.languageRequested && card.state === 'completado') card.facts.push(`Idioma ${m.languageRequested === 'auto' ? `auto (${m.languageDetected ?? '?'})` : m.languageRequested}`);
     }
-    if ((d.key === 'analyzing' || d.key === 'selecting') && job.analysis) card.facts.push(`${job.analysis.obtained} de ${job.analysis.effectiveTarget} clips objetivo`);
+    if ((d.key === 'analyzing' || d.key === 'selecting') && job.analysis) card.facts.push(`${job.analysis.obtained} de hasta ${job.analysis.effectiveTarget} clips`);
     if (d.key === 'rendering' && card.state === 'activo') {
       const c = renderCounter(job);
       if (c) card.facts.push(c);

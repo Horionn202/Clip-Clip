@@ -21,10 +21,11 @@ function scripted(responses: unknown[]): { chat: ChatFn; calls: string[] } {
 const base = { segments, words, duration: D, preset: 30 as const };
 
 describe('análisis por rondas', () => {
-  it('pide la meta exacta en la primera ronda', async () => {
+  it('pide «hasta» la meta en la primera ronda (máximo, no cuota)', async () => {
     const { chat, calls } = scripted([{ clips: [0, 60, 120, 180, 240].map((s, i) => goodClip(s, 30, i)) }]);
     const r = await analyzeClips({ ...base, userTarget: 5, chat });
-    expect(calls[0]).toMatch(/Genera exactamente 5 candidatos/);
+    expect(calls[0]).toMatch(/como máximo 5 candidatos/);
+    expect(calls[0]).not.toMatch(/exactamente/);
     expect(r.clips).toHaveLength(5);
     expect(r.report).toMatchObject({ target: 5, feasibleMax: 14, effectiveTarget: 5, obtained: 5 });
     expect(r.report.partialReason).toBeUndefined();

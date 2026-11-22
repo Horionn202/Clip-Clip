@@ -39,6 +39,8 @@ export const settingsPatchSchema = z
       .max(200)
       .regex(/^http:\/\/(127\.0\.0\.1|localhost|\[::1\]):\d{2,5}$/, 'Ollama debe ser local (http://127.0.0.1:11434).'),
     ollamaModel: z.string().regex(/^[A-Za-z0-9._:/-]{1,100}$/, 'Nombre de modelo no válido.'),
+    selectionQuality: z.enum(['rapida', 'equilibrada', 'estricta']),
+    minClipScore: z.number().int().min(0).max(100),
     whisperModel: z.enum(['tiny', 'base', 'small', 'medium', 'large', 'turbo']),
     whisperLanguage: z.string().regex(/^([a-z]{2,3}|auto)$/),
     exportDir: z.string().max(1024),

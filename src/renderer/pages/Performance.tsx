@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { formatTime } from '../../shared/validation';
 import { ENGINE_IDS, ENGINE_LABELS, STATUS_LABELS, TERMINAL_STATUSES, type GpuInfo, type Job, type MetricStage, type Settings } from '../../shared/types';
 import { REJECT_LABELS, type RejectReason } from '../../shared/selection';
 import { placementLabel } from '../../shared/aiProfiles';
@@ -146,10 +147,34 @@ export function JobReport({ job }: { job: Job }) {
       <tbody>
         {a && (
           <>
-            <tr><td>Clips solicitados</td><td>{a.target}</td></tr>
+            <tr><td>Máximo pedido</td><td>hasta {a.target}</td></tr>
             <tr><td>Máximo matemáticamente posible</td><td>{a.feasibleMax}</td></tr>
-            <tr><td>Meta efectiva</td><td>{a.effectiveTarget}</td></tr>
-            <tr><td>Clips generados</td><td><b>{a.obtained}/{a.effectiveTarget}</b>{a.partialReason ? ` · ${a.partialReason}` : ''}</td></tr>
+            <tr><td>Máximo efectivo</td><td>hasta {a.effectiveTarget}</td></tr>
+            <tr><td>Clips generados</td><td><b>{a.obtained} de hasta {a.effectiveTarget}</b>{a.partialReason ? ` · ${a.partialReason}` : ''}</td></tr>
+            {a.minScore !== undefined && <tr><td>Filtro de calidad</td><td>{a.minScore}/100 · selección {a.quality ?? 'equilibrada'}</td></tr>}
+            {a.brief && (
+              <tr>
+                <td>Brief editorial</td>
+                <td>
+                  <b>{a.brief.mainTopic}</b>
+                  {a.brief.source === 'local' ? ' (deducido del título)' : ''}
+                  {a.brief.titlePromise ? <><br />Promesa: {a.brief.titlePromise}</> : null}
+                  {a.brief.keyEvents.length ? <><br />Eventos: {a.brief.keyEvents.map((e) => `${formatTime(e.t)} ${e.label}`).join(' · ')}</> : null}
+                </td>
+              </tr>
+            )}
+            {a.ranking && a.ranking.length > 0 && (
+              <tr>
+                <td>Ranking</td>
+                <td>
+                  {a.ranking.map((r, i) => (
+                    <div key={i} className="small">
+                      {r.accepted ? `Elegido: ${formatTime(r.start)} «${r.title}» ${r.score}/100${r.topicRelevance !== undefined ? ` · tema ${r.topicRelevance}` : ''}` : `Descartados: ${r.title} — ${r.reason}`}
+                    </div>
+                  ))}
+                </td>
+              </tr>
+            )}
             <tr><td>Candidatos propuestos / descartados</td><td>{a.candidates} / {a.rejected}</td></tr>
             {Object.keys(discarded).length > 0 && (
               <tr>

@@ -889,6 +889,8 @@ button[aria-busy='true'] {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: var(--s-4);
+  /* Cada tarjeta mide lo que necesita: una tarjeta con error o detalles no estira a las pendientes de su fila. */
+  align-items: start;
 }
 .pipe-card {
   position: relative;
@@ -897,7 +899,8 @@ button[aria-busy='true'] {
   padding: var(--s-4);
   background: var(--c-bg-2);
   color: var(--c-muted);
-  min-height: 116px;
+  min-height: 0;
+  container: pipecard / inline-size;
   display: flex;
   flex-direction: column;
   gap: var(--s-2);
@@ -914,30 +917,46 @@ button[aria-busy='true'] {
 .pipe-cards > .pipe-card:nth-child(4n + 1)::before {
   display: none;
 }
+/* Cabecera: placa del icono | título (hasta dos líneas, nunca con «…») | estado. */
 .pipe-head {
-  display: flex;
+  display: grid;
+  grid-template-columns: 56px minmax(0, 1fr) auto;
   align-items: center;
-  gap: var(--s-2);
+  column-gap: var(--s-3);
+  row-gap: var(--s-1);
 }
+.pipe-head .grow,
 .pipe-head b {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+  overflow-wrap: anywhere;
+  word-break: normal;
+  line-height: 1.25;
+  min-width: 0;
   color: var(--c-text-2);
 }
 .pipe-icon {
-  width: 30px;
-  height: 30px;
-  border-radius: var(--r-sm);
+  width: 56px;
+  height: 56px;
+  flex: 0 0 56px;
+  box-sizing: border-box;
+  padding: 5px;
+  border-radius: 15px;
   display: grid;
   place-items: center;
-  background: var(--c-pending);
-  font-size: 1rem;
-  filter: grayscale(1);
-  opacity: 0.75;
-  flex: 0 0 auto;
+  background: #18211e;
+  border: 1px solid rgba(0, 194, 133, 0.18);
+}
+.pipe-icon-image {
+  width: 46px;
+  height: 46px;
+  object-fit: contain;
+  display: block;
+  opacity: 0.55;
 }
 .pipe-state {
+  justify-self: end;
   font-size: 10px;
   font-weight: 700;
   text-transform: uppercase;
@@ -953,6 +972,20 @@ button[aria-busy='true'] {
   gap: var(--s-3);
   flex-wrap: wrap;
   font-size: var(--fs-xs);
+}
+.pipe-time {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.pipe-time::before {
+  content: '';
+  width: 9px;
+  height: 9px;
+  border: 1.5px solid currentColor;
+  border-radius: 50%;
+  opacity: 0.8;
+  background: linear-gradient(currentColor, currentColor) 50% 25% / 1.5px 35% no-repeat;
 }
 .pipe-msg {
   margin: 0;
@@ -976,16 +1009,16 @@ button[aria-busy='true'] {
   color: var(--c-text);
 }
 .pipe-card.activo .pipe-icon {
-  background: rgba(0, 194, 133, 0.25);
+  border-color: rgba(0, 194, 133, 0.55);
+  box-shadow: 0 0 12px rgba(0, 194, 133, 0.22);
 }
 .pipe-card.activo .pipe-state {
   background: rgba(0, 194, 133, 0.25);
   color: var(--c-accent-text);
 }
-.pipe-card.activo .pipe-icon,
-.pipe-card.completado .pipe-icon,
-.pipe-card.error .pipe-icon {
-  filter: none;
+.pipe-card.activo .pipe-icon-image,
+.pipe-card.completado .pipe-icon-image,
+.pipe-card.error .pipe-icon-image {
   opacity: 1;
 }
 .pipe-card.completado {
@@ -993,7 +1026,9 @@ button[aria-busy='true'] {
   background: linear-gradient(160deg, rgba(143, 207, 107, 0.08), var(--c-bg-2));
   color: #cfe8c0;
 }
-.pipe-card.completado .pipe-icon,
+.pipe-card.completado .pipe-icon {
+  border-color: rgba(0, 194, 133, 0.32);
+}
 .pipe-card.completado .pipe-state {
   background: var(--c-ok-soft);
   color: var(--c-ok);
@@ -1003,7 +1038,9 @@ button[aria-busy='true'] {
   background: linear-gradient(160deg, rgba(239, 107, 98, 0.1), var(--c-bg-2));
   color: #f7c9c4;
 }
-.pipe-card.error .pipe-icon,
+.pipe-card.error .pipe-icon {
+  border-color: rgba(239, 107, 98, 0.7);
+}
 .pipe-card.error .pipe-state {
   background: var(--c-err-soft);
   color: var(--c-err);
@@ -1349,6 +1386,15 @@ details summary {
     padding: var(--s-6) var(--s-7) var(--s-8);
   }
 }
+@container pipecard (max-width: 260px) {
+  .pipe-head {
+    grid-template-columns: 56px minmax(0, 1fr);
+  }
+  .pipe-head .pipe-state {
+    grid-column: 2;
+    justify-self: start;
+  }
+}
 @media (max-width: 1279px) {
   .pipe-cards {
     grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -1669,4 +1715,127 @@ details summary {
   height: auto;
   padding-top: 6px;
   padding-bottom: 6px;
+}
+
+/* Resultados: por qué se eligió cada clip. */
+.clip-why {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.clip-why-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-2);
+}
+.clip-why-tag {
+  padding: 1px 8px;
+  border-radius: var(--r-pill);
+  border: 1px solid rgba(0, 194, 133, 0.35);
+  color: var(--c-accent-text);
+  font-weight: 600;
+}
+.clip-why-score {
+  font-weight: 700;
+  color: var(--c-text);
+}
+.clip-why-text {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+/* Editor temporal del clip */
+.trange {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+}
+.trange-rows {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--s-3);
+}
+.trange-row {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+  min-width: 0;
+}
+.trange-field input {
+  width: 100%;
+}
+.trange-steps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.trange-steps button {
+  padding: 2px 8px;
+  min-width: 0;
+}
+.trange-bad {
+  color: var(--c-err);
+}
+.trange-track {
+  position: relative;
+  height: 44px;
+  border-radius: var(--r-sm);
+  background: #18211e;
+  border: 1px solid var(--c-border);
+  touch-action: none;
+  user-select: none;
+  overflow: hidden;
+}
+.trange-word {
+  position: absolute;
+  top: 18px;
+  height: 8px;
+  background: rgba(241, 233, 219, 0.18);
+}
+.trange-orig {
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  border: 1px dashed rgba(241, 233, 219, 0.35);
+  border-radius: 4px;
+}
+.trange-sel {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: rgba(0, 194, 133, 0.22);
+  border-left: 2px solid #00c285;
+  border-right: 2px solid #00c285;
+}
+.trange-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 14px;
+  margin-left: -7px;
+  cursor: ew-resize;
+  border-radius: 4px;
+  background: #00c285;
+  opacity: 0.85;
+}
+.trange-handle:focus-visible {
+  outline: 2px solid var(--c-text);
+  outline-offset: 1px;
+}
+.trange-scale {
+  display: flex;
+  justify-content: space-between;
+  margin-top: -6px;
+}
+.trange-preview video {
+  width: 100%;
+  max-height: 260px;
+  background: #000;
+  border-radius: var(--r-sm);
+}
+@media (max-width: 767px) {
+  .trange-rows {
+    grid-template-columns: 1fr;
+  }
 }
