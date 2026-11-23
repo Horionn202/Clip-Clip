@@ -66,6 +66,19 @@ export async function withBotRetries(
   throw new SourceError({ kind: classifySourceError(last.stderr), ytDlpVersion: version, attempts: tries, technical: technicalTail(last.stderr), at: new Date().toISOString() });
 }
 
+/**
+ * Para reintentar una orden que ya se ejecutó: la primera llamada devuelve ese resultado (no se repite) y las
+ * siguientes ejecutan de verdad.
+ */
+export function reuseFirst<R>(first: R, run: (clientArgs: string[]) => Promise<R>): (clientArgs: string[]) => Promise<R> {
+  let used = false;
+  return (clientArgs) => {
+    if (used) return run(clientArgs);
+    used = true;
+    return Promise.resolve(first);
+  };
+}
+
 const BLOCKED_AVAILABILITY = new Set(['premium_only', 'subscriber_only', 'needs_auth']);
 
 export async function readSourceInfo(

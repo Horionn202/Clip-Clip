@@ -9,7 +9,7 @@ import { effectiveTarget, feasibilityAdvice, feasibleMax, requiredDuration } fro
 import { isModelCached } from '../../shared/models';
 import { api, errMsg } from '../api';
 
-export function HomePage(props: { prefill?: HomePrefill | null; ollamaModel?: string; jobs: Job[]; diag: Diagnostics | null; onCreated: () => void; goSettings: () => void; goPolicy: () => void }) {
+export function HomePage(props: { prefill?: HomePrefill | null; onPrefillUsed?: () => void; ollamaModel?: string; jobs: Job[]; diag: Diagnostics | null; onCreated: () => void; goSettings: () => void; goPolicy: () => void }) {
   const [url, setUrl] = useState('');
   const [preset, setPreset] = useState<DurationPreset>(30);
   const [target, setTarget] = useState<number | null>(null); // sin valor implícito: el usuario elige
@@ -55,6 +55,8 @@ export function HomePage(props: { prefill?: HomePrefill | null; ollamaModel?: st
     const p = props.prefill;
     if (!p || applied.current === p.nonce) return;
     applied.current = p.nonce;
+    // Se consume: al volver a Inicio más tarde no se repite (ni se abre otra vez el selector).
+    props.onPrefillUsed?.();
     setUrl(p.url);
     setPreset(p.preset);
     setTarget(p.maxClips);

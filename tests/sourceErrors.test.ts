@@ -17,7 +17,7 @@ import {
   technicalCommands,
   type SourceErrorKind,
 } from '../src/shared/sourceErrors';
-import { SourceError, placeLocalSource, probeLocalVideo, readSourceInfo, withBotRetries } from '../src/main/source';
+import { SourceError, placeLocalSource, probeLocalVideo, readSourceInfo, reuseFirst, withBotRetries } from '../src/main/source';
 import { installVerifiedYtDlp, latestYtDlpRelease, updateCheckFrom, type YtDlpRelease } from '../src/main/ytdlpUpdate';
 import { prefillFromJob } from '../src/shared/homePrefill';
 import { retryOptions } from '../src/shared/jobView';
@@ -123,11 +123,15 @@ describe('reintentos ante el bloqueo anti-bot', () => {
     expect(e.failure.kind).toBe('private');
   });
 
-  it('la descarga no repite lo que ya se probó al leer la información', async () => {
-    const tried: string[][] = [];
+  it('revisión Codex: la descarga reutiliza su primer fallo una sola vez y después reintenta de verdad', async () => {
+    // La lectura ya funcionó con el cliente alternativo; la descarga con ese cliente topa con el bloqueo.
     const first = { code: 1, stdout: '', stderr: BOT };
-    await withBotRetries('yt-dlp', async (args) => (tried.push(args), args === FALLBACK_CLIENT_ARGS && tried.length === 1 ? first : first), { from: 1, sleep, version: async () => RECENT }).catch(() => undefined);
-    expect(tried).toHaveLength(2);
+    const ran: string[][] = [];
+    const download = async (args: string[]) => (ran.push(args), { code: 0, stdout: 'ok', stderr: '' });
+    const r = await withBotRetries('yt-dlp', reuseFirst(first, download), { from: 1, sleep, version: async () => RECENT });
+    expect(r.stdout).toBe('ok');
+    expect(ran).toEqual([FALLBACK_CLIENT_ARGS]);
+    expect(waits).toEqual([BOT_RETRY_PLAN[2].waitMs]);
   });
 });
 

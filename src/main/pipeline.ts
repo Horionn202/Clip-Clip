@@ -13,7 +13,7 @@ import { appModels, verifierModel, type Placement } from '../shared/aiProfiles';
 import { CancelledError, runProcess } from './proc';
 import { event, log, urlHost } from './logger';
 import type { JobRunner } from './queue';
-import { SourceError, placeLocalSource, readSourceInfo, withBotRetries } from './source';
+import { SourceError, placeLocalSource, readSourceInfo, reuseFirst, withBotRetries } from './source';
 import { botRetryMessage } from '../shared/sourceErrors';
 import { analyzeClips } from './analysis';
 import { qualitySummary } from '../shared/editorialBrief';
@@ -198,7 +198,7 @@ export function createPipeline(ctx: PipelineContext): JobRunner {
       if (!reuseSource) {
         const first = await download(info.clientArgs);
         if (first.code !== 0)
-          await withBotRetries(tools.ytDlp!, async (args) => (args === info.clientArgs ? first : download(args)), {
+          await withBotRetries(tools.ytDlp!, reuseFirst(first, download), {
             signal,
             from: info.clientArgs.length ? 1 : 0,
             onRetry: (n, of) => update({ message: botRetryMessage(n, of) }),
