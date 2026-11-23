@@ -122,7 +122,7 @@ export function simpleCause(error: string | undefined): string {
   const e = error ?? '';
   if (/dependencias|Diagnóstico/i.test(e) && /Faltan/i.test(e)) return 'Falta un programa necesario.';
   if (/Whisper|transcripci/i.test(e)) return 'La transcripción no se completó.';
-  if (/descarga|yt-dlp|bot|privado|disponible en tu país|no existe/i.test(e)) return 'No se pudo descargar el vídeo.';
+  if (/descarga|yt-dlp|bot|privado|disponible en tu país|no existe|YouTube|video no|sesión/i.test(e)) return 'No se pudo descargar el vídeo.';
   if (/IA|Ollama|modelo/i.test(e)) return 'La IA local no respondió como se esperaba.';
   if (/espacio/i.test(e)) return 'No hay espacio suficiente en disco.';
   if (/interrumpi/i.test(e)) return 'La app se cerró mientras trabajaba.';
@@ -238,7 +238,7 @@ export interface RetryOption {
  * Qué reutiliza un reintento desde cada paso según los archivos que SIGUEN en la carpeta del trabajo.
  * Nunca se ofrece reutilizar algo que no existe; un bloque de directo sólo se puede reintentar con su vídeo.
  */
-export function retryOptions(job: Pick<Job, 'localSource' | 'clips' | 'analysis'>, files: string[]): Record<string, RetryOption> {
+export function retryOptions(job: Pick<Job, 'localSource' | 'localFile' | 'clips' | 'analysis'>, files: string[]): Record<string, RetryOption> {
   const has = {
     source: files.some((f) => /^source\.(mp4|mkv|webm|mov)$/i.test(f)),
     audio: files.includes('audio.wav'),
@@ -253,7 +253,7 @@ export function retryOptions(job: Pick<Job, 'localSource' | 'clips' | 'analysis'
     if (i > 3 && has.transcript) reuse.push('transcript');
     if (st === 'rendering' && has.transcript && has.clips) reuse.push('clips');
     let reason: string | undefined;
-    if (job.localSource && !has.source) reason = 'El vídeo de este bloque del directo ya no existe; no se puede reintentar.';
+    if (job.localSource && !has.source && !job.localFile) reason = 'El vídeo de este bloque del directo ya no existe; no se puede reintentar.';
     else if (i >= 4 && !has.transcript && !has.audio && !has.source) reason = 'Ya no queda vídeo, audio ni transcripción de este trabajo: usa «Reintentar» para empezar de cero.';
     out[st] = { ok: !reason, reuse, reason };
   });

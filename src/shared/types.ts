@@ -394,8 +394,12 @@ export interface Job {
   /** Material reutilizado de un trabajo anterior (reintento desde un paso). */
   reuse?: ('source' | 'audio' | 'transcript' | 'clips')[];
   resumedFrom?: string;
-  /** Vídeo local ya descargado (bloques de un directo): no se usa yt-dlp. */
+  /** Vídeo local ya en disco (bloques de un directo o archivo importado): no se usa yt-dlp. */
   localSource?: string;
+  /** Archivo importado por el usuario desde su equipo (no un bloque de directo). */
+  localFile?: boolean;
+  /** Por qué falló la lectura o descarga del vídeo (tipo, versión de yt-dlp, intentos). */
+  sourceFailure?: import('./sourceErrors').SourceFailure;
   /** Bloque de un monitor de directo. */
   live?: { monitorId: string; block: number; offsetSec: number };
 }
@@ -425,6 +429,36 @@ export interface UrlProbe {
   feasibleMax: number;
   /** Tamaño aproximado de la descarga, si la fuente lo informa. */
   filesizeBytes?: number;
+}
+
+/** Resultado de «Comprobar vídeo»: la info o, si yt-dlp falló, su diagnóstico (para el modal de error). */
+export type UrlProbeResult = ({ ok: true } & UrlProbe) | { ok: false; message: string; failure?: import('./sourceErrors').SourceFailure };
+
+/** Vídeo elegido en el equipo. El proceso principal guarda la ruta; el renderer sólo recibe un token. */
+export interface LocalVideoChoice {
+  token: string;
+  name: string;
+  title: string;
+  duration: number;
+  sizeBytes: number;
+}
+
+export interface CreateLocalJobRequest {
+  token: string;
+  preset: DurationPreset;
+  maxClips: number;
+  rightsConfirmed: boolean;
+  allowModelDownload?: boolean;
+}
+
+export interface YtDlpUpdateInfo {
+  installed?: string;
+  latest: string;
+  publishedAt?: string;
+  notesUrl: string;
+  updateAvailable: boolean;
+  /** Ruta del yt-dlp en uso. */
+  path?: string;
 }
 
 export interface GpuInfo {
@@ -578,7 +612,13 @@ export interface ClipsApi {
   analyzeStorage(opts?: CleanupOptions, jobId?: string): Promise<StorageReport>;
   cleanStorage(opts: CleanupOptions, jobId?: string): Promise<CleanupResult>;
   startupNotice(): Promise<{ kind: 'info' | 'error'; text: string } | null>;
-  probeUrl(url: string): Promise<UrlProbe>;
+  probeUrl(url: string): Promise<UrlProbeResult>;
+  /** Abre el selector de archivos (MP4, MOV, MKV, WebM). null si se cancela. */
+  chooseLocalVideo(): Promise<LocalVideoChoice | null>;
+  createLocalJob(req: CreateLocalJobRequest): Promise<Job>;
+  checkYtDlpUpdate(): Promise<YtDlpUpdateInfo>;
+  /** Descarga del repositorio oficial, verifica el hash y la usa. Devuelve la versión instalada. */
+  installYtDlpUpdate(): Promise<string>;
   getSettings(): Promise<Settings>;
   updateSettings(patch: Partial<Settings>): Promise<Settings>;
   chooseExportDir(): Promise<string | null>;

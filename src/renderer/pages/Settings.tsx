@@ -8,6 +8,8 @@ import { GpuPanel, LastRunPanel } from './Performance';
 import { api, errMsg } from '../api';
 import { PublishedExportsCleanup } from './PublishedExport';
 import { LegacyModal } from './Legacy';
+import { ConfirmModal } from '../components/Modal';
+import type { YtDlpUpdateInfo } from '../../shared/types';
 import { DEFAULT_MIN_CLIP_SCORE, DEFAULT_SELECTION_QUALITY, QUALITY_PROFILES, SELECTION_QUALITIES, type SelectionQuality } from '../../shared/editorialBrief';
 
 export function SettingsPage(props: { settings: Settings; onChange: (s: Settings) => void; diag: Diagnostics | null; refreshDiag: () => Promise<void>; jobs: Job[] }) {
@@ -245,6 +247,7 @@ export function SettingsPage(props: { settings: Settings; onChange: (s: Settings
             </li>
           ))}
         </ul>
+        <YtDlpUpdatePanel onUpdated={() => void props.refreshDiag()} />
         <div className="row">
           <button onClick={recheck} disabled={checking}>{checking ? 'Comprobando…' : 'Volver a comprobar'}</button>
           {!s.onboardingDone && (
@@ -284,6 +287,87 @@ export function SettingsPage(props: { settings: Settings; onChange: (s: Settings
       </SectionCard>
       )}
     </section>
+  );
+}
+
+/** Comprobar y, con confirmación, actualizar yt-dlp desde el repositorio oficial (hash verificado). */
+function YtDlpUpdatePanel(props: { onUpdated: () => void }) {
+  const [info, setInfo] = useState<YtDlpUpdateInfo | null>(null);
+  const [busy, setBusy] = useState<'' | 'check' | 'install'>('');
+  const [err, setErr] = useState('');
+  const [done, setDone] = useState('');
+  const [confirm, setConfirm] = useState(false);
+  const check = async () => {
+    setErr('');
+    setDone('');
+    setBusy('check');
+    try {
+      setInfo(await api().checkYtDlpUpdate());
+    } catch (e) {
+      setErr(errMsg(e));
+    } finally {
+      setBusy('');
+    }
+  };
+  const install = async () => {
+    setConfirm(false);
+    setErr('');
+    setBusy('install');
+    try {
+      const v = await api().installYtDlpUpdate();
+      setDone(`yt-dlp ${v} instalado y verificado. La app ya lo usa.`);
+      setInfo(null);
+      props.onUpdated();
+    } catch (e) {
+      setErr(errMsg(e));
+    } finally {
+      setBusy('');
+    }
+  };
+  return (
+    <div className="ytdlp-update">
+      <div className="row">
+        <button onClick={() => void check()} disabled={!!busy}>
+          {busy === 'check' ? 'Comprobando…' : 'Comprobar actualización de yt-dlp'}
+        </button>
+      </div>
+      {info && !info.updateAvailable && (
+        <p className="banner info small">
+          yt-dlp ya está actualizado{info.installed ? ` (${info.installed})` : ''}. El bloqueo proviene de YouTube, no de la versión instalada.
+        </p>
+      )}
+      {info && info.updateAvailable && (
+        <div className="banner warn small">
+          <p>
+            Hay una versión nueva: <b>{info.latest}</b>
+            {info.installed ? <> (tienes {info.installed})</> : null}. Suele corregir cambios recientes de YouTube y otras webs.
+          </p>
+          <button className="primary" disabled={!!busy} onClick={() => setConfirm(true)}>
+            {busy === 'install' ? 'Descargando y verificando…' : `Actualizar a ${info.latest}`}
+          </button>
+        </div>
+      )}
+      {done && <p className="banner info small">{done}</p>}
+      {err && <p className="banner error small">{err}</p>}
+      {confirm && info && (
+        <ConfirmModal
+          open
+          title={`Actualizar yt-dlp a ${info.latest}`}
+          confirmLabel="Descargar, verificar y usar"
+          onClose={() => setConfirm(false)}
+          onConfirm={() => void install()}
+        >
+          <p>Qué cambiará:</p>
+          <ul className="small">
+            <li>Se descarga yt-dlp {info.latest} (≈ 18 MB) del repositorio oficial de GitHub (github.com/yt-dlp/yt-dlp).</li>
+            <li>Se comprueba su huella SHA-256 con la lista oficial publicada; si no coincide, no se instala nada.</li>
+            <li>Se guarda en la carpeta de datos de la app y la app pasa a usarlo. Tu instalación actual{info.path ? ` (${info.path})` : ''} no se modifica.</li>
+            <li>Para volver atrás, deja vacía la ruta de yt-dlp.exe en «Rutas de ejecutables».</li>
+          </ul>
+          <p className="small muted">Notas de la versión: {info.notesUrl}</p>
+        </ConfirmModal>
+      )}
+    </div>
   );
 }
 

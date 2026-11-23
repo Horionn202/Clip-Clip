@@ -10,6 +10,9 @@ import { JobReport } from './Performance';
 import { FreeSpaceDialog } from './Storage';
 import { ConfirmModal, Modal } from '../components/Modal';
 import { PipelineCards } from '../components/PipelineCards';
+import { SourceErrorModal } from '../components/SourceErrorModal';
+import { describeSourceError } from '../../shared/sourceErrors';
+import { prefillFromJob, type HomePrefill } from '../../shared/homePrefill';
 import { Button, EmptyState, Icon, Menu, PageHeader, StatusPill, type ToastData, type Tone } from '../components/ui';
 
 const PAGE_SIZE = 20;
@@ -108,6 +111,9 @@ function ProcessStrip({ job, now, onTech }: { job: Job; now: number; onTech: () 
   );
 }
 
+/** Fallos de descarga cuyo modal ya se mostró en esta sesión (no se vuelve a abrir solo). */
+const shownFailures = new Set<string>();
+
 function JobCard(props: {
   job: Job;
   now: number;
@@ -118,9 +124,19 @@ function JobCard(props: {
   onDeleteOne: (id: string) => void;
   onRetried: () => void;
   goDiagnostics: () => void;
+  onPrefill: (p: HomePrefill) => void;
   toast: (t: Omit<ToastData, 'id'>) => void;
 }) {
   const j = props.job;
+  // El modal de error de descarga se abre solo una vez, cuando el trabajo acaba de fallar.
+  const fresh = !!j.sourceFailure && j.status === 'failed' && !shownFailures.has(j.id) && Date.now() - Date.parse(j.sourceFailure.at) < 10 * 60_000;
+  const [sourceOpen, setSourceOpen] = useState(fresh);
+  useEffect(() => {
+    if (fresh) {
+      shownFailures.add(j.id);
+      setSourceOpen(true);
+    }
+  }, [fresh, j.id]);
   const activeJob = !['completed', 'failed', 'cancelled'].includes(j.status);
   const [modal, setModal] = useState<'' | 'cancel' | 'detail' | 'temp'>('');
   const [retry, setRetry] = useState<Record<string, RetryOption> | undefined>();
@@ -162,6 +178,7 @@ function JobCard(props: {
             <StatusPill tone={STATUS_TONE(j.status)} dot>
               {STATUS_LABELS[j.status]}
             </StatusPill>
+            {j.localFile && <StatusPill>Archivo local</StatusPill>}
             <StatusPill>Clips de {j.preset} s</StatusPill>
             <StatusPill>{j.status === 'completed' ? `${got} de hasta ${j.analysis?.effectiveTarget ?? j.maxClips} clips` : `Hasta ${j.maxClips} clips`}</StatusPill>
             {j.sourceDuration ? <StatusPill>Vídeo de {humanDuration(j.sourceDuration)}</StatusPill> : null}
@@ -209,13 +226,33 @@ function JobCard(props: {
         </div>
       </div>
 
-      {j.status === 'failed' && (
+      {j.status === 'failed' && j.sourceFailure && (
+        <div className="banner error small" role="alert">
+          <span className="grow">{describeSourceError(j.sourceFailure).title}</span>
+          <Button variant="link" aria-haspopup="dialog" onClick={() => setSourceOpen(true)}>
+            Qué puedo hacer
+          </Button>
+        </div>
+      )}
+      {j.status === 'failed' && !j.sourceFailure && (
         <div className="banner error small" role="alert">
           <span className="grow">{simpleCause(j.error)}</span>
           <Button variant="link" onClick={props.goDiagnostics}>
             Ver diagnóstico
           </Button>
         </div>
+      )}
+      {j.sourceFailure && (
+        <SourceErrorModal
+          open={sourceOpen}
+          failure={j.sourceFailure}
+          onClose={() => setSourceOpen(false)}
+          onAction={(a) => {
+            setSourceOpen(false);
+            if (a === 'retry-later') props.toast({ text: 'El trabajo queda en «Fallidos»: pulsa «Reintentar» cuando quieras, con la misma URL y ajustes.' });
+            else props.onPrefill(prefillFromJob(j, a));
+          }}
+        />
       )}
       {j.status === 'completed' && j.resultSummary && <p className="small muted">{j.resultSummary}</p>}
 
@@ -413,6 +450,7 @@ export function JobsPage(props: {
   onDeleted: (ids: string[]) => void;
   onRestored: () => void;
   goDiagnostics: () => void;
+  onPrefill: (p: HomePrefill) => void;
   goHome: () => void;
   toast: (t: Omit<ToastData, 'id'>) => void;
 }) {
@@ -585,6 +623,7 @@ export function JobsPage(props: {
             onDeleteOne={(id) => setBulk({ ids: [id], mode: 'history' })}
             onRetried={() => setFilter('activos')}
             goDiagnostics={props.goDiagnostics}
+            onPrefill={props.onPrefill}
             toast={props.toast}
           />
         ))}

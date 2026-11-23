@@ -8,11 +8,14 @@ import { MAX_CLIPS } from '../shared/types';
 import { UserFacingError, validateVideoUrl } from '../shared/validation';
 import { compositionSchema, platformSchema, publishMetaSchema, publishStatusSchema, publishUrlSchema } from './ipcSchemas';
 import { cleanupOptionsSchema, clipPatchSchema, previewRangeSchema, createJobSchema, idSchema, layoutIdSchema, modelNameSchema, normRectSchema, probeUrlSchema, renameClipSchema, rendererSettingsPatchSchema } from './ipcSchemas';
-import { readSourceInfo } from './source';
+import { LOCAL_VIDEO_EXTENSIONS, SourceError, probeLocalVideo, readSourceInfo, type LocalVideo } from './source';
+import { ytDlpVersion } from './ytdlp';
+import { installVerifiedYtDlp, latestYtDlpRelease, updateCheckFrom, type YtDlpRelease } from './ytdlpUpdate';
 import { isInside } from './paths';
 import { log } from './logger';
 import { runDiagnostics, type ResolvedTools } from './deps';
 import { editorialAfterEdit } from '../shared/highlights';
+import { createLocalJobSchema } from './ipcSchemas';
 import { benchmarkModel, chatJson, listModels, pullModel, unloadModel } from './ollama';
 import { PublishStore } from './publishStore';
 import { retranscribeJob } from './retranscribe';
@@ -386,9 +389,58 @@ export function registerIpc(ctx: IpcContext): void {
     const yt = ctx.tools().ytDlp;
     if (!yt) throw new UserFacingError('Falta yt-dlp. Revisa Configuración → Diagnóstico.');
     const s = ctx.settings.get();
-    const info = await readSourceInfo(yt, u, s);
-    // preset no se conoce aquí: el renderer calcula el máximo factible con la duración.
-    return { title: info.title, duration: info.duration, feasibleMax: 0, filesizeBytes: info.filesize };
+    try {
+      const info = await readSourceInfo(yt, u, s);
+      // preset no se conoce aquí: el renderer calcula el máximo factible con la duración.
+      return { ok: true as const, title: info.title, duration: info.duration, feasibleMax: 0, filesizeBytes: info.filesize };
+    } catch (e) {
+      // Fallo de yt-dlp: se devuelve su diagnóstico para el modal (tipo, versión, intentos y detalle técnico).
+      if (e instanceof SourceError) return { ok: false as const, message: e.message, failure: e.failure };
+      throw e;
+    }
+  });
+  // ---- Archivo local: el renderer nunca envía rutas, sólo el token del archivo elegido en el diálogo ----
+  const chosen = new Map<string, LocalVideo>();
+  h('source:chooseLocal', async () => {
+    const ffprobe = ctx.tools().ffprobe;
+    if (!ffprobe) throw new UserFacingError('Falta FFprobe (viene con FFmpeg). Revisa Configuración → Diagnóstico.');
+    const win = BrowserWindow.getFocusedWindow();
+    const opts = { title: 'Selecciona un vídeo de tu equipo', properties: ['openFile'] as 'openFile'[], filters: [{ name: 'Vídeo (MP4, MOV, MKV, WebM)', extensions: LOCAL_VIDEO_EXTENSIONS }] };
+    const r = win ? await dialog.showOpenDialog(win, opts) : await dialog.showOpenDialog(opts);
+    if (r.canceled || !r.filePaths[0]) return null;
+    if (isInside(ctx.jobsDir, r.filePaths[0])) throw new UserFacingError('Ese archivo está dentro de los datos internos de la app: elige el vídeo original.');
+    const v = await probeLocalVideo(ffprobe, r.filePaths[0], ctx.settings.get());
+    const token = randomUUID();
+    if (chosen.size > 20) chosen.clear();
+    chosen.set(token, v);
+    return { token, name: v.name, title: v.title, duration: v.duration, sizeBytes: v.sizeBytes };
+  });
+  h('jobs:createLocal', async (req: unknown) => {
+    const r = createLocalJobSchema.parse(req);
+    const v = chosen.get(r.token);
+    if (!v) throw new UserFacingError('Vuelve a seleccionar el archivo de vídeo.');
+    return enqueueJob(
+      { url: `local:${v.name}`, preset: r.preset, maxClips: r.maxClips, allowModelDownload: r.allowModelDownload },
+      { localSource: v.path, localFile: true, sourceTitle: v.title, sourceDuration: v.duration, sourceVideo: { width: v.width, height: v.height } },
+    );
+  });
+  // ---- yt-dlp: comprobar y actualizar desde el repositorio oficial, con hash verificado y confirmación ----
+  let checkedRelease: YtDlpRelease | null = null;
+  h('ytdlp:checkUpdate', async () => {
+    const yt = ctx.tools().ytDlp;
+    const installed = yt ? await ytDlpVersion(yt) : undefined;
+    checkedRelease = await latestYtDlpRelease();
+    return { ...updateCheckFrom(installed, checkedRelease), path: yt };
+  });
+  h('ytdlp:installUpdate', async () => {
+    // Sólo tras una comprobación en esta sesión (el renderer no elige qué descargar).
+    if (!checkedRelease) throw new UserFacingError('Comprueba primero si hay una actualización.');
+    if (ctx.queue.activeCount > 0) throw new UserFacingError('Hay un trabajo en curso; actualiza yt-dlp cuando termine.');
+    const exePath = await installVerifiedYtDlp(checkedRelease, path.join(ctx.userDataDir, 'tools', 'yt-dlp'));
+    ctx.settings.update({ ytDlpPath: exePath });
+    ctx.onSettingsChanged();
+    log.info(`yt-dlp actualizado a ${checkedRelease.version} (hash verificado) en ${exePath}`);
+    return checkedRelease.version;
   });
   h('settings:get', () => ctx.settings.get());
   h('settings:update', (patch: unknown) => {
@@ -695,6 +747,8 @@ export function registerIpc(ctx: IpcContext): void {
         sourceTitle: prev.sourceTitle,
         sourceDuration: prev.sourceDuration,
         localSource: prev.localSource,
+        localFile: prev.localFile,
+        sourceVideo: prev.sourceVideo,
         live: prev.live,
       },
       (dir) => {

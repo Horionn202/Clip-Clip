@@ -1,12 +1,15 @@
-import { useEffect, useState } from 'react';
-import { CLIP_TARGET_PRESETS, DURATION_PRESETS, ENGINE_LABELS, MAX_CLIPS, WHISPER_MODEL_OPTIONS, type Diagnostics, type DurationPreset, type Job, type UrlProbe } from '../../shared/types';
+import { useEffect, useRef, useState } from 'react';
+import { CLIP_TARGET_PRESETS, DURATION_PRESETS, ENGINE_LABELS, MAX_CLIPS, WHISPER_MODEL_OPTIONS, type Diagnostics, type DurationPreset, type Job, type LocalVideoChoice, type UrlProbe } from '../../shared/types';
+import type { SourceFailure } from '../../shared/sourceErrors';
+import type { HomePrefill } from '../../shared/homePrefill';
+import { SourceErrorModal } from '../components/SourceErrorModal';
 import { LONG_VIDEO_SEC, engineLabel, estimateJob, humanBytes, humanDuration } from '../../shared/estimates';
 import { validateVideoUrl } from '../../shared/validation';
 import { effectiveTarget, feasibilityAdvice, feasibleMax, requiredDuration } from '../../shared/selection';
 import { isModelCached } from '../../shared/models';
 import { api, errMsg } from '../api';
 
-export function HomePage(props: { ollamaModel?: string; jobs: Job[]; diag: Diagnostics | null; onCreated: () => void; goSettings: () => void; goPolicy: () => void }) {
+export function HomePage(props: { prefill?: HomePrefill | null; ollamaModel?: string; jobs: Job[]; diag: Diagnostics | null; onCreated: () => void; goSettings: () => void; goPolicy: () => void }) {
   const [url, setUrl] = useState('');
   const [preset, setPreset] = useState<DurationPreset>(30);
   const [target, setTarget] = useState<number | null>(null); // sin valor implícito: el usuario elige
@@ -19,11 +22,47 @@ export function HomePage(props: { ollamaModel?: string; jobs: Job[]; diag: Diagn
   const probe = probeResult && probeResult.url === url.trim() ? probeResult : null;
   const [probing, setProbing] = useState(false);
   const [longOk, setLongOk] = useState(false);
+  /** Vídeo elegido en el equipo (alternativa a la URL). */
+  const [local, setLocal] = useState<LocalVideoChoice | null>(null);
+  const [picking, setPicking] = useState(false);
+  const [failure, setFailure] = useState<SourceFailure | null>(null);
+  const urlInput = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     setProbeResult(null);
     setLongOk(false);
   }, [url]);
+
+  const pickFile = async () => {
+    setError('');
+    setPicking(true);
+    try {
+      const v = await api().chooseLocalVideo();
+      if (v) {
+        setLocal(v);
+        setLongOk(false);
+      }
+    } catch (e) {
+      setError(errMsg(e));
+    } finally {
+      setPicking(false);
+    }
+  };
+
+  // Tras un fallo: se recuperan la URL, la duración de cada clip y el máximo (y, si se pidió, se abre el selector).
+  const applied = useRef(0);
+  useEffect(() => {
+    const p = props.prefill;
+    if (!p || applied.current === p.nonce) return;
+    applied.current = p.nonce;
+    setUrl(p.url);
+    setPreset(p.preset);
+    setTarget(p.maxClips);
+    setLocal(null);
+    if (p.pickFile) void pickFile();
+    else setTimeout(() => urlInput.current?.select(), 0);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [props.prefill]);
 
   const urlError = (() => {
     if (!url.trim()) return '';
@@ -43,15 +82,19 @@ export function HomePage(props: { ollamaModel?: string; jobs: Job[]; diag: Diagn
       : isModelCached(plan.engine, plan.model, gpu.cachedModels);
   const modelSize = WHISPER_MODEL_OPTIONS.find((m) => m.name === plan?.model)?.sizeLabel ?? '';
 
-  const depsOk = props.diag?.ok ?? false;
-  const isLong = !!probe && probe.duration > LONG_VIDEO_SEC;
+  const depsOkUrl = props.diag?.ok ?? false;
+  // Un archivo local no necesita yt-dlp: no se bloquea por su falta.
+  const depsOk = local ? (props.diag?.items.filter((i) => i.id !== 'ytDlp').every((i) => i.ok) ?? false) : depsOkUrl;
+  /** La fuente comprobada: el archivo local o el resultado de «Comprobar vídeo». */
+  const src = local ? { duration: local.duration, filesizeBytes: local.sizeBytes } : probe;
+  const isLong = !!src && src.duration > LONG_VIDEO_SEC;
   // Hay que comprobar el vídeo antes de iniciar: así se ven duración, estimaciones y máximo de clips.
   const canStart =
-    !!url.trim() && !urlError && rights && depsOk && !busy && target !== null && !!probe && (!isLong || longOk) && (modelCached || allowDownload) && (feasibleMax(probe.duration, preset) > 0);
-  const est = probe ? estimateJob(probe.duration, probe.filesizeBytes, plan, props.jobs) : null;
-  const feas = probe ? feasibleMax(probe.duration, preset) : null;
-  const eff = probe && target !== null ? effectiveTarget(target, probe.duration, preset) : null;
-  const advice = probe && target !== null ? feasibilityAdvice(target, probe.duration, preset) : null;
+    (local ? true : !!url.trim() && !urlError) && rights && depsOk && !busy && target !== null && !!src && (!isLong || longOk) && (modelCached || allowDownload) && feasibleMax(src.duration, preset) > 0;
+  const est = src ? estimateJob(src.duration, local ? undefined : src.filesizeBytes, plan, props.jobs) : null;
+  const feas = src ? feasibleMax(src.duration, preset) : null;
+  const eff = src && target !== null ? effectiveTarget(target, src.duration, preset) : null;
+  const advice = src && target !== null ? feasibilityAdvice(target, src.duration, preset) : null;
 
   const check = async () => {
     setError('');
@@ -59,7 +102,9 @@ export function HomePage(props: { ollamaModel?: string; jobs: Job[]; diag: Diagn
     try {
       const asked = url.trim();
       const r = await api().probeUrl(asked);
-      setProbeResult({ ...r, url: asked });
+      if (r.ok) setProbeResult({ title: r.title, duration: r.duration, feasibleMax: r.feasibleMax, filesizeBytes: r.filesizeBytes, url: asked });
+      else if (r.failure) setFailure(r.failure);
+      else setError(r.message);
     } catch (e) {
       setError(errMsg(e));
     } finally {
@@ -72,8 +117,10 @@ export function HomePage(props: { ollamaModel?: string; jobs: Job[]; diag: Diagn
     setError('');
     setBusy(true);
     try {
-      await api().createJob({ url: url.trim(), preset, maxClips: target, rightsConfirmed: rights, allowModelDownload: allowDownload });
+      if (local) await api().createLocalJob({ token: local.token, preset, maxClips: target, rightsConfirmed: rights, allowModelDownload: allowDownload });
+      else await api().createJob({ url: url.trim(), preset, maxClips: target, rightsConfirmed: rights, allowModelDownload: allowDownload });
       setUrl('');
+      setLocal(null);
       setRights(false);
       setLongOk(false);
       setAllowDownload(false);
@@ -104,17 +151,53 @@ export function HomePage(props: { ollamaModel?: string; jobs: Job[]; diag: Diagn
         </div>
       )}
 
-      <label className="field">
-        <span>URL del vídeo</span>
-        <div className="row">
-          <input className="grow" type="url" placeholder="https://…" value={url} onChange={(e) => setUrl(e.target.value)} autoFocus spellCheck={false} />
-          <button disabled={!url.trim() || !!urlError || probing} onClick={check}>{probing ? 'Comprobando…' : 'Comprobar vídeo'}</button>
-        </div>
-        {urlError && <small className="error">{urlError}</small>}
-        {!probe && url.trim() && !urlError && <small className="muted">Pulsa «Comprobar vídeo» para ver su duración y las estimaciones antes de iniciar.</small>}
-      </label>
+      {!local && (
+        <label className="field">
+          <span>URL del vídeo</span>
+          <div className="row">
+            <input ref={urlInput} className="grow" type="url" placeholder="https://…" value={url} onChange={(e) => setUrl(e.target.value)} autoFocus spellCheck={false} />
+            <button disabled={!url.trim() || !!urlError || probing} onClick={check}>{probing ? 'Comprobando…' : 'Comprobar vídeo'}</button>
+          </div>
+          {urlError && <small className="error">{urlError}</small>}
+          {probing && <small className="muted">Si YouTube limita la descarga se reintenta un par de veces con un método alternativo; puede tardar unos segundos.</small>}
+          {!probe && !probing && url.trim() && !urlError && <small className="muted">Pulsa «Comprobar vídeo» para ver su duración y las estimaciones antes de iniciar.</small>}
+        </label>
+      )}
+      <div className="local-pick">
+        {local ? (
+          <div className="card source-card">
+            <div className="row">
+              <div className="title grow">«{local.title}»</div>
+              <span className="badge">Archivo local</span>
+            </div>
+            <table className="table kv">
+              <tbody>
+                <tr><td>Archivo</td><td>{local.name}</td></tr>
+                <tr><td>Duración del vídeo fuente</td><td><b>{humanDuration(local.duration)}</b></td></tr>
+                <tr><td>Tamaño</td><td>{humanBytes(local.sizeBytes)} · no se copia si está en la misma unidad que los datos de la app</td></tr>
+                <tr><td>Máximo posible de clips sin solapes</td><td>{feasibleMax(local.duration, preset)}</td></tr>
+                {est && <tr><td>Tiempo de transcripción (aprox.)</td><td>{humanDuration(est.transcribeSec)}</td></tr>}
+              </tbody>
+            </table>
+            <div className="row">
+              <button className="ghost" onClick={() => void pickFile()} disabled={picking}>Elegir otro archivo</button>
+              <button className="ghost" onClick={() => setLocal(null)}>Usar una URL</button>
+            </div>
+          </div>
+        ) : (
+          <button className="link" onClick={() => void pickFile()} disabled={picking}>
+            {picking ? 'Leyendo el vídeo…' : 'O selecciona un video de tu equipo (MP4, MOV, MKV o WebM)'}
+          </button>
+        )}
+      </div>
+      {isLong && local && (
+        <label className="check">
+          <input type="checkbox" checked={longOk} onChange={(e) => setLongOk(e.target.checked)} />
+          <span>Este vídeo es largo ({humanDuration(local.duration)}). Confirmo que quiero procesarlo completo.</span>
+        </label>
+      )}
 
-      {probe && (
+      {!local && probe && (
         <div className="card source-card">
           <div className="title">«{probe.title || 'Sin título'}»</div>
           <table className="table kv">
@@ -195,6 +278,19 @@ export function HomePage(props: { ollamaModel?: string; jobs: Job[]; diag: Diagn
       </label>
 
       {error && <div className="banner error">{error}</div>}
+      {failure && (
+        <SourceErrorModal
+          open
+          failure={failure}
+          onClose={() => setFailure(null)}
+          onAction={(a) => {
+            setFailure(null);
+            // Ninguna acción borra la URL ni los ajustes elegidos.
+            if (a === 'import-file') void pickFile();
+            else if (a === 'change-url') setTimeout(() => urlInput.current?.select(), 0);
+          }}
+        />
+      )}
       <button className="primary big" disabled={!canStart} onClick={start}>
         {busy ? 'Creando…' : 'Iniciar'}
       </button>

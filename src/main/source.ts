@@ -1,8 +1,13 @@
-// Lectura de metadatos con yt-dlp (con reintento ante verificación anti-bot). Compartido por pipeline e IPC.
+// Lectura de metadatos con yt-dlp y archivos locales. Compartido por pipeline e IPC.
+// Ante el bloqueo anti-bot sólo se reintenta de forma limitada (máx. 3 intentos con espera creciente) y con los
+// clientes ya soportados: sin cookies, cuentas, proxies ni técnicas de evasión.
+import fs from 'node:fs';
+import path from 'node:path';
 import type { Settings } from '../shared/types';
 import { UserFacingError } from '../shared/validation';
-import { runProcess } from './proc';
-import { FALLBACK_CLIENT_ARGS, friendlyYtDlpError, isBotCheck } from './ytdlp';
+import { BOT_RETRY_PLAN, classifySourceError, describeSourceError, technicalTail, type SourceFailure } from '../shared/sourceErrors';
+import { CancelledError, runProcess } from './proc';
+import { ytDlpVersion } from './ytdlp';
 
 export interface SourceInfo {
   title: string;
@@ -13,6 +18,54 @@ export interface SourceInfo {
   clientArgs: string[];
 }
 
+/** Fallo de yt-dlp con su diagnóstico (tipo, versión, intentos). */
+export class SourceError extends UserFacingError {
+  constructor(public readonly failure: SourceFailure) {
+    const d = describeSourceError(failure);
+    super(`${d.title}. ${d.message}`, failure.technical);
+    this.name = 'SourceError';
+  }
+}
+
+export interface SourceDeps {
+  run?: typeof runProcess;
+  sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
+  version?: (ytDlp: string) => Promise<string | undefined>;
+}
+
+const sleepFor = (ms: number, signal?: AbortSignal) =>
+  new Promise<void>((resolve, reject) => {
+    if (signal?.aborted) return reject(new CancelledError());
+    const t = setTimeout(resolve, ms);
+    signal?.addEventListener('abort', () => (clearTimeout(t), reject(new CancelledError())), { once: true });
+  });
+
+/**
+ * Ejecuta una orden de yt-dlp; si YouTube pide verificar que no eres un bot, reintenta según `BOT_RETRY_PLAN`.
+ * Cualquier otro fallo se diagnostica al momento (sin reintentos). Devuelve la salida y el cliente que funcionó.
+ */
+export async function withBotRetries(
+  ytDlp: string,
+  attempt: (clientArgs: string[]) => Promise<{ code: number; stdout: string; stderr: string }>,
+  o: { signal?: AbortSignal; onRetry?: (attempt: number, of: number) => void; from?: number } & SourceDeps = {},
+): Promise<{ stdout: string; clientArgs: string[] }> {
+  const plan = BOT_RETRY_PLAN.slice(o.from ?? 0);
+  let last = { code: 1, stdout: '', stderr: '' };
+  let tries = 0;
+  for (const [i, step] of plan.entries()) {
+    if (i > 0) {
+      o.onRetry?.(i + 1, plan.length);
+      await (o.sleep ?? sleepFor)(step.waitMs, o.signal);
+    }
+    tries++;
+    last = await attempt(step.clientArgs);
+    if (last.code === 0) return { stdout: last.stdout, clientArgs: step.clientArgs };
+    if (classifySourceError(last.stderr) !== 'bot') break;
+  }
+  const version = await (o.version ?? ytDlpVersion)(ytDlp).catch(() => undefined);
+  throw new SourceError({ kind: classifySourceError(last.stderr), ytDlpVersion: version, attempts: tries, technical: technicalTail(last.stderr), at: new Date().toISOString() });
+}
+
 const BLOCKED_AVAILABILITY = new Set(['premium_only', 'subscriber_only', 'needs_auth']);
 
 export async function readSourceInfo(
@@ -20,21 +73,18 @@ export async function readSourceInfo(
   url: string,
   s: Pick<Settings, 'maxSourceMinutes' | 'maxDownloadMB'>,
   signal?: AbortSignal,
-  onRetry?: () => void,
+  onRetry?: (attempt: number, of: number) => void,
+  deps: SourceDeps = {},
 ): Promise<SourceInfo> {
-  const read = (extra: string[]) =>
-    runProcess(ytDlp, ['--dump-single-json', '--no-playlist', '--no-warnings', ...extra, '--', url], { signal, timeoutMs: 90_000 });
-  let clientArgs: string[] = [];
-  let meta = await read(clientArgs);
-  if (meta.code !== 0 && isBotCheck(meta.stderr)) {
-    onRetry?.();
-    clientArgs = FALLBACK_CLIENT_ARGS;
-    meta = await read(clientArgs);
-  }
-  if (meta.code !== 0) throw new UserFacingError(friendlyYtDlpError(meta.stderr), meta.stderr);
+  const run = deps.run ?? runProcess;
+  const { stdout, clientArgs } = await withBotRetries(
+    ytDlp,
+    (extra) => run(ytDlp, ['--dump-single-json', '--no-playlist', '--no-warnings', ...extra, '--', url], { signal, timeoutMs: 90_000 }),
+    { signal, onRetry, ...deps },
+  );
   let info: { title?: string; description?: string; duration?: number; is_live?: boolean; availability?: string; filesize_approx?: number; filesize?: number };
   try {
-    info = JSON.parse(meta.stdout);
+    info = JSON.parse(stdout);
   } catch {
     throw new UserFacingError('yt-dlp devolvió información no válida.');
   }
@@ -51,4 +101,62 @@ export async function readSourceInfo(
     throw new UserFacingError(`El vídeo supera el tamaño máximo de descarga (${s.maxDownloadMB} MB).`);
   }
   return { title: (info.title ?? '').slice(0, 200), description: typeof info.description === 'string' ? info.description.slice(0, 2000) : undefined, duration: info.duration, filesize: approx, clientArgs };
+}
+
+// ---- Archivo local ----
+
+export const LOCAL_VIDEO_EXTENSIONS = ['mp4', 'mov', 'mkv', 'webm'];
+
+export interface LocalVideo {
+  path: string;
+  name: string;
+  title: string;
+  duration: number;
+  sizeBytes: number;
+  width: number;
+  height: number;
+}
+
+/** Comprueba con ffprobe que el archivo es un vídeo con imagen, sonido y duración dentro del límite. */
+export async function probeLocalVideo(ffprobe: string, file: string, s: Pick<Settings, 'maxSourceMinutes'>, run = runProcess): Promise<LocalVideo> {
+  const ext = path.extname(file).slice(1).toLowerCase();
+  if (!LOCAL_VIDEO_EXTENSIONS.includes(ext)) throw new UserFacingError('Formato no admitido: elige un vídeo MP4, MOV, MKV o WebM.');
+  let st: fs.Stats;
+  try {
+    st = fs.statSync(file);
+  } catch {
+    throw new UserFacingError('No se encuentra el archivo seleccionado.');
+  }
+  if (!st.isFile() || st.size === 0) throw new UserFacingError('El archivo seleccionado está vacío o no es un archivo.');
+  const r = await run(ffprobe, ['-v', 'error', '-show_entries', 'stream=codec_type,width,height:format=duration', '-of', 'json', file], { timeoutMs: 60_000 });
+  if (r.code !== 0) throw new UserFacingError('No se pudo leer el vídeo: el archivo puede estar dañado o en un formato no compatible.', technicalTail(r.stderr));
+  let data: { streams?: { codec_type?: string; width?: number; height?: number }[]; format?: { duration?: string } };
+  try {
+    data = JSON.parse(r.stdout);
+  } catch {
+    throw new UserFacingError('No se pudo leer la información del vídeo.');
+  }
+  const video = data.streams?.find((x) => x.codec_type === 'video' && x.width && x.height);
+  if (!video) throw new UserFacingError('El archivo no tiene imagen de vídeo.');
+  if (!data.streams?.some((x) => x.codec_type === 'audio')) throw new UserFacingError('El vídeo no tiene sonido: hace falta voz para transcribirlo y elegir momentos.');
+  const duration = Number(data.format?.duration);
+  if (!Number.isFinite(duration) || duration <= 0) throw new UserFacingError('No se pudo determinar la duración del vídeo.');
+  if (duration > s.maxSourceMinutes * 60) throw new UserFacingError(`El vídeo dura más de ${s.maxSourceMinutes} minutos (límite configurable en Configuración).`);
+  const name = path.basename(file);
+  return { path: file, name, title: name.replace(/\.[^.]+$/, '').slice(0, 200), duration, sizeBytes: st.size, width: video.width!, height: video.height! };
+}
+
+/**
+ * Pone el vídeo local en la carpeta del trabajo SIN copiarlo si es posible (enlace duro: no ocupa espacio extra y
+ * borrarlo luego no toca el original). Sólo si está en otra unidad se copia, para que re-render y limpieza funcionen.
+ */
+export function placeLocalSource(file: string, dir: string): { path: string; copied: boolean } {
+  const dst = path.join(dir, `source${path.extname(file).toLowerCase() || '.mp4'}`);
+  try {
+    fs.linkSync(file, dst);
+    return { path: dst, copied: false };
+  } catch {
+    fs.copyFileSync(file, dst);
+    return { path: dst, copied: true };
+  }
 }
