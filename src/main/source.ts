@@ -118,6 +118,29 @@ export async function readSourceInfo(
 
 // ---- Archivo local ----
 
+/** Entradas de ffprobe para medir la imagen tal como se ve (incluida la rotación de los vídeos de móvil). */
+export const PROBE_DISPLAY_ENTRIES = 'stream=codec_type,width,height:stream_tags=rotate:stream_side_data=rotation:format=duration';
+
+export interface ProbedStream {
+  codec_type?: string;
+  width?: number;
+  height?: number;
+  tags?: { rotate?: string };
+  side_data_list?: { rotation?: number | string }[];
+}
+
+/**
+ * Dimensiones como se ven. FFmpeg aplica la rotación al filtrar (autorrotación por defecto), así que con 90° o 270°
+ * hay que intercambiar ancho y alto o los recortes del render no casan con la imagen.
+ */
+export function displaySize(s: ProbedStream): { width: number; height: number } {
+  const w = s.width ?? 0;
+  const h = s.height ?? 0;
+  const raw = s.side_data_list?.find((d) => d.rotation !== undefined)?.rotation ?? s.tags?.rotate ?? 0;
+  const rot = ((Math.round(Number(raw) || 0) % 360) + 360) % 360;
+  return rot === 90 || rot === 270 ? { width: h, height: w } : { width: w, height: h };
+}
+
 export const LOCAL_VIDEO_EXTENSIONS = ['mp4', 'mov', 'mkv', 'webm'];
 
 export interface LocalVideo {
@@ -141,9 +164,9 @@ export async function probeLocalVideo(ffprobe: string, file: string, s: Pick<Set
     throw new UserFacingError('No se encuentra el archivo seleccionado.');
   }
   if (!st.isFile() || st.size === 0) throw new UserFacingError('El archivo seleccionado está vacío o no es un archivo.');
-  const r = await run(ffprobe, ['-v', 'error', '-show_entries', 'stream=codec_type,width,height:format=duration', '-of', 'json', file], { timeoutMs: 60_000 });
+  const r = await run(ffprobe, ['-v', 'error', '-show_entries', PROBE_DISPLAY_ENTRIES, '-of', 'json', file], { timeoutMs: 60_000 });
   if (r.code !== 0) throw new UserFacingError('No se pudo leer el vídeo: el archivo puede estar dañado o en un formato no compatible.', technicalTail(r.stderr));
-  let data: { streams?: { codec_type?: string; width?: number; height?: number }[]; format?: { duration?: string } };
+  let data: { streams?: ProbedStream[]; format?: { duration?: string } };
   try {
     data = JSON.parse(r.stdout);
   } catch {
@@ -156,7 +179,7 @@ export async function probeLocalVideo(ffprobe: string, file: string, s: Pick<Set
   if (!Number.isFinite(duration) || duration <= 0) throw new UserFacingError('No se pudo determinar la duración del vídeo.');
   if (duration > s.maxSourceMinutes * 60) throw new UserFacingError(`El vídeo dura más de ${s.maxSourceMinutes} minutos (límite configurable en Configuración).`);
   const name = path.basename(file);
-  return { path: file, name, title: name.replace(/\.[^.]+$/, '').slice(0, 200), duration, sizeBytes: st.size, width: video.width!, height: video.height! };
+  return { path: file, name, title: name.replace(/\.[^.]+$/, '').slice(0, 200), duration, sizeBytes: st.size, ...displaySize(video) };
 }
 
 /**

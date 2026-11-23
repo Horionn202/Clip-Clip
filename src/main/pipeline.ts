@@ -13,7 +13,7 @@ import { appModels, verifierModel, type Placement } from '../shared/aiProfiles';
 import { CancelledError, runProcess } from './proc';
 import { event, log, urlHost } from './logger';
 import type { JobRunner } from './queue';
-import { SourceError, placeLocalSource, readSourceInfo, reuseFirst, withBotRetries } from './source';
+import { PROBE_DISPLAY_ENTRIES, SourceError, displaySize, placeLocalSource, readSourceInfo, reuseFirst, withBotRetries, type ProbedStream } from './source';
 import { botRetryMessage } from '../shared/sourceErrors';
 import { analyzeClips } from './analysis';
 import { qualitySummary } from '../shared/editorialBrief';
@@ -212,12 +212,12 @@ export function createPipeline(ctx: PipelineContext): JobRunner {
 
       const probe = await runProcess(
         tools.ffprobe!,
-        ['-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=width,height:format=duration', '-of', 'json', sourcePath],
+        ['-v', 'error', '-select_streams', 'v:0', '-show_entries', PROBE_DISPLAY_ENTRIES, '-of', 'json', sourcePath],
         { signal, timeoutMs: 60_000 },
       );
-      const pj = JSON.parse(probe.stdout || '{}') as { streams?: { width: number; height: number }[]; format?: { duration?: string } };
-      const width = pj.streams?.[0]?.width ?? 0;
-      const height = pj.streams?.[0]?.height ?? 0;
+      const pj = JSON.parse(probe.stdout || '{}') as { streams?: ProbedStream[]; format?: { duration?: string } };
+      // Medidas como se ven: un vídeo vertical de móvil (rotación 90°) se filtra ya girado.
+      const { width, height } = pj.streams?.[0] ? displaySize(pj.streams[0]) : { width: 0, height: 0 };
       const duration = parseFloat(pj.format?.duration ?? '') || info.duration;
       if (!width || !height) throw new UserFacingError('El archivo descargado no contiene vídeo.');
       metrics.sourceDuration = duration;

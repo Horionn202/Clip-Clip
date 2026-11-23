@@ -17,7 +17,7 @@ import {
   technicalCommands,
   type SourceErrorKind,
 } from '../src/shared/sourceErrors';
-import { SourceError, placeLocalSource, probeLocalVideo, readSourceInfo, reuseFirst, withBotRetries } from '../src/main/source';
+import { SourceError, displaySize, placeLocalSource, probeLocalVideo, readSourceInfo, reuseFirst, withBotRetries } from '../src/main/source';
 import { installVerifiedYtDlp, latestYtDlpRelease, updateCheckFrom, type YtDlpRelease } from '../src/main/ytdlpUpdate';
 import { prefillFromJob } from '../src/shared/homePrefill';
 import { retryOptions } from '../src/shared/jobView';
@@ -168,6 +168,17 @@ describe('archivo local', () => {
     const bad = path.join(dir, 'b.webm');
     fs.writeFileSync(bad, 'x');
     await expect(probeLocalVideo('ffprobe', bad, { maxSourceMinutes: 180 }, ffprobe({}, 1))).rejects.toThrow(/dañado/);
+  });
+
+  it('revisión Codex: un vídeo vertical de móvil (rotación 90°) usa las medidas como se ve', async () => {
+    expect(displaySize({ width: 1920, height: 1080, side_data_list: [{ rotation: -90 }] })).toEqual({ width: 1080, height: 1920 });
+    expect(displaySize({ width: 1920, height: 1080, tags: { rotate: '270' } })).toEqual({ width: 1080, height: 1920 });
+    expect(displaySize({ width: 1920, height: 1080, side_data_list: [{ rotation: 180 }] })).toEqual({ width: 1920, height: 1080 });
+    expect(displaySize({ width: 1920, height: 1080 })).toEqual({ width: 1920, height: 1080 });
+    const f = path.join(dir, 'movil.mov');
+    fs.writeFileSync(f, 'x');
+    const phone = { ...ok, streams: [{ codec_type: 'video', width: 1920, height: 1080, side_data_list: [{ rotation: -90 }] }, { codec_type: 'audio' }] };
+    expect(await probeLocalVideo('ffprobe', f, { maxSourceMinutes: 180 }, ffprobe(phone))).toMatchObject({ width: 1080, height: 1920 });
   });
 
   it('enlaza el original en la carpeta del trabajo sin copiarlo ni tocarlo', () => {
