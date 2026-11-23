@@ -241,8 +241,9 @@ export async function runDiagnostics(
 }
 
 /** Mensaje claro cuando falta una dependencia en el pipeline. */
-export function missingDepMessage(d: Diagnostics): string | null {
-  const bad = d.items.filter((i) => !i.ok);
+/** Dependencias que faltan para un trabajo. Un vídeo local no necesita yt-dlp. */
+export function missingDepMessage(d: Diagnostics, o: { localSource?: boolean } = {}): string | null {
+  const bad = d.items.filter((i) => !i.ok && !(o.localSource && i.id === 'ytDlp'));
   if (bad.length === 0) return null;
   return `Faltan dependencias: ${bad.map((b) => b.label).join(', ')}. Abre Configuración → Diagnóstico para ver cómo resolverlo.`;
 }

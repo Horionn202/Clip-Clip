@@ -13,8 +13,8 @@ import { appModels, verifierModel, type Placement } from '../shared/aiProfiles';
 import { CancelledError, runProcess } from './proc';
 import { event, log, urlHost } from './logger';
 import type { JobRunner } from './queue';
-import { friendlyYtDlpError } from './ytdlp';
-import { readSourceInfo } from './source';
+import { PROBE_DISPLAY_ENTRIES, SourceError, displaySize, placeLocalSource, readSourceInfo, reuseFirst, withBotRetries, type ProbedStream } from './source';
+import { botRetryMessage } from '../shared/sourceErrors';
 import { analyzeClips } from './analysis';
 import { qualitySummary } from '../shared/editorialBrief';
 import { renderClip, renderThumb, type RenderEnv } from './clipRender';
@@ -105,6 +105,11 @@ export function createPipeline(ctx: PipelineContext): JobRunner {
     };
     event('job_start', { job: job.id, host: urlHost(job.url), preset: job.preset, target: job.maxClips });
 
+    /** Guarda el diagnóstico de yt-dlp en el trabajo (para el modal de error) y relanza. */
+    const keepFailure = (e: unknown): never => {
+      if (e instanceof SourceError) update({ sourceFailure: e.failure });
+      throw e;
+    };
     try {
       // 1. Validación
       enter('validating', 'Comprobando dependencias…');
@@ -112,7 +117,8 @@ export function createPipeline(ctx: PipelineContext): JobRunner {
       // El diagnóstico de Python/Torch decide qué motor hay (p. ej. faster-whisper sin whisper.exe).
       const gpu = await ctx.gpuInfo();
       const diag = await runDiagnostics(tools, s, undefined, gpu);
-      const missing = missingDepMessage(diag);
+      // Un archivo local no necesita yt-dlp: no se exige aunque falte.
+      const missing = missingDepMessage(diag, { localSource: !!job.localSource });
       if (missing) throw new UserFacingError(missing);
       check(signal);
       if (freeDiskMB(dir) < s.minFreeDiskMB) {
@@ -123,10 +129,10 @@ export function createPipeline(ctx: PipelineContext): JobRunner {
       const reuseSource = !!job.localSource || (!!job.reuse?.includes('source') && !!existingSource());
       const info = reuseSource
         ? { title: job.sourceTitle ?? 'Vídeo', description: job.sourceDescription, duration: job.sourceDuration ?? 0, clientArgs: [] as string[], filesize: undefined }
-        : await readSourceInfo(tools.ytDlp!, job.url, s, signal, () => {
-            log.warn(`[${job.id}] YouTube pidió verificación anti-bot; reintentando con cliente alternativo`);
-            update({ message: 'YouTube pidió verificación; reintentando con un método alternativo…' });
-          });
+        : await readSourceInfo(tools.ytDlp!, job.url, s, signal, (n, of) => {
+            log.warn(`[${job.id}] YouTube pidió verificación anti-bot; intento ${n} de ${of}`);
+            update({ message: botRetryMessage(n, of) });
+          }).catch(keepFailure);
       update({ sourceTitle: info.title, sourceDescription: info.description, sourceDuration: info.duration, progress: 0.6, message: 'Comprobando motor de transcripción…' });
 
       // Plan de transcripción (antes de descargar nada pesado).
@@ -152,15 +158,13 @@ export function createPipeline(ctx: PipelineContext): JobRunner {
       // 2. Descarga
       enter('downloading', reuseSource ? 'Reutilizando el vídeo ya descargado…' : 'Descargando vídeo…');
       if (job.localSource && !existingSource()) {
-        // Bloque de un directo: el archivo ya está en disco (se enlaza sin copiar si es posible).
-        const dst = path.join(dir, `source${path.extname(job.localSource) || '.mp4'}`);
-        try {
-          fs.linkSync(job.localSource, dst);
-        } catch {
-          fs.copyFileSync(job.localSource, dst);
-        }
+        if (!fs.existsSync(job.localSource)) throw new UserFacingError('El archivo de vídeo original ya no está en su carpeta: impórtalo de nuevo.');
+        update({ message: job.localFile ? 'Usando el archivo de tu equipo (sin copiarlo si está en la misma unidad)…' : 'Usando el vídeo del directo…' });
+        const placed = placeLocalSource(job.localSource, dir);
+        if (placed.copied) log.info(`[${job.id}] archivo local en otra unidad: se copió a la carpeta del trabajo`);
       }
-      const dl = reuseSource ? { code: 0, stderr: '', stdout: '' } : await runProcess(
+      // Si la descarga se topa con el bloqueo anti-bot, se reintenta como la lectura (sin repetir lo ya probado).
+      const download = (clientArgs: string[]) => runProcess(
         tools.ytDlp!,
         [
           '--no-playlist',
@@ -176,7 +180,7 @@ export function createPipeline(ctx: PipelineContext): JobRunner {
           `${s.maxDownloadMB}M`,
           '--ffmpeg-location',
           path.dirname(tools.ffmpeg!),
-          ...info.clientArgs,
+          ...clientArgs,
           '-o',
           path.join(dir, 'source.%(ext)s'),
           '--',
@@ -191,7 +195,15 @@ export function createPipeline(ctx: PipelineContext): JobRunner {
           },
         },
       );
-      if (dl.code !== 0) throw new UserFacingError(`La descarga falló. ${friendlyYtDlpError(dl.stderr)}`, dl.stderr);
+      if (!reuseSource) {
+        const first = await download(info.clientArgs);
+        if (first.code !== 0)
+          await withBotRetries(tools.ytDlp!, reuseFirst(first, download), {
+            signal,
+            from: info.clientArgs.length ? 1 : 0,
+            onRetry: (n, of) => update({ message: botRetryMessage(n, of) }),
+          }).catch(keepFailure);
+      }
       if (info.clientArgs.length) log.warn(`[${job.id}] descargado con cliente alternativo (la calidad puede ser menor, p. ej. 360p)`);
       const source = fs.readdirSync(dir).find((f) => /^source\.(mp4|mkv|webm|mov)$/i.test(f));
       if (!source) throw new UserFacingError('No se encontró el vídeo descargado (puede haber superado el tamaño máximo).');
@@ -200,12 +212,12 @@ export function createPipeline(ctx: PipelineContext): JobRunner {
 
       const probe = await runProcess(
         tools.ffprobe!,
-        ['-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=width,height:format=duration', '-of', 'json', sourcePath],
+        ['-v', 'error', '-select_streams', 'v:0', '-show_entries', PROBE_DISPLAY_ENTRIES, '-of', 'json', sourcePath],
         { signal, timeoutMs: 60_000 },
       );
-      const pj = JSON.parse(probe.stdout || '{}') as { streams?: { width: number; height: number }[]; format?: { duration?: string } };
-      const width = pj.streams?.[0]?.width ?? 0;
-      const height = pj.streams?.[0]?.height ?? 0;
+      const pj = JSON.parse(probe.stdout || '{}') as { streams?: ProbedStream[]; format?: { duration?: string } };
+      // Medidas como se ven: un vídeo vertical de móvil (rotación 90°) se filtra ya girado.
+      const { width, height } = pj.streams?.[0] ? displaySize(pj.streams[0]) : { width: 0, height: 0 };
       const duration = parseFloat(pj.format?.duration ?? '') || info.duration;
       if (!width || !height) throw new UserFacingError('El archivo descargado no contiene vídeo.');
       metrics.sourceDuration = duration;

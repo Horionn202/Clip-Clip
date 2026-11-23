@@ -12,8 +12,8 @@ describe('errores de yt-dlp', () => {
     [bot, /bot/],
     ['ERROR: [youtube] x: Private video. Sign in if you\'ve been granted access', /privado/],
     ['ERROR: Sign in to confirm your age', /edad/],
-    ['ERROR: Video unavailable', /no existe/],
-    ['ERROR: Unsupported URL: https://x.com', /no está soportada/],
+    ['ERROR: Video unavailable', /no existe/i],
+    ['ERROR: Unsupported URL: https://x.com', /no es válida/],
     ['getaddrinfo failed', /conexión/],
     ['algo raro', /pública y accesible/],
   ])('%s → mensaje claro', (stderr, re) => {

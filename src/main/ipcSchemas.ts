@@ -23,6 +23,16 @@ export const createJobSchema = z
   })
   .strict();
 
+export const createLocalJobSchema = z
+  .object({
+    token: z.string().uuid(),
+    preset: z.union(DURATION_PRESETS.map((p) => z.literal(p)) as [z.ZodLiteral<15>, z.ZodLiteral<30>, z.ZodLiteral<45>, z.ZodLiteral<60>]),
+    maxClips: z.number().int().min(1).max(MAX_CLIPS),
+    rightsConfirmed: z.literal(true, { message: 'Debes confirmar que tienes derechos para usar este contenido.' }),
+    allowModelDownload: z.boolean().optional(),
+  })
+  .strict();
+
 const exe = z.string().max(1024).transform((v, ctx) => {
   try {
     return validateExecutablePath(v);
