@@ -247,7 +247,14 @@ export function SettingsPage(props: { settings: Settings; onChange: (s: Settings
             </li>
           ))}
         </ul>
-        <YtDlpUpdatePanel onUpdated={() => void props.refreshDiag()} />
+        <YtDlpUpdatePanel
+          onUpdated={() => {
+            // El proceso principal guardó la nueva ruta de yt-dlp: se recargan los ajustes para que el campo la muestre
+            // (y vaciarlo devuelva de verdad a la versión autodetectada).
+            void api().getSettings().then(props.onChange);
+            void props.refreshDiag();
+          }}
+        />
         <div className="row">
           <button onClick={recheck} disabled={checking}>{checking ? 'Comprobando…' : 'Volver a comprobar'}</button>
           {!s.onboardingDone && (
@@ -383,6 +390,8 @@ function NumField(p: { label: string; value: number; min: number; max: number; o
 
 function PathField(p: { label: string; value: string; onSave: (v: string) => void }) {
   const [v, setV] = useState(p.value);
+  // Si la ruta cambia fuera del campo (p. ej. al actualizar yt-dlp), el campo se sincroniza.
+  useEffect(() => setV(p.value), [p.value]);
   return (
     <label className="field">
       <span>{p.label}</span>
