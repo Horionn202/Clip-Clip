@@ -279,6 +279,7 @@ export function locateQuote(quote: string, clip: { start: number; end: number },
 
 interface Spoken {
   start: number;
+  end: number;
   /** Sólo lo que se dice dentro del tramo. */
   text: string;
   /** La frase entera, para no perder un «no» o un «cuando» que quedó fuera. */
@@ -291,7 +292,7 @@ function spoken(c: HighlightContext, from: number, to: number): Spoken[] {
   return c.segments.flatMap((s) => {
     const inSeg = ws.filter((w) => w.start >= s.start - 0.05 && w.start < s.end + 0.05);
     const inside = inSeg.filter((w) => w.start >= from - 0.05 && w.end <= to + 0.05);
-    return inside.length ? [{ start: inside[0].start, text: textOf(inside), full: s.text.trim() }] : [];
+    return inside.length ? [{ start: inside[0].start, end: inside[inside.length - 1].end, text: textOf(inside), full: s.text.trim() }] : [];
   });
 }
 
@@ -307,7 +308,7 @@ function sentenceAround(evidence: TimedWord, c: HighlightContext): string {
 }
 
 export type Decision =
-  | { kind: 'verified'; title: string; hook: string; evidence: TimedWord }
+  | { kind: 'verified'; title: string; hook: string; evidence: TimedWord; support: { start: number; end: number } }
   | { kind: 'move'; to: number }
   | { kind: 'rejected'; reason: string };
 
@@ -346,9 +347,17 @@ export function decide(v: Verdict, clip: Candidate, c: HighlightContext, eventAt
   const needed = new Set<Claim>(titleClaims(title));
   if (v.event === 'inicio_real') needed.add('inicio');
   if (v.event === 'resultado') needed.add('resultado');
+  // Todo lo que respalda el título queda anotado: si al editar se recorta, se pierde la estrella.
+  const support = { start: evidence.start, end: evidence.end };
   for (const claim of needed) {
     const early = spoken(c, clip.start, Math.min(clip.end, clip.start + EVIDENCE_WINDOW_SEC));
-    if (early.some((p) => heardClaim(p, claim, c.keywords)) || heardClaim({ start: evidence.start, text: evidence.text, full: said.text }, claim, c.keywords)) continue;
+    if (heardClaim({ start: evidence.start, end: evidence.end, text: evidence.text, full: said.text }, claim, c.keywords)) continue;
+    const backer = early.find((p) => heardClaim(p, claim, c.keywords));
+    if (backer) {
+      support.start = Math.min(support.start, backer.start);
+      support.end = Math.max(support.end, backer.end);
+      continue;
+    }
     const later = spoken(c, clip.start, clip.end).find((p) => heardClaim(p, claim, c.keywords));
     if (later) return { kind: 'move', to: later.start };
     return no(`Afirma ${CLAIM_LABEL[claim]} que no se oye en el clip.`);
@@ -358,7 +367,7 @@ export function decide(v: Verdict, clip: Candidate, c: HighlightContext, eventAt
   // El hook tiene que oírse al principio; si no, se usa la propia evidencia.
   const heard = locateQuote(v.hook, clip, c);
   const hook = heard && heard.start - clip.start <= EVIDENCE_WINDOW_SEC && normWords(v.hook).length >= 3 ? heard.text : evidence.text;
-  return { kind: 'verified', title, hook: hook.slice(0, 200), evidence };
+  return { kind: 'verified', title, hook: hook.slice(0, 200), evidence, support };
 }
 
 /** «Otro momento»: sin estrella, sin relevancia inflada y sin un título que anuncie lo que no se oye. */
@@ -454,7 +463,7 @@ export async function verifyHighlights(o: {
         score,
         topicRelevance,
         why: v.reason,
-        verification: { model: o.model, confidence: v.confidence, eventType: v.event, quote: d.evidence.text, evidenceStart: d.evidence.start, evidenceEnd: d.evidence.end },
+        verification: { model: o.model, confidence: v.confidence, eventType: v.event, quote: d.evidence.text, evidenceStart: d.evidence.start, evidenceEnd: d.evidence.end, supportStart: d.support.start, supportEnd: d.support.end },
       };
       passed.push({ from, clip: { ...clip, title: d.title, hook: d.hook, reason: v.reason, score, editorial }, priority: topicRelevance });
       reason = '';
@@ -492,7 +501,9 @@ export function isVerifiedHighlight(e: ClipEditorial | undefined): boolean {
 export function editorialAfterEdit(e: ClipEditorial | undefined, before: { title: string }, after: { title: string; start: number; end: number }): ClipEditorial | undefined {
   const v = e?.verification;
   if (!e || !v) return e;
-  const moved = v.evidenceStart < after.start - 0.05 || v.evidenceStart - after.start > EVIDENCE_WINDOW_SEC || v.evidenceEnd > after.end + 0.05;
+  const from = Math.min(v.evidenceStart, v.supportStart ?? v.evidenceStart);
+  const to = Math.max(v.evidenceEnd, v.supportEnd ?? v.evidenceEnd);
+  const moved = from < after.start - 0.05 || v.evidenceStart - after.start > EVIDENCE_WINDOW_SEC || to > after.end + 0.05;
   // La verificación sólo vale para el título verificado: cualquier cambio de palabras la anula (mayúsculas o signos no).
   const retitled = plain(after.title) !== plain(before.title);
   if (!moved && !retitled) return e;

@@ -113,6 +113,9 @@ export interface HighlightVerification {
   /** Segundo real de la cita en el vídeo (localizado en la transcripción, no el que diga la IA). */
   evidenceStart: number;
   evidenceEnd: number;
+  /** Tramo con todo lo que respalda el título (la cita y las frases de inicio, resultado o choque). Recortarlo quita la estrella. */
+  supportStart?: number;
+  supportEnd?: number;
 }
 
 /** Criterios editoriales con los que se eligió un clip (0–100). */

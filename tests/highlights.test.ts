@@ -387,6 +387,27 @@ describe('después de verificar', () => {
   it('un título editado que afirma otro evento quita la estrella', () => {
     expect(isVerifiedHighlight(editorialAfterEdit(editorial, clip, { ...clip, title: 'Victoria en la carrera' }))).toBe(false);
   });
+  it('revisión Codex: recortar la frase que respalda el título quita la estrella', async () => {
+    const parts: [number, string][] = [[0, 'Seguimos en la carrera de motos'], [13, 'He ganado la carrera de motos']];
+    const ws = parts.flatMap(([at, text]) => text.split(' ').map((w, i) => ({ start: at + i * 0.3, end: at + i * 0.3 + 0.25, text: ` ${w}` })));
+    const segs = parts.map(([at, text]) => ({ start: at, end: at + text.split(' ').length * 0.3, text: ` ${text}` }));
+    const c5 = { ...ctx, preset: 15 as const, duration: 60, words: ws, segments: segs };
+    const r = await verifyHighlights({
+      selected: [{ ...candidate(0), end: 15 }],
+      moments: [],
+      context: c5,
+      max: 1,
+      model: EDITORIAL_MODEL,
+      ask: async () => raw(verdict({ event: 'accion_activa', title: 'Victoria en la carrera de motos', quote: 'Seguimos en la carrera de motos', evidenceStart: 0 })),
+    });
+    expect(r.verified).toHaveLength(1);
+    const v = r.verified[0];
+    const clip: Clip = { id: 'v', index: 1, start: v.start, end: v.end, title: v.title, hook: v.hook, reason: v.reason, score: v.score, editorial: v.editorial };
+    const edit = { clips: [clip], preset: 15 as const, sourceDuration: 60 };
+    expect(isVerifiedHighlight(applyClipPatch('v', { start: 0, end: 12 }, edit).editorial)).toBe(false);
+    expect(isVerifiedHighlight(applyClipPatch('v', { start: 0, end: 15.5 }, edit).editorial)).toBe(true);
+  });
+
   it('revisión Codex: cambiar el tema del título o quitar el evento también la quita; mayúsculas y signos no', () => {
     expect(isVerifiedHighlight(editorialAfterEdit(editorial, clip, { ...clip, title: 'Inicio de la carrera de coches' }))).toBe(false);
     expect(isVerifiedHighlight(editorialAfterEdit(editorial, clip, { ...clip, title: 'Un paseo por el puerto' }))).toBe(false);
