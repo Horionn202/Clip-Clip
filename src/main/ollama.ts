@@ -31,6 +31,38 @@ export async function modelPlacement(host: string, model: string): Promise<Place
   }
 }
 
+/** Modelos cargados ahora mismo en Ollama. [] si no responde. */
+export async function loadedModels(host: string): Promise<string[]> {
+  try {
+    assertLocal(host);
+    const r = await fetch(`${host}/api/ps`, { signal: AbortSignal.timeout(5000) });
+    if (!r.ok) return [];
+    return (((await r.json()) as { models?: { name: string }[] }).models ?? []).map((m) => m.name);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Deja sitio en la VRAM para `target`: descarga de memoria los demás modelos de Clip Clip que estén cargados y
+ * espera a que salgan. No toca modelos de otras aplicaciones. Devuelve los que liberó.
+ */
+export async function freeOtherModels(host: string, ours: string[], target: string | null, onUnload?: (model: string) => void): Promise<string[]> {
+  const same = (a: string, b: string) => a === b || a === `${b}:latest` || `${a}:latest` === b;
+  const out: string[] = [];
+  for (const m of await loadedModels(host)) {
+    if ((target && same(m, target)) || !ours.some((o) => same(m, o))) continue;
+    onUnload?.(m);
+    if (await unloadModel(host, m)) out.push(m);
+  }
+  for (let i = 0; i < 20 && out.length; i++) {
+    const now = await loadedModels(host);
+    if (!out.some((m) => now.includes(m))) break;
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  return out;
+}
+
 /** Benchmark corto: prompt estructurado pequeño, mide tokens/s y dónde quedó cargado el modelo. */
 export async function benchmarkModel(host: string, model: string, signal: AbortSignal): Promise<BenchmarkResult> {
   assertLocal(host);

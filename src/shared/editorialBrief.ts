@@ -215,8 +215,8 @@ export function briefForPrompt(title: string, b: EditorialBrief): string {
     b.titlePromise ? `PROMESA DEL TÍTULO: ${b.titlePromise}` : '',
     b.subtopics.length ? `SUBTEMAS: ${b.subtopics.join(', ')}` : '',
     b.keywords.length ? `PALABRAS CLAVE: ${b.keywords.join(', ')}` : '',
-    b.keyEvents.length ? `EVENTOS: ${ev(b.keyEvents)}` : '',
-    b.promiseMoments.length ? `MOMENTOS QUE CUMPLEN LA PROMESA: ${ev(b.promiseMoments)}` : '',
+    b.keyEvents.length ? `EVENTOS POSIBLES (sin verificar, compruébalos en la transcripción): ${ev(b.keyEvents)}` : '',
+    b.promiseMoments.length ? `MOMENTOS POSIBLES DE LA PROMESA (sin verificar): ${ev(b.promiseMoments)}` : '',
   ]
     .filter(Boolean)
     .join('\n');
@@ -231,6 +231,6 @@ export function editorialScore(p: { topicRelevance: number; hookStrength: number
 /** Resumen: cuántos clips se generaron y cuántos son destacados (superan el filtro de calidad). */
 export function qualitySummary(obtained: number, max: number, featured: number): string {
   const total = `${obtained} clip${obtained === 1 ? '' : 's'} generado${obtained === 1 ? '' : 's'} (hasta ${max})`;
-  if (featured === 0) return `${total}. Ninguno superó el filtro de calidad: revísalos antes de publicar.`;
-  return `${total} · ${featured} destacado${featured === 1 ? '' : 's'} por calidad y relación con el tema.`;
+  if (featured === 0) return `${total}. Ningún destacado verificado: quedan como otros momentos, revísalos antes de publicar.`;
+  return `${total} · ${featured} ${featured === 1 ? 'destacado verificado' : 'destacados verificados'} con evidencia.`;
 }

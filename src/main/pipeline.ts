@@ -8,7 +8,8 @@ import { resultSummary } from '../shared/selection';
 import { missingDepMessage, realGpuProbes, runDiagnostics, type ResolvedTools } from './deps';
 import { parseWhisperJson, type Word } from './media';
 import { wordsFromSegments } from '../shared/cues';
-import { chatJson, modelPlacement, unloadModel } from './ollama';
+import { chatJson, freeOtherModels, listModels, modelPlacement, unloadModel } from './ollama';
+import { appModels, verifierModel, type Placement } from '../shared/aiProfiles';
 import { CancelledError, runProcess } from './proc';
 import { event, log, urlHost } from './logger';
 import type { JobRunner } from './queue';
@@ -226,7 +227,7 @@ export function createPipeline(ctx: PipelineContext): JobRunner {
       const reuseTranscript = !!job.reuse?.includes('transcript') && fs.existsSync(tPath);
       const runTranscription = async () => {
       // 4. Transcripción (con alternativa segura si la GPU falla)
-      if (plan.device === 'cuda' && (await unloadModel(s.ollamaHost, s.ollamaModel))) {
+      if (plan.device === 'cuda' && ((await freeOtherModels(s.ollamaHost, appModels(s.ollamaModel), null)).length || (await unloadModel(s.ollamaHost, s.ollamaModel)))) {
         log.info(`[${job.id}] modelo de Ollama liberado de la VRAM antes de transcribir en GPU`);
       }
       enter('transcribing', `Transcribiendo con ${plan.device === 'cuda' ? 'GPU' : 'CPU'} (${plan.model})…`);
@@ -313,6 +314,12 @@ export function createPipeline(ctx: PipelineContext): JobRunner {
         const smi = parseNvidiaSmi((await realGpuProbes.nvidiaSmi(tools.nvidiaSmi)) ?? '');
         if (smi?.freeMB !== undefined) metrics.vramFreeBeforeAnalysisMB = smi.freeMB;
       }
+      // El modelo de selección ocupa la VRAM que necesita el editorial: se libera lo anterior antes de cada uno.
+      const ours = appModels(s.ollamaModel);
+      const freeFor = (model: string) =>
+        freeOtherModels(s.ollamaHost, ours, model, (old) => update({ message: `Liberando «${old}» de la memoria de la GPU para cargar «${model}»…` }));
+      let selectionPlacement: Placement | null = null;
+      if (!reuseClips) await freeFor(s.ollamaModel);
       const { clips: chosen, report } = reuseClips ? { clips: job.clips, report: job.analysis! } : await analyzeClips({
         segments,
         words,
@@ -325,12 +332,24 @@ export function createPipeline(ctx: PipelineContext): JobRunner {
         minScore: s.minClipScore,
         chat: (system, user, maxItems, schema) =>
           chatJson(s.ollamaHost, s.ollamaModel, system, user, signal, schema ? { schema, numPredict: 1600 } : { maxItems, numPredict: Math.min(4096, 400 + maxItems * 320) }),
+        verifier: async () => {
+          const model = verifierModel(await listModels(s.ollamaHost).catch(() => []), s.ollamaModel);
+          // Dónde corrió la selección se mide antes de descargar su modelo.
+          selectionPlacement = await modelPlacement(s.ollamaHost, s.ollamaModel);
+          await freeFor(model);
+          check(signal);
+          update({ message: `Momentos seleccionados · cargando «${model}» para verificar destacados…` });
+          return { model, ask: (system, user, schema) => chatJson(s.ollamaHost, model, system, user, signal, { schema, numPredict: 700, temperature: 0, timeoutMs: 3 * 60 * 1000 }) };
+        },
         checkCancelled: () => check(signal),
         onProgress: (p, message) => update({ progress: p, message }),
         log: (m, extra) => log.info(`[${job.id}] análisis: ${m}`, extra),
       });
       // Dónde se cargó realmente el modelo (nunca se afirma GPU si parte quedó en CPU/RAM).
-      const placement = reuseClips ? null : await modelPlacement(s.ollamaHost, s.ollamaModel);
+      const placement = reuseClips ? null : (selectionPlacement ?? (await modelPlacement(s.ollamaHost, s.ollamaModel)));
+      // El render no necesita el verificador: se libera si es distinto del modelo del usuario.
+      const verifiedWith = reuseClips ? undefined : report.verification?.model;
+      if (verifiedWith && verifiedWith !== s.ollamaModel) await unloadModel(s.ollamaHost, verifiedWith);
       if (placement) metrics.ollamaPlacement = placement;
       update({ analysis: report, metrics: { ...metrics } });
       event('analysis', { job: job.id, ...report });

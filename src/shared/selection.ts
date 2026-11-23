@@ -377,12 +377,9 @@ export function evaluateCandidate(raw: unknown, o: EvaluateOptions): Evaluation 
     // Hook: si el del modelo es una frase incidental y el clip abre con el tema, se usa la frase real.
     const opening = openingPhrase(o.words, start, end);
     if ((aligned.moved || topicHits(hook, kws) === 0) && topicHits(opening, kws) > 0 && !isGenericText(opening, 12)) hook = opening;
-    // Título: describe el evento real, no una frase suelta, cuando el tramo trata claramente el tema.
+    // Título: una frase real del tramo. Nunca una etiqueta del brief: la IA puede haber inventado ese evento.
     if (topicHits(title, kws) === 0 && topicHits(windowText, kws) >= 2) {
-      const b = o.topic.brief;
-      const ev = b ? [...b.promiseMoments, ...b.keyEvents].find((e) => e.t >= start - 10 && e.t <= end && topicHits(e.label, kws) > 0) : undefined;
-      const fromSentence = aligned.sentence ? titleFromSentence(aligned.sentence.text) : titleFromSentence(opening);
-      finalTitle = ev ? ev.label.slice(0, 100) : fromSentence;
+      finalTitle = aligned.sentence ? titleFromSentence(aligned.sentence.text) : titleFromSentence(opening);
     }
   }
 
@@ -406,7 +403,7 @@ export function evaluateCandidate(raw: unknown, o: EvaluateOptions): Evaluation 
   const payoffStrength = num100(r.payoff_strength ?? r.payoffStrength) ?? llmScore ?? 50;
   const selfContained = num100(r.self_contained ?? r.selfContained) ?? 60;
   const score = editorialScore({ topicRelevance, hookStrength, payoffStrength, selfContained, local: ls });
-  // El umbral no descarta: marca los destacados. El resto se genera igual como «otros momentos».
+  // El umbral no descarta: marca quién ASPIRA a destacado (lo confirma el verificador, fase B).
   const featured = score >= o.topic.minScore;
   const why = clean(r.why_selected ?? r.whySelected, 300) || reason;
   const editorial: ClipEditorial = { score, featured, topicRelevance, hookStrength, payoffStrength, selfContained, momentType, why, aligned: aligned.moved || undefined };

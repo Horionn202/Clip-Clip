@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useState } from 'react';
 import type { Clip, ClipEditorial, Job } from '../../shared/types';
-import { MOMENT_LABELS } from '../../shared/editorialBrief';
+import { EVENT_INFO, isVerifiedHighlight } from '../../shared/highlights';
 import { formatTime } from '../../shared/validation';
 import { LAYOUT_LABELS } from '../../shared/layouts';
 import { EditClipModal } from './ClipEditor';
@@ -62,36 +62,32 @@ function ExportConfirm({ open, onClose, what, onConfirm }: { open: boolean; onCl
   );
 }
 
-/** Por qué se eligió: categoría, puntuación editorial, relación con el tema y motivo. */
+/** Destacado verificado con su prueba, u «Otro momento» sin nada que parezca una recomendación. */
 function ClipWhy({ e }: { e: ClipEditorial }) {
-  const rel = e.topicRelevance >= 75 ? 'Muy ligado al tema' : e.topicRelevance >= 50 ? 'Relacionado con el tema' : 'Poco ligado al tema';
-  if (e.auto)
+  const v = e.verification;
+  if (!v || !isVerifiedHighlight(e))
     return (
       <div className="clip-why small">
         <div className="clip-why-row">
-          <span className="clip-why-tag">Elegido por la app</span>
-          <span className="muted">Sin valorar por la IA</span>
+          <span className="clip-other">Otro momento</span>
+          {e.auto && <span className="muted">Elegido por la app</span>}
         </div>
-        <p className="muted clip-why-text">{e.why}</p>
+        <p className="muted clip-why-text">Sin verificar. Puedes revisarlo y subirlo si te gusta.</p>
+        {e.notVerified && <p className="muted clip-why-text">No se destacó: {e.notVerified}</p>}
       </div>
     );
   return (
     <div className="clip-why small">
       <div className="clip-why-row">
-        {e.featured && (
-          <span className="clip-featured" title="Supera el filtro de calidad y cumple el tema del vídeo">
-            <span aria-hidden="true">★</span> Destacado
-          </span>
-        )}
-        {e.momentType && <span className="clip-why-tag">{MOMENT_LABELS[e.momentType]}</span>}
-        <span className="clip-why-score" title="Puntuación editorial (relevancia 45 %, gancho 20 %, desenlace 20 %, autonomía 10 %, técnica 5 %)">
-          {e.score}/100
+        <span className="clip-featured" title={`Verificado con ${v.model}`}>
+          <span aria-hidden="true">★</span> Destacado verificado · {v.confidence}%
         </span>
-        <span className="muted">
-          {rel} ({e.topicRelevance})
-        </span>
+        <span className="clip-why-tag">{EVENT_INFO[v.eventType].label}</span>
       </div>
-      {e.why && <p className="muted clip-why-text">{e.why}</p>}
+      <p className="clip-why-text">{e.why}</p>
+      <p className="muted clip-why-text clip-evidence">
+        Evidencia: ‘{v.quote}’ · {formatTime(v.evidenceStart)}
+      </p>
     </div>
   );
 }
@@ -306,10 +302,15 @@ export function ResultsPage(props: { jobs: Job[]; selected: string | null; onSel
       </section>
     );
   const { ready, total } = readyCount(job.clips);
-  // Destacados primero (por puntuación); después el resto en el orden del vídeo.
-  const featured = job.clips.filter((c) => c.editorial?.featured).sort((a, b) => (b.editorial?.score ?? 0) - (a.editorial?.score ?? 0));
+  // Destacados verificados primero (por confianza); después el resto en el orden del vídeo.
+  const isStar = (c: Clip) => isVerifiedHighlight(c.editorial);
+  const featured = job.clips.filter(isStar).sort((a, b) => b.editorial!.verification!.confidence - a.editorial!.verification!.confidence);
   const hasFeatured = featured.length > 0;
-  const ordered = hasFeatured ? [...featured, ...job.clips.filter((c) => !c.editorial?.featured)] : job.clips;
+  const ordered = hasFeatured ? [...featured, ...job.clips.filter((c) => !isStar(c))] : job.clips;
+  // Trabajos de versiones anteriores: su resumen hablaba de destacados que nunca se verificaron.
+  const a = job.analysis;
+  const unverifiedLegacy = a?.minScore !== undefined && !a.verification && (a.featured ?? 0) > 0;
+  const summary = unverifiedLegacy ? `${job.clips.length} clips generados. Trabajo anterior al verificador: sus destacados no están verificados.` : job.resultSummary;
   const exportable = job.clips.filter((c) => c.file && !c.dirty).map((c) => c.id);
   const selState = selectionState(sel, job.clips.map((c) => c.id));
 
@@ -457,7 +458,7 @@ export function ResultsPage(props: { jobs: Job[]; selected: string | null; onSel
       </div>
       {job.resultSummary && (
         // Menos clips que el máximo con el filtro de calidad no es un fallo: aviso informativo, no de error.
-        <div className={`banner ${job.analysis && job.analysis.obtained < job.analysis.effectiveTarget && job.analysis.minScore === undefined ? 'warn' : 'info'}`}>{job.resultSummary}</div>
+        <div className={`banner ${job.analysis && job.analysis.obtained < job.analysis.effectiveTarget && job.analysis.minScore === undefined ? 'warn' : 'info'}`}>{summary}</div>
       )}
       {job.analysis?.brief && (
         <p className="small muted">
@@ -473,8 +474,8 @@ export function ResultsPage(props: { jobs: Job[]; selected: string | null; onSel
       <div className="gallery">
         {ordered.map((c, i) => (
           <Fragment key={c.id}>
-            {hasFeatured && i === 0 && ordered[0].editorial?.featured && <h3 className="gallery-h">★ Destacados</h3>}
-            {hasFeatured && !c.editorial?.featured && (i === 0 || ordered[i - 1].editorial?.featured) && <h3 className="gallery-h">Otros momentos</h3>}
+            {hasFeatured && i === 0 && <h3 className="gallery-h">★ Destacados verificados</h3>}
+            {hasFeatured && i === featured.length && <h3 className="gallery-h">Otros momentos</h3>}
           <ClipCard job={job} clip={c} selecting={selecting} selected={sel.has(c.id)} onToggle={() => setSel((x) => toggle(x, c.id))} pub={pub[c.id]} onPub={(d) => setPub(job.id, d)} onError={(t) => setMsg({ kind: 'error', text: t })} onInfo={(t) => setMsg({ kind: 'info', text: t })} />
           </Fragment>
         ))}

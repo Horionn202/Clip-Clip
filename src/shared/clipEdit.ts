@@ -3,6 +3,7 @@ import type { Clip, ClipPatch, DurationPreset, RenderedState } from './types';
 import { NEEDS_CAM } from './layouts';
 import { compositionErrors, compositionOf } from './composition';
 import { sanitizeCues, shiftCue } from './cues';
+import { editorialAfterEdit } from './highlights';
 import { UserFacingError, overlaps, presetRange } from './validation';
 
 export interface EditContext {
@@ -74,6 +75,7 @@ export function applyClipPatch(clipId: string, patch: ClipPatch, ctx: EditContex
   if ((NEEDS_CAM.includes(next.layout ?? 'gameplay_full') || next.layout === 'custom') && !next.camRect) {
     throw new UserFacingError('Este layout necesita la posición de la facecam: ajústala antes de aplicarlo.');
   }
+  if (next.editorial) next.editorial = editorialAfterEdit(next.editorial, cur, next);
   // El hook no está en el vídeo (los subtítulos salen de la transcripción): sólo cambian datos.
   // Con el estado renderizado conocido, «pendiente» = difiere del MP4 actual (deshacer los cambios lo limpia).
   next.dirty = cur.rendered && cur.file ? differsFromRendered(next, cur.rendered) : cur.dirty || needsRender;

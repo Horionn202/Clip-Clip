@@ -1,6 +1,7 @@
 // Selección editorial: brief del vídeo, relevancia al tema, «hasta N», inicio en la frase gancho y edición temporal.
 import { describe, it, expect } from 'vitest';
 import { otherMoments } from '../src/shared/otherMoments';
+import { VERIFIER_SYSTEM_PROMPT } from '../src/shared/highlights';
 import { analyzeClips, type ChatFn } from '../src/main/analysis';
 import { alignToHook, evaluateCandidate, selectRound, type TimedWord } from '../src/shared/selection';
 import { editorialScore, fallbackBrief, parseBrief, qualitySummary, topicKeywords } from '../src/shared/editorialBrief';
@@ -44,6 +45,13 @@ const RACE = [
   [1524, 'Voy primero en la carrera, no me lo creo, gente.'],
   [1532, 'Última curva y gano la carrera con el súper coche, increíble.'],
 ] as [number, string][];
+
+/** Verificador simulado: aprueba si el clip abre hablando de la carrera, citando esa frase. */
+function verdictFor(user: string): string {
+  const m = user.split('DURANTE')[1].match(/\[([\d.]+)\] (.*)/);
+  const ok = !!m && /carrera/i.test(m[2]);
+  return JSON.stringify({ approved: ok, event_type: ok ? 'accion_activa' : 'contexto', evidence_quote: m?.[2] ?? '', evidence_start: Number(m?.[1] ?? 0), corrected_title: m?.[2] ?? '', corrected_hook: m?.[2] ?? '', confidence: 90, reason: 'La frase habla de la carrera en curso.' });
+}
 
 const brief = fallbackBrief(TITLE);
 const topic = { keywords: topicKeywords(brief, TITLE), brief, minScore: 70 };
@@ -117,14 +125,14 @@ describe('caso real: «Mi primera carrera» en GTA 6', () => {
     const { words: w, segments } = script(lines, 1700);
     const cand = (start: number, rel: number, i: number) => ({ start, end: start + 60, hook_start: start, title: ['Salida en el puerto', 'Choque en la autopista', 'Derrape nocturno en el túnel', 'Victoria en la playa', 'Paseo tranquilo', 'Menú de opciones'][Math.min(i, 5)] + (i >= 4 ? ` ${i}` : ''), hook: 'Frase de apertura del momento elegido', reason: 'Se ve una parte de la partida con algo de contexto', score: 75, topic_relevance: rel, hook_strength: 75, payoff_strength: 80, self_contained: 75, moment_type: 'accion', why_selected: 'Parte de la partida' });
     const raws = [...strong.map((t, i) => cand(t, 90, i)), ...Array.from({ length: 16 }, (_, k) => cand(80 + k * 75 + (strong.some((s) => Math.abs(s - (80 + k * 75)) < 70) ? 1000 : 0), 80, k + 10)).filter((c) => c.start < 1640)];
-    const chat: ChatFn = async (_s, _u, _n, schema) => (schema ? JSON.stringify({ tema_principal: 'Primera carrera con súper coches en GTA 6', subtemas: [], eventos_principales: [], palabras_clave: ['carrera', 'gta 6', 'súper coche'], promesa_titulo: 'Ver la primera carrera', momentos_promesa: [] }) : JSON.stringify({ clips: raws }));
+    const chat: ChatFn = async (system, user, _n, schema) => (system === VERIFIER_SYSTEM_PROMPT ? verdictFor(user) : schema ? JSON.stringify({ tema_principal: 'Primera carrera con súper coches en GTA 6', subtemas: [], eventos_principales: [], palabras_clave: ['carrera', 'gta 6', 'súper coche'], promesa_titulo: 'Ver la primera carrera', momentos_promesa: [] }) : JSON.stringify({ clips: raws }));
     const r = await analyzeClips({ segments, words: w, duration: 1700, preset: 60, userTarget: 20, chat, title: TITLE, minScore: 70 });
     const featured = r.clips.filter((c) => c.editorial?.featured);
     expect(r.clips.length).toBeGreaterThan(4); // los demás también se generan, sin estrella
     expect(featured.map((c) => Math.round(c.start / 100))).toEqual([2, 7, 12, 15]);
     expect(r.report.featured).toBe(4);
     expect(r.report.brief?.source).toBe('ia');
-    expect(qualitySummary(r.clips.length, r.report.effectiveTarget, 4)).toMatch(/4 destacados/);
+    expect(qualitySummary(r.clips.length, r.report.effectiveTarget, 4)).toMatch(/4 destacados verificados/);
   });
 });
 
@@ -202,7 +210,7 @@ describe('caso real: el modelo propone pocos momentos y se pisan', () => {
   const { words, segments } = script(RACE, 1700);
   const base = { segments, words, duration: 1700, preset: 60 as const, title: TITLE };
   const item = { start: 1505, end: 1508, title: 'Primera carrera en GTA 6', hook: 'Mi primera carrera en GTA 6', reason: 'Empieza la primera carrera del juego', score: 90, topic_relevance: 95, hook_strength: 90, payoff_strength: 90, self_contained: 85, moment_type: 'accion' };
-  const model = (clips: unknown[]): ChatFn => async (_s, _u, _n, schema) => JSON.stringify(schema ? {} : { clips });
+  const model = (clips: unknown[]): ChatFn => async (system, user, _n, schema) => (system === VERIFIER_SYSTEM_PROMPT ? verdictFor(user) : JSON.stringify(schema ? {} : { clips }));
   const valid = (clips: { start: number; end: number }[]) => {
     const s = [...clips].sort((a, b) => a.start - b.start);
     s.forEach((c, i) => {
@@ -221,8 +229,15 @@ describe('caso real: el modelo propone pocos momentos y se pisan', () => {
     valid(r.clips);
   });
 
-  it('la IA no propone nada: salen los pedidos y ninguno destacado', async () => {
+  it('la selección no propone nada: una frase explícita de inicio se rescata, si el verificador la confirma', async () => {
     const r = await analyzeClips({ ...base, userTarget: 7, chat: model([]) });
+    const stars = r.clips.filter((c) => c.editorial?.featured);
+    expect(stars.map((c) => c.start)).toEqual([1509]);
+    expect(stars[0].editorial?.verification?.quote).toMatch(/primera carrera ahora sí/i);
+  });
+
+  it('la IA no propone nada (tampoco al verificar): salen los pedidos y ninguno destacado', async () => {
+    const r = await analyzeClips({ ...base, userTarget: 7, chat: async (_s, _u, _n, schema) => JSON.stringify(schema ? {} : { clips: [] }) });
     expect(r.clips).toHaveLength(7);
     expect(r.report.featured).toBe(0);
     valid(r.clips);

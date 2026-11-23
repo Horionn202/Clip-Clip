@@ -3,9 +3,10 @@
 // máximo: si sólo hay 4 momentos buenos, se devuelven 4 (nunca relleno para llegar a la cifra).
 import type { AnalysisReport, AnalysisRound, DurationPreset, RankingEntry } from '../shared/types';
 import { MAX_CLIPS } from '../shared/types';
-import { UserFacingError, parseModelResponse } from '../shared/validation';
+import { UserFacingError, overlaps, parseModelResponse } from '../shared/validation';
 import { REJECT_LABELS, effectiveTarget, feasibleMax, freeGaps, selectRound, type Candidate, type TimedWord, type TopicOptions } from '../shared/selection';
 import { otherMoments } from '../shared/otherMoments';
+import { asOtherMoment, evidenceMoments, verifyHighlights, type HighlightContext } from '../shared/highlights';
 import {
   BRIEF_SYSTEM_PROMPT,
   DEFAULT_MIN_CLIP_SCORE,
@@ -46,6 +47,11 @@ export interface AnalyzeInput {
   quality?: SelectionQuality;
   /** Puntuación editorial mínima (0–100). Por defecto 70. */
   minScore?: number;
+  /**
+   * Prepara el modelo verificador (fase B). Sólo se llama si hay aspirantes, para no cargarlo en balde.
+   * Sin él se verifica con el mismo modelo de la selección.
+   */
+  verifier?: () => Promise<{ model: string; ask: (system: string, user: string, schema: object) => Promise<string> }>;
   /** Rondas de búsqueda extra (por defecto, las del perfil de calidad). */
   maxFillRounds?: number;
   onProgress?: (p: number, message: string) => void;
@@ -192,7 +198,6 @@ export async function analyzeClips(input: AnalyzeInput): Promise<AnalyzeResult> 
     chosen.push(...sel.accepted);
     round.accepted += sel.accepted.length;
     mergeRejected(round.rejected, sel.rejected);
-    for (const c of sel.accepted) ranking.push({ start: c.start, end: c.end, title: c.title, score: c.score, topicRelevance: c.editorial?.topicRelevance, momentType: c.editorial?.momentType, featured: c.editorial?.featured, accepted: true });
   };
 
   const ask = (n: number) => `Devuelve como máximo ${n} candidatos (menos si no hay suficientes momentos buenos).`;
@@ -258,13 +263,70 @@ ${lines(chunk)}`;
     throw new UserFacingError(lastError || 'El modelo de IA devolvió respuestas no válidas. Prueba con otro modelo en Configuración.');
   }
 
+  // Fase B: sólo es destacado lo que el verificador Y la evidencia de la transcripción confirman.
+  const hctx: HighlightContext | undefined = topic?.brief && { title: input.title ?? '', brief: topic.brief, keywords: topic.keywords, segments, words, duration, preset };
+  if (hctx) {
+    const moments = evidenceMoments(hctx);
+    let next: Candidate[] = chosen.map((c) => asOtherMoment(c, hctx));
+    let verified: Candidate[] = [];
+    if (moments.length || chosen.some((c) => c.editorial?.featured)) {
+      input.checkCancelled?.();
+      let model = 'modelo de selección';
+      let ask = (system: string, user: string, schema: object) => input.chat(system, user, 0, schema);
+      try {
+        if (input.verifier) ({ model, ask } = await input.verifier());
+        const run = await verifyHighlights({
+          selected: chosen,
+          moments,
+          context: hctx,
+          max: eff,
+          model,
+          ask,
+          checkCancelled: input.checkCancelled,
+          // El primero incluye la carga del modelo verificador (puede tardar más de un minuto): se dice.
+          onProgress: (n, of) =>
+            input.onProgress?.(
+              0.9 + (0.09 * n) / of,
+              n === 1
+                ? `Momentos seleccionados · verificando destacado 1 de ${of} con «${model}» (cargándolo en memoria, la primera vez tarda)…`
+                : `Momentos seleccionados · verificando destacado ${n} de ${of} con «${model}»…`,
+            ),
+        });
+        ({ verified, others: next } = run);
+        report.verification = { model, checked: run.checked, rejected: run.rejected };
+        input.log?.('verificación de destacados', { model, checked: run.checked, verificados: verified.map((c) => c.start), rejected: run.rejected });
+      } catch (e) {
+        if (e instanceof Error && e.name === 'CancelledError') throw e;
+        input.checkCancelled?.();
+        // Sin verificador no hay estrellas, pero los clips se generan igual.
+        input.log?.('verificador no disponible: ningún destacado', e instanceof Error ? e.message : String(e));
+      }
+    }
+    // Un destacado verificado tiene prioridad sobre los tramos que pisa y sobre el máximo.
+    const free = next
+      .filter((c) => !verified.some((v) => overlaps(v, c)))
+      .sort((a, b) => b.score - a.score)
+      .slice(0, eff - verified.length);
+    chosen.splice(0, chosen.length, ...verified, ...free);
+  }
+
   // La IA decide los destacados; la cantidad no depende de ella: el resto se completa con «Otros momentos».
-  if (topic && chosen.length < eff) {
+  if (topic && hctx && chosen.length < eff) {
     input.checkCancelled?.();
-    const extra = otherMoments({ segments, words, duration, preset, topic, taken: chosen, filler, need: eff - chosen.length });
+    const fill = (taken: Candidate[]) => otherMoments({ segments, words, duration, preset, topic, taken, filler, need: eff - taken.length });
+    let extra = fill(chosen);
+    if (chosen.length + extra.length < eff) {
+      // No cabe el máximo: se recolocan los no destacados alrededor de los verificados, si así salen más.
+      const fixed = chosen.filter((c) => c.editorial?.featured);
+      const alt = fill(fixed);
+      if (fixed.length + alt.length > chosen.length + extra.length) {
+        chosen.splice(0, chosen.length, ...fixed);
+        extra = alt;
+      }
+    }
+    extra = extra.map((c) => asOtherMoment(c, hctx));
     chosen.push(...extra);
     report.added = extra.length;
-    for (const c of extra) ranking.push({ start: c.start, end: c.end, title: c.title, score: c.score, topicRelevance: c.editorial?.topicRelevance, featured: false, accepted: true });
     input.log?.('otros momentos añadidos', { añadidos: extra.length });
   }
 
@@ -273,6 +335,7 @@ ${lines(chunk)}`;
   report.candidates = report.rounds.reduce((a, r) => a + r.received, 0);
   report.rejected = report.rounds.reduce((a, r) => a + Object.values(r.rejected).reduce((x, y) => x + y, 0), 0);
   if (editorialMode) {
+    for (const c of chosen) ranking.push({ start: c.start, end: c.end, title: c.title, score: c.score, topicRelevance: c.editorial?.topicRelevance, momentType: c.editorial?.momentType, featured: !!c.editorial?.featured, accepted: true });
     // Diagnóstico: motivos de descarte agregados (los candidatos inválidos no tienen tramo fiable).
     const rej: Record<string, number> = {};
     for (const r of report.rounds) mergeRejected(rej, r.rejected);
