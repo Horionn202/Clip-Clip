@@ -2,9 +2,9 @@
 // La IA propone y el CÓDIGO comprueba: un destacado necesita una cita que exista en la transcripción del clip,
 // cerca de su inicio, de un evento que ya ocurre (no preparación, trayecto ni intención) y confianza ≥ 80.
 // Todo lo que no lo demuestre sigue disponible como «Otro momento».
-import type { ClipEditorial, DurationPreset, HighlightEvent } from './types';
+import { LONG_CLIP_SEC, type ClipEditorial, type DurationPreset, type HighlightEvent } from './types';
 import { formatTime, overlaps, presetRange } from './validation';
-import { MIN_WORDS_PER_SEC, isGenericText, localScore, speechRate, titleFromSentence, type Candidate, type TimedWord } from './selection';
+import { LONG_CLIP_MAX_SILENCE, LONG_CLIP_MIN_STRUCTURE, MIN_WORDS_PER_SEC, longestSilence, isGenericText, localScore, speechRate, titleFromSentence, type Candidate, type TimedWord } from './selection';
 import { editorialScore, normWords, topicHits, type EditorialBrief } from './editorialBrief';
 
 export const EVIDENCE_WINDOW_SEC = 15;
@@ -140,6 +140,8 @@ export function windowAt(at: number, c: HighlightContext): { start: number; end:
   end = round(end);
   if (end - start < min - 0.01) return null;
   if (c.words.length && speechRate(start, end, c.words) < MIN_WORDS_PER_SEC) return null;
+  // Clips largos: ni un silencio largo dentro (igual que en la selección).
+  if (c.preset >= LONG_CLIP_SEC && longestSilence(start, end, c.words.length ? c.words : c.segments) > LONG_CLIP_MAX_SILENCE) return null;
   return { start, end };
 }
 
@@ -415,8 +417,11 @@ export async function verifyHighlights(o: {
     .sort((a, b) => b.score - a.score)
     .slice(0, 6);
   const extra = o.moments.filter((m) => !aspirants.some((a) => Math.abs(a.start - m.start) < 5));
-  const queue = [...extra, ...aspirants];
   const rejected: HighlightRun['rejected'] = [];
+  // Un clip largo sólo puede ser destacado con gancho y desenlace claros, venga de la selección o de la evidencia.
+  const longOk = (x: Candidate) => c.preset < LONG_CLIP_SEC || ((x.editorial?.hookStrength ?? 0) >= LONG_CLIP_MIN_STRUCTURE && (x.editorial?.payoffStrength ?? 0) >= LONG_CLIP_MIN_STRUCTURE);
+  for (const x of [...extra, ...aspirants].filter((x) => !longOk(x))) rejected.push({ start: x.start, title: x.title, reason: 'Clip largo sin gancho y desenlace claros.' });
+  const queue = [...extra, ...aspirants].filter(longOk);
   const why = new Map<Candidate, string>();
   const passed: { from: Candidate; clip: Candidate; priority: number }[] = [];
 

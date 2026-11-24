@@ -8,6 +8,7 @@ import { presetRange, validatePreset, assertClipInvariants } from '../src/shared
 import { createJobSchema } from '../src/main/ipcSchemas';
 import { effectiveTarget, evaluateCandidate, feasibilityAdvice, feasibleMax, longestSilence, requiredDuration, selectRound } from '../src/shared/selection';
 import { otherMoments } from '../src/shared/otherMoments';
+import { evidenceMoments, verifyHighlights } from '../src/shared/highlights';
 import { adjustRange, applyClipPatch } from '../src/shared/clipEdit';
 import { liveSettingsError, minLiveBlockSec, validateLiveSettings } from '../src/shared/live';
 import { estimateJob } from '../src/shared/estimates';
@@ -119,6 +120,36 @@ describe('selección con clips de 2 min', () => {
     const r = otherMoments({ segments: segs, words, duration: 1200, preset: 120, topic, taken: [], filler: [], need: 10 });
     expect(r).toHaveLength(10);
     expect(() => assertClipInvariants([...r].sort((a, b) => a.start - b.start), { preset: 120, maxClips: 10, sourceDuration: 1200 })).not.toThrow();
+  });
+});
+
+describe('revisión Codex: las reglas de clips largos valen en todos los caminos', () => {
+  const topic = { keywords: topicKeywords(fallbackBrief('Mi carrera'), 'Mi carrera'), brief: fallbackBrief('Mi carrera'), minScore: 70 };
+  /** Frases de 10 s con un silencio de 20 s entre 200 y 220. */
+  const segs = Array.from({ length: 60 }, (_, k) => ({ start: k * 10, end: k * 10 + 9.6, text: ' Hablo sobre la carrera con mucho detalle y sigo contando cosas.' })).filter((s) => s.start < 200 || s.start >= 220);
+
+  it('«Otros momentos» no crea clips largos con un silencio largo dentro', () => {
+    const r = otherMoments({ segments: segs, words: [], duration: 600, preset: 120, topic, taken: [], filler: [], need: 10 });
+    expect(r.length).toBeGreaterThan(0);
+    for (const c of r) expect(longestSilence(c.start, c.end, segs), `${c.start}-${c.end}`).toBeLessThanOrEqual(12);
+    // Con clips cortos el silencio no se exige (como antes).
+    expect(otherMoments({ segments: segs, words: [], duration: 600, preset: 60, topic, taken: [], filler: [], need: 9 }).length).toBeGreaterThan(0);
+  });
+
+  it('un momento con evidencia no salta la regla de estructura de los clips largos', async () => {
+    const ctx = { title: 'Mi carrera', brief: topic.brief, keywords: topic.keywords, segments: [{ start: 0, end: 3, text: ' Empieza la carrera ya, vamos.' }, ...segs.filter((s) => s.start >= 10)], words: [], duration: 600, preset: 120 as const };
+    const asked: string[] = [];
+    const r = await verifyHighlights({
+      selected: [],
+      moments: evidenceMoments(ctx),
+      context: ctx,
+      max: 5,
+      model: 'x',
+      ask: async (_s, u) => (asked.push(u), '{}'),
+    });
+    expect(asked).toHaveLength(0);
+    expect(r.verified).toHaveLength(0);
+    expect(r.rejected.some((x) => /Clip largo sin gancho/.test(x.reason))).toBe(true);
   });
 });
 

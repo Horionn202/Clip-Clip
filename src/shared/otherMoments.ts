@@ -1,8 +1,8 @@
 // «Otros momentos»: completa hasta el máximo pedido con tramos que la IA no propuso. Puro y determinista.
 // Los modelos pequeños devuelven pocos candidatos o frases contiguas que se solapan: la cantidad no puede depender de ellos.
-import type { DurationPreset } from './types';
+import { LONG_CLIP_SEC, type DurationPreset } from './types';
 import { formatTime, overlaps, presetRange } from './validation';
-import { MIN_WORDS_PER_SEC, isGenericText, localScore, sentencesIn, titleFromSentence, type Candidate, type TimedWord, type TopicOptions } from './selection';
+import { LONG_CLIP_MAX_SILENCE, MIN_WORDS_PER_SEC, isGenericText, localScore, sentencesIn, titleFromSentence, type Candidate, type TimedWord, type TopicOptions } from './selection';
 import { editorialScore, localTopicRelevance, topicHits } from './editorialBrief';
 
 export interface OtherMomentsInput {
@@ -44,8 +44,12 @@ export function otherMoments(o: OtherMomentsInput): Candidate[] {
       let count = 0;
       let shortest = -1;
       let longest = -1;
+      // Silencio más largo entre frases del tramo (en clips largos no puede pasar de LONG_CLIP_MAX_SILENCE).
+      let silence = 0;
       for (let j = i; j < units.length && units[j].end - start <= max; j++) {
         count += units[j].text.trim().split(/\s+/).length;
+        if (j > i) silence = Math.max(silence, units[j].start - units[j - 1].end);
+        if (o.preset >= LONG_CLIP_SEC && silence > LONG_CLIP_MAX_SILENCE) break;
         const end = round(Math.min(units[j].end, o.duration));
         if (end - start < min) continue;
         if (o.taken.some((t) => overlaps(t, { start, end }))) break; // cualquier final posterior también lo pisa
