@@ -9,7 +9,7 @@ import { FULL_SPLIT_SAFE_LIMIT, SPLIT_MIN_TAIL, clipLimits, coverage, cutPoints,
 import { assertClipInvariants, presetRange } from '../src/shared/validation';
 import { createJobSchema } from '../src/main/ipcSchemas';
 import { applyClipPatch } from '../src/shared/clipEdit';
-import { rateSegments, ratingBatches } from '../src/main/segmentRating';
+import { MAX_BATCH_SEGMENTS, rateSegments, ratingBatches, text as segText } from '../src/main/segmentRating';
 import { VERIFIER_SYSTEM_PROMPT, isVerifiedHighlight } from '../src/shared/highlights';
 import { copyClipOut } from '../src/main/exportClip';
 import type { ChatFn } from '../src/main/analysis';
@@ -233,5 +233,28 @@ describe('exportar destacados sin duplicar dentro de la app', () => {
     fs.writeFileSync(path.join(clipsDir, '01.mp4'), 'x');
     expect(() => copyClipOut({ jobsDir, clipsDir, clip: { file: '01.mp4', index: 1 }, exportDir: path.join(jobsDir, 'job-1') })).toThrow(/datos internos/);
     expect(() => copyClipOut({ jobsDir, clipsDir, clip: { file: '01.mp4', index: 1, dirty: true }, exportDir: path.join(root, 'out') })).toThrow(/sin renderizar/);
+  });
+});
+
+describe('texto y lotes de la calificación por segmento', () => {
+  const seg = [{ start: 0, end: 30, text: 'uno dos tres cuatro' }];
+  const ws = [
+    { start: 2, end: 3, text: 'uno' },
+    { start: 10, end: 11, text: 'dos' },
+    { start: 18, end: 19, text: 'tres' },
+    { start: 25, end: 26, text: 'cuatro' },
+  ];
+  it('un corte a mitad de frase reparte las palabras entre los dos bloques', () => {
+    expect(segText(seg, { start: 0, end: 15 }, ws)).toBe('uno dos');
+    expect(segText(seg, { start: 15, end: 30 }, ws)).toBe('tres cuatro');
+  });
+  it('sin palabras, el tramo cuenta en todos los bloques con los que se solapa', () => {
+    expect(segText(seg, { start: 15, end: 30 })).toBe('uno dos tres cuatro');
+  });
+  it('vídeo casi sin voz: los lotes no superan el máximo de segmentos', () => {
+    const segs = Array.from({ length: 200 }, (_, i) => ({ start: i * 15, end: i * 15 + 15 }));
+    const b = ratingBatches(segs, [], 6000);
+    expect(b.every((x) => x.length <= MAX_BATCH_SEGMENTS)).toBe(true);
+    expect(b.flat()).toEqual(segs.map((_, i) => i));
   });
 });

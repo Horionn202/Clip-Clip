@@ -48,20 +48,26 @@ export function ratingSchema(n: number): object {
   };
 }
 
-const text = (segments: TimedWord[], s: Segment) =>
-  segments
-    .filter((g) => g.start >= s.start - 0.3 && g.start < s.end)
+/**
+ * Lo que se dice DENTRO del bloque: por palabras si hay marcas de tiempo (un corte exacto puede caer a mitad de frase);
+ * si no, los tramos de Whisper que se solapan con el bloque.
+ */
+export const text = (segments: TimedWord[], s: Segment, words: TimedWord[] = []) =>
+  (words.length ? words.filter((w) => w.start >= s.start && w.start < s.end) : segments.filter((g) => g.start < s.end && g.end > s.start))
     .map((g) => g.text.trim())
     .join(' ');
 
+/** Máximo de segmentos por lote: cada respuesta debe caber en el presupuesto de tokens (≈260 por segmento, tope 4096). */
+export const MAX_BATCH_SEGMENTS = 14;
+
 /** Lotes de segmentos con ≤ maxChars de transcripción (al menos uno por lote). */
-export function ratingBatches(segs: Segment[], segments: TimedWord[], maxChars = 6000): number[][] {
+export function ratingBatches(segs: Segment[], segments: TimedWord[], maxChars = 6000, words: TimedWord[] = []): number[][] {
   const out: number[][] = [];
   let cur: number[] = [];
   let len = 0;
   segs.forEach((s, i) => {
-    const l = text(segments, s).length + 40;
-    if (cur.length && len + l > maxChars) {
+    const l = text(segments, s, words).length + 40;
+    if (cur.length && (len + l > maxChars || cur.length >= MAX_BATCH_SEGMENTS)) {
       out.push(cur);
       cur = [];
       len = 0;
@@ -81,7 +87,7 @@ export function rateSegment(
   raw: Record<string, unknown> | undefined,
   o: { segments: TimedWord[]; words: TimedWord[]; preset: DurationPreset; keywords: string[]; minScore: number },
 ): Candidate {
-  const said = text(o.segments, s);
+  const said = text(o.segments, s, o.words);
   const wordsSrc = o.words.length ? o.words : o.segments;
   const local = localScore(s.start, s.end, said.slice(0, 200), wordsSrc, o.preset);
   const localRel = localTopicRelevance(said, o.keywords);
@@ -140,7 +146,7 @@ export async function rateSegments(input: RateInput): Promise<{ clips: Candidate
   const brief = await makeBrief({ title: input.title, description: input.description, duration: input.duration, segments: input.segments, chat: input.chat, checkCancelled: input.checkCancelled, log: input.log });
   const keywords = topicKeywords(brief, input.title);
   const raws = new Map<number, Record<string, unknown>>();
-  const batches = ratingBatches(input.segs, input.segments);
+  const batches = ratingBatches(input.segs, input.segments, 6000, input.words);
   let failed = 0;
   // Segunda pasada sólo con los segmentos que el modelo se dejó (de uno en uno): todos deben quedar calificados.
   const queue: { batch: number[]; retry: boolean }[] = batches.map((batch) => ({ batch, retry: false }));
@@ -151,7 +157,7 @@ export async function rateSegments(input: RateInput): Promise<{ clips: Candidate
     const user = `TÍTULO: ${input.title}
 TEMA PRINCIPAL: ${brief.mainTopic}
 ${brief.titlePromise ? `PROMESA DEL TÍTULO: ${brief.titlePromise}\n` : ''}
-${batch.map((i) => `### SEGMENTO id=${i + 1} (${formatTime(input.segs[i].start)}–${formatTime(input.segs[i].end)})\n${text(input.segments, input.segs[i]) || '(sin voz)'}`).join('\n\n')}`;
+${batch.map((i) => `### SEGMENTO id=${i + 1} (${formatTime(input.segs[i].start)}–${formatTime(input.segs[i].end)})\n${text(input.segments, input.segs[i], input.words) || '(sin voz)'}`).join('\n\n')}`;
     try {
       const out = JSON.parse(await input.chat(RATING_SYSTEM_PROMPT, user, batch.length, ratingSchema(batch.length))) as { segments?: Record<string, unknown>[] };
       const items = Array.isArray(out.segments) ? out.segments : [];
@@ -168,6 +174,11 @@ ${batch.map((i) => `### SEGMENTO id=${i + 1} (${formatTime(input.segs[i].start)}
       if (e instanceof Error && (e.name === 'CancelledError' || /no está descargado/.test(e.message))) throw e;
       failed++;
       input.log?.(`calificación: lote ${bi + 1} falló`, e instanceof Error ? e.message : String(e));
+      // Respuesta truncada o inválida: se reintenta una vez en dos mitades (más cortas, caben mejor).
+      if (!retry && batch.length > 1) {
+        const h = Math.ceil(batch.length / 2);
+        queue.push({ batch: batch.slice(0, h), retry: true }, { batch: batch.slice(h), retry: true });
+      }
     }
   }
   const opts = { segments: input.segments, words: input.words, preset: input.preset, keywords, minScore };
@@ -208,7 +219,7 @@ ${batch.map((i) => `### SEGMENTO id=${i + 1} (${formatTime(input.segs[i].start)}
     target: n,
     feasibleMax: n,
     effectiveTarget: n,
-    rounds: [{ round: 1, requested: n, received: raws.size, accepted: n, rejected: {}, ...(failed === batches.length ? { failed: true } : {}) }],
+    rounds: [{ round: 1, requested: n, received: raws.size, accepted: n, rejected: {}, ...(failed > 0 && raws.size === 0 ? { failed: true } : {}) }],
     candidates: raws.size,
     rejected: 0,
     obtained: n,
