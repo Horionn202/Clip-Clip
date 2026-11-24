@@ -49,7 +49,7 @@ export function validateVideoUrl(raw: unknown): string {
 
 export function validatePreset(v: unknown): DurationPreset {
   if (typeof v === 'number' && (DURATION_PRESETS as readonly number[]).includes(v)) return v as DurationPreset;
-  throw new UserFacingError('La duración debe ser 15, 30, 45 o 60 segundos.');
+  throw new UserFacingError('La duración de cada clip debe ser 15, 30, 45, 60 o 90 segundos, o 2 minutos.');
 }
 
 export function validateMaxClips(v: unknown): number {

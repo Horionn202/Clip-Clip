@@ -41,17 +41,26 @@ export function estimateSpeed(plan: Pick<EnginePlan, 'engine' | 'device' | 'mode
 export interface JobEstimate {
   transcribeSec: number;
   speedMeasured: boolean;
-  /** Vídeo descargado + audio WAV 16 kHz mono + margen para clips. */
+  /** Vídeo descargado + audio WAV 16 kHz mono + clips renderizados. */
   diskBytes: number;
+  /** Render de los clips (aprox.). Crece con la duración de cada clip. */
+  renderSec: number;
 }
 
-export function estimateJob(durationSec: number, filesizeBytes: number | undefined, plan: EnginePlan | null, history: Job[] = []): JobEstimate {
+/** MP4 vertical renderizado ≈ 8 Mbit/s. */
+export const CLIP_BYTES_PER_SEC = 1_000_000;
+/** Segundos de render por segundo de clip (medido en una GTX 1660: ~50 s por clip de 60 s). */
+export const RENDER_SEC_PER_CLIP_SEC = 0.9;
+
+export function estimateJob(durationSec: number, filesizeBytes: number | undefined, plan: EnginePlan | null, history: Job[] = [], clipsOut?: { count: number; preset: number }): JobEstimate {
   const wav = durationSec * 16000 * 2;
   // Sin tamaño conocido: ≈ 2,8 Mbit/s (vídeo 1080p típico).
   const video = filesizeBytes && filesizeBytes > 0 ? filesizeBytes : durationSec * 350_000;
-  const clips = 200 * 1024 ** 2;
+  // Sin saber cuántos clips: el margen de siempre (200 MB).
+  const clipSec = clipsOut ? clipsOut.count * clipsOut.preset : 0;
+  const clips = clipsOut ? clipSec * CLIP_BYTES_PER_SEC : 200 * 1024 ** 2;
   const sp = plan ? estimateSpeed(plan, history) : { speed: 0.5, measured: false };
-  return { transcribeSec: durationSec / sp.speed, speedMeasured: sp.measured, diskBytes: video + wav + clips };
+  return { transcribeSec: durationSec / sp.speed, speedMeasured: sp.measured, diskBytes: video + wav + clips, renderSec: clipSec * RENDER_SEC_PER_CLIP_SEC };
 }
 
 /** Etiqueta clara del motor activo, p. ej. «GPU activa · modelo medium · CUDA (FP32)». */

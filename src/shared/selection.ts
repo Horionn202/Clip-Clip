@@ -1,6 +1,6 @@
 // Contrato «hasta 20 clips»: meta efectiva, validación de calidad y puntuación local determinista.
 // Puro (sin Node/Electron): lo usan main, renderer y tests.
-import { MAX_CLIPS, type DurationPreset } from './types';
+import { LONG_CLIP_SEC, MAX_CLIPS, type DurationPreset } from './types';
 import { overlaps, presetRange } from './validation';
 import type { ClipEditorial } from './types';
 import { MOMENT_TYPES, editorialScore, localTopicRelevance, topicHits, type EditorialBrief, type MomentType } from './editorialBrief';
@@ -204,6 +204,20 @@ export function localScore(start: number, end: number, hook: string, words: Time
   return Math.round(Math.max(0, Math.min(1, s)) * 100);
 }
 
+/** Silencio máximo tolerado dentro de un clip largo (s). */
+export const LONG_CLIP_MAX_SILENCE = 12;
+/** Gancho y desenlace mínimos (0–100) para que un clip largo aspire a destacado. */
+export const LONG_CLIP_MIN_STRUCTURE = 60;
+
+/** Mayor hueco sin voz dentro del tramo (incluidos el principio y el final). */
+export function longestSilence(start: number, end: number, words: TimedWord[]): number {
+  const inside = words.filter((w) => w.end > start && w.start < end).sort((a, b) => a.start - b.start);
+  if (!inside.length) return end - start;
+  let gap = Math.max(0, inside[0].start - start, end - inside[inside.length - 1].end);
+  for (let i = 1; i < inside.length; i++) gap = Math.max(gap, inside[i].start - inside[i - 1].end);
+  return gap;
+}
+
 /** Palabras por segundo dentro del tramo. */
 export const MIN_WORDS_PER_SEC = 0.8;
 export function speechRate(start: number, end: number, words: TimedWord[]): number {
@@ -386,6 +400,8 @@ export function evaluateCandidate(raw: unknown, o: EvaluateOptions): Evaluation 
   // Voz suficiente, comprobada aparte de la puntuación (los bonus de claridad/duración no pueden saltársela):
   // al menos 0,8 palabras/s de media en el tramo (≈ 24 palabras en 30 s).
   if (o.words.length > 0 && speechRate(start, end, o.words) < MIN_WORDS_PER_SEC) return { ok: false, reason: 'poca_voz' };
+  // Un clip largo con un silencio largo dentro pierde la retención aunque la media de voz sea buena.
+  if (o.preset >= LONG_CLIP_SEC && o.words.length > 0 && longestSilence(start, end, o.words) > LONG_CLIP_MAX_SILENCE) return { ok: false, reason: 'poca_voz' };
   const ls = localScore(start, end, hook, o.words, o.preset);
   if (o.words.length > 0 && ls < 15) return { ok: false, reason: 'poca_voz' };
   const llm = num(r.score);
@@ -404,7 +420,9 @@ export function evaluateCandidate(raw: unknown, o: EvaluateOptions): Evaluation 
   const selfContained = num100(r.self_contained ?? r.selfContained) ?? 60;
   const score = editorialScore({ topicRelevance, hookStrength, payoffStrength, selfContained, local: ls });
   // El umbral no descarta: marca quién ASPIRA a destacado (lo confirma el verificador, fase B).
-  const featured = score >= o.topic.minScore;
+  // Un clip largo sólo aspira a destacado si tiene gancho Y desenlace claros; si no, queda como «Otro momento».
+  const longOk = o.preset < LONG_CLIP_SEC || (hookStrength >= LONG_CLIP_MIN_STRUCTURE && payoffStrength >= LONG_CLIP_MIN_STRUCTURE);
+  const featured = score >= o.topic.minScore && longOk;
   const why = clean(r.why_selected ?? r.whySelected, 300) || reason;
   const editorial: ClipEditorial = { score, featured, topicRelevance, hookStrength, payoffStrength, selfContained, momentType, why, aligned: aligned.moved || undefined };
   return { ok: true, candidate: { start, end, title: finalTitle, hook, reason, llmScore, localScore: ls, score, editorial } };

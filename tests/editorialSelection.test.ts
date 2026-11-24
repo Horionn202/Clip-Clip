@@ -206,7 +206,8 @@ describe('edición temporal del clip', () => {
   });
 });
 
-describe('caso real: el modelo propone pocos momentos y se pisan', () => {
+// Recorren una transcripción de 1700 s varias veces: con la suite en paralelo pueden pasar de 5 s.
+describe('caso real: el modelo propone pocos momentos y se pisan', { timeout: 15000 }, () => {
   const { words, segments } = script(RACE, 1700);
   const base = { segments, words, duration: 1700, preset: 60 as const, title: TITLE };
   const item = { start: 1505, end: 1508, title: 'Primera carrera en GTA 6', hook: 'Mi primera carrera en GTA 6', reason: 'Empieza la primera carrera del juego', score: 90, topic_relevance: 95, hook_strength: 90, payoff_strength: 90, self_contained: 85, moment_type: 'accion' };

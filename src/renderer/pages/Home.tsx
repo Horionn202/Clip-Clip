@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { CLIP_TARGET_PRESETS, DURATION_PRESETS, ENGINE_LABELS, MAX_CLIPS, WHISPER_MODEL_OPTIONS, type Diagnostics, type DurationPreset, type Job, type LocalVideoChoice, type UrlProbe } from '../../shared/types';
+import { CLIP_TARGET_PRESETS, DURATION_PRESETS, ENGINE_LABELS, LONG_CLIP_SEC, presetLabel, MAX_CLIPS, WHISPER_MODEL_OPTIONS, type Diagnostics, type DurationPreset, type Job, type LocalVideoChoice, type UrlProbe } from '../../shared/types';
 import type { SourceFailure } from '../../shared/sourceErrors';
 import type { HomePrefill } from '../../shared/homePrefill';
 import { SourceErrorModal } from '../components/SourceErrorModal';
@@ -93,7 +93,9 @@ export function HomePage(props: { prefill?: HomePrefill | null; onPrefillUsed?: 
   // Hay que comprobar el vídeo antes de iniciar: así se ven duración, estimaciones y máximo de clips.
   const canStart =
     (local ? true : !!url.trim() && !urlError) && rights && depsOk && !busy && target !== null && !!src && (!isLong || longOk) && (modelCached || allowDownload) && feasibleMax(src.duration, preset) > 0;
-  const est = src ? estimateJob(src.duration, local ? undefined : src.filesizeBytes, plan, props.jobs) : null;
+  // Espacio y render según cuántos clips caben de verdad y cuánto dura cada uno (los de 2 min ocupan y tardan más).
+  const clipsOut = src && target !== null ? { count: effectiveTarget(target, src.duration, preset), preset } : undefined;
+  const est = src ? estimateJob(src.duration, local ? undefined : src.filesizeBytes, plan, props.jobs, clipsOut) : null;
   const feas = src ? feasibleMax(src.duration, preset) : null;
   const eff = src && target !== null ? effectiveTarget(target, src.duration, preset) : null;
   const advice = src && target !== null ? feasibilityAdvice(target, src.duration, preset) : null;
@@ -179,6 +181,7 @@ export function HomePage(props: { prefill?: HomePrefill | null; onPrefillUsed?: 
                 <tr><td>Tamaño</td><td>{humanBytes(local.sizeBytes)} · no se copia si está en la misma unidad que los datos de la app</td></tr>
                 <tr><td>Máximo posible de clips sin solapes</td><td>{feasibleMax(local.duration, preset)}</td></tr>
                 {est && <tr><td>Tiempo de transcripción (aprox.)</td><td>{humanDuration(est.transcribeSec)}</td></tr>}
+                {est && est.renderSec > 0 && <tr><td>Render de los clips (aprox.)</td><td>{humanDuration(est.renderSec)}</td></tr>}
               </tbody>
             </table>
             <div className="row">
@@ -205,13 +208,16 @@ export function HomePage(props: { prefill?: HomePrefill | null; onPrefillUsed?: 
           <table className="table kv">
             <tbody>
               <tr><td>Duración del vídeo fuente</td><td><b>{humanDuration(probe.duration)}</b></td></tr>
-              <tr><td>Duración de cada clip</td><td><b>{preset} s</b></td></tr>
+              <tr><td>Duración de cada clip</td><td><b>{presetLabel(preset)}</b></td></tr>
               <tr><td>Transcripción (Whisper)</td><td>{plan ? engineLabel(plan) : '—'}</td></tr>
               <tr><td>Modelo de IA (Ollama)</td><td>{props.ollamaModel ?? '—'}</td></tr>
               <tr><td>Máximo posible de clips sin solapes</td><td>{feasibleMax(probe.duration, preset)}{feasibleMax(probe.duration, preset) === MAX_CLIPS ? ' (tope de la app)' : ''}</td></tr>
               {est && (
                 <>
                   <tr><td>Espacio en disco necesario (aprox.)</td><td>{humanBytes(est.diskBytes)}</td></tr>
+                  {est.renderSec > 0 && (
+                    <tr><td>Render de los clips (aprox.)</td><td>{humanDuration(est.renderSec)}{preset >= LONG_CLIP_SEC ? ' · los clips largos tardan más' : ''}</td></tr>
+                  )}
                   <tr><td>Tiempo de transcripción (aprox.)</td><td>{humanDuration(est.transcribeSec)} {plan ? `con ${engineLabel(plan)}` : ''}{est.speedMeasured ? ' · según tus trabajos anteriores' : ' · estimación orientativa'}</td></tr>
                 </>
               )}
@@ -233,10 +239,11 @@ export function HomePage(props: { prefill?: HomePrefill | null; onPrefillUsed?: 
         <div className="seg">
           {DURATION_PRESETS.map((p) => (
             <button key={p} className={p === preset ? 'on' : ''} onClick={() => setPreset(p)}>
-              {p} s
+              {presetLabel(p)}
             </button>
           ))}
         </div>
+        {preset >= LONG_CLIP_SEC && <small className="muted">Los clips largos tardan más en renderizar y suelen requerir más contexto para mantener la retención.</small>}
       </div>
 
       <div className="field">
@@ -254,7 +261,7 @@ export function HomePage(props: { prefill?: HomePrefill | null; onPrefillUsed?: 
         </div>
         {target !== null && (
           <small className="muted">
-            {target} clips de {preset} s necesitan al menos {requiredDuration(target, preset)} s de vídeo.
+            {target} clip{target === 1 ? '' : 's'} de {presetLabel(preset)} necesitan al menos {humanDuration(requiredDuration(target, preset))} de vídeo.
             {probe && feas !== null && eff !== null && ` Este vídeo admite hasta ${feas} sin solaparse → hasta ${eff}.`}
             {!probe && ' Pulsa «Comprobar vídeo» para calcular el máximo real.'}
           </small>

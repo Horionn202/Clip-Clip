@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useState } from 'react';
-import type { Clip, ClipEditorial, Job } from '../../shared/types';
+import { clipLengthLabel, type Clip, type ClipEditorial, type Job } from '../../shared/types';
 import { EVENT_INFO, isVerifiedHighlight } from '../../shared/highlights';
 import { formatTime } from '../../shared/validation';
 import { LAYOUT_LABELS } from '../../shared/layouts';
@@ -115,7 +115,7 @@ function ClipCard({ job, clip, pub, onPub, onError, onInfo, selecting, selected,
       <div>
         <div className="clip-title">{clip.title}</div>
         <div className="muted small">
-          {(clip.end - clip.start).toFixed(1)} s · {formatTime(clip.start)} → {formatTime(clip.end)} · {LAYOUT_LABELS[clip.layout ?? 'gameplay_full']}
+          {clipLengthLabel(clip.end - clip.start)} · {formatTime(clip.start)} → {formatTime(clip.end)} · {LAYOUT_LABELS[clip.layout ?? 'gameplay_full']}
         </div>
       </div>
       <div className="row" style={{ gap: 'var(--s-2)' }}>

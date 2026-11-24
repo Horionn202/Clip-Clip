@@ -15,8 +15,30 @@ import type { LayoutChoice, LayoutId, NormRect, VisualResult } from './layouts';
 // Tipos compartidos entre main, preload y renderer. Sin dependencias de Node.
 
 export const MAX_CLIPS = 20;
-export const DURATION_PRESETS = [15, 30, 45, 60] as const;
+export const DURATION_PRESETS = [15, 30, 45, 60, 90, 120] as const;
 export type DurationPreset = (typeof DURATION_PRESETS)[number];
+/** Duración máxima absoluta de un clip (s). */
+export const MAX_CLIP_SEC = 120;
+/** A partir de esta duración un clip se considera «largo»: más contexto, más render y más espacio. */
+export const LONG_CLIP_SEC = 90;
+
+export function isDurationPreset(v: unknown): v is DurationPreset {
+  return typeof v === 'number' && (DURATION_PRESETS as readonly number[]).includes(v);
+}
+
+/** Etiqueta del botón: «2 min» en vez de «120 s». */
+export function presetLabel(p: DurationPreset): string {
+  return p === 120 ? '2 min' : `${p} s`;
+}
+
+/** Duración legible de un clip: «45 s», «1 min», «1 min 30 s», «2 min». */
+export function clipLengthLabel(sec: number): string {
+  const s = Math.round(sec);
+  if (s < 60) return `${Math.round(sec * 10) / 10} s`;
+  const m = Math.floor(s / 60);
+  const r = s % 60;
+  return r ? `${m} min ${r} s` : `${m} min`;
+}
 
 export const JOB_STATUSES = [
   'queued',

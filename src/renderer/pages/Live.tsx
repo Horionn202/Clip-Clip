@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
-import { DURATION_PRESETS } from '../../shared/types';
-import { LIVE_DEFAULTS, MONITOR_STATUS_LABELS, RETENTION_LABELS, estimateLiveBytes, isActive, monitorSummary, type LiveMonitor, type LiveSettings, type SegmentRetention } from '../../shared/live';
+import { DURATION_PRESETS, LONG_CLIP_SEC, isDurationPreset, presetLabel } from '../../shared/types';
+import { LIVE_DEFAULTS, MONITOR_STATUS_LABELS, liveSettingsError, minLiveBlockSec, RETENTION_LABELS, estimateLiveBytes, isActive, monitorSummary, type LiveMonitor, type LiveSettings, type SegmentRetention } from '../../shared/live';
 import { humanSize } from '../../shared/storage';
 import { fmtMs } from '../../shared/jobView';
 import { api, errMsg } from '../api';
@@ -71,17 +71,26 @@ export function LivePage({ onOpenResults }: { onOpenResults: () => void }) {
         <div className="grid2">
           <label className="field">
             <span>Duración de los clips</span>
-            <select value={settings.preset} onChange={(e) => setSettings({ ...settings, preset: Number(e.target.value) as LiveSettings['preset'], blockSec: Math.max(settings.blockSec, Number(e.target.value) + 10) })}>
+            <select
+              value={settings.preset}
+              onChange={(e) => {
+                const p = Number(e.target.value);
+                if (!isDurationPreset(p)) return;
+                // El bloque sube solo al mínimo seguro del nuevo preset (nunca queda un bloque más corto que el clip).
+                setSettings({ ...settings, preset: p, blockSec: Math.max(settings.blockSec, minLiveBlockSec(p)) });
+              }}
+            >
               {DURATION_PRESETS.map((p) => (
                 <option key={p} value={p}>
-                  {p} s
+                  {presetLabel(p)}
                 </option>
               ))}
             </select>
           </label>
           <label className="field">
             <span>Bloque (s)</span>
-            <input type="number" min={Math.max(30, settings.preset + 10)} max={600} value={settings.blockSec} onChange={(e) => setSettings({ ...settings, blockSec: Number(e.target.value) })} />
+            <input type="number" min={minLiveBlockSec(settings.preset)} max={600} value={settings.blockSec} onChange={(e) => setSettings({ ...settings, blockSec: Number(e.target.value) })} />
+            {settings.preset >= LONG_CLIP_SEC && <small className="muted">Con clips de {presetLabel(settings.preset)} el bloque mínimo es de {minLiveBlockSec(settings.preset)} s. Los bloques largos usan más disco temporal y tardan más en procesarse.</small>}
           </label>
           <label className="field">
             <span>Solape técnico (3–5 s)</span>
@@ -114,10 +123,15 @@ export function LivePage({ onOpenResults }: { onOpenResults: () => void }) {
           </small>
         </label>
         <div className="row">
-          <button className="primary" disabled={!url.trim()} onClick={() => (ack ? void create(false) : setWarnOpen(true))}>
+          <button className="primary" disabled={!url.trim() || !!liveSettingsError(settings)} onClick={() => (ack ? void create(false) : setWarnOpen(true))}>
             Vigilar directo
           </button>
         </div>
+        {liveSettingsError(settings) && (
+          <div className="banner warn small" role="alert">
+            {liveSettingsError(settings)}
+          </div>
+        )}
         {err && (
           <div className="banner error small" role="alert">
             {err}
@@ -272,7 +286,7 @@ export function LivePage({ onOpenResults }: { onOpenResults: () => void }) {
                 <tr><td>Bloques procesados</td><td>{shown.blocks.filter((b) => b.status === 'procesado').length} de {shown.blocks.length}</td></tr>
                 <tr><td>Clips generados</td><td>{shown.clipsGenerated} ({shown.duplicatesSkipped} duplicados descartados por el solape)</td></tr>
                 <tr><td>Espacio liberado</td><td>{humanSize(shown.freedBytes)}</td></tr>
-                <tr><td>Ajustes</td><td>bloques de {shown.settings.blockSec} s · solape {shown.settings.overlapSec} s · clips de {shown.settings.preset} s · máx. {shown.settings.maxClipsPerBlock}/bloque</td></tr>
+                <tr><td>Ajustes</td><td>bloques de {shown.settings.blockSec} s · solape {shown.settings.overlapSec} s · clips de {presetLabel(shown.settings.preset)} · máx. {shown.settings.maxClipsPerBlock}/bloque</td></tr>
                 {shown.finishedAt && <tr><td>Terminado</td><td>{new Date(shown.finishedAt).toLocaleString('es-ES')}</td></tr>}
               </tbody>
             </table>

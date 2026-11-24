@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState, type PointerEvent as RPointerEvent } from 'react';
-import type { DurationPreset } from '../../shared/types';
+import { LONG_CLIP_SEC, clipLengthLabel, presetLabel, type DurationPreset } from '../../shared/types';
 import { adjustRange } from '../../shared/clipEdit';
 import { formatTime, presetRange } from '../../shared/validation';
 import { api } from '../api';
 
 type Word = { start: number; end: number; text: string };
-const STEPS = [-15, -5, 5, 15];
+/** ±30 s sólo con clips de 90 s o 2 min (con clips cortos se saldría del rango permitido). */
+export const stepsFor = (preset: number): number[] => (preset >= LONG_CLIP_SEC ? [-30, -15, -5, 5, 15, 30] : [-15, -5, 5, 15]);
 
 /**
  * Edición del tramo de un clip: inicio, fin, duración, ±5/±15 s, línea de tiempo con controles arrastrables y
@@ -34,8 +35,10 @@ export function TimeRangeEditor(props: {
   const video = useRef<HTMLVideoElement>(null);
   const { min, max } = presetRange(preset);
   // Ventana visible: el tramo original con margen (y siempre el tramo actual dentro).
-  const w0 = Math.max(0, Math.min(original.start - 60, props.start - 10));
-  const w1 = Math.min(D || original.end + 60, Math.max(original.end + 60, props.end + 10));
+  // Margen visible proporcional al clip (al menos 60 s): con clips de 2 min se ve contexto suficiente a ambos lados.
+  const margin = Math.max(60, preset);
+  const w0 = Math.max(0, Math.min(original.start - margin, props.start - 10));
+  const w1 = Math.min(D || original.end + margin, Math.max(original.end + margin, props.end + 10));
   const span = Math.max(1, w1 - w0);
   const pct = (t: number) => `${((t - w0) / span) * 100}%`;
 
@@ -92,7 +95,7 @@ export function TimeRangeEditor(props: {
               <small className="muted">{formatTime(edge === 'start' ? props.start : props.end)}</small>
             </label>
             <div className="trange-steps" role="group" aria-label={`Mover el ${edge === 'start' ? 'inicio' : 'fin'}`}>
-              {STEPS.map((d) => (
+              {stepsFor(preset).map((d) => (
                 <button key={d} type="button" className="ghost" onClick={() => move(edge, (edge === 'start' ? props.start : props.end) + d)}>
                   {d > 0 ? `+${d}` : d} s
                 </button>
@@ -102,7 +105,7 @@ export function TimeRangeEditor(props: {
         ))}
       </div>
       <p className={`small ${outOfRange ? 'trange-bad' : 'muted'}`}>
-        Duración: <b>{dur.toFixed(1)} s</b> (permitido {min}–{max} s con el preset de {preset} s)
+        Duración: <b>{clipLengthLabel(dur)}</b> (permitido {min}–{max} s con clips de {presetLabel(preset)})
       </p>
       <div
         className="trange-track"
