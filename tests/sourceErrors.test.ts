@@ -208,7 +208,7 @@ describe('archivo local', () => {
 describe('al fallar no se pierden URL ni ajustes', () => {
   const job = { url: 'https://www.youtube.com/watch?v=abc', preset: 45, maxClips: 15 } as Pick<Job, 'url' | 'preset' | 'maxClips' | 'localFile'>;
   it('«Cambiar URL» vuelve a Inicio con la URL, la duración y el máximo de clips', () => {
-    expect(prefillFromJob(job, 'change-url', 7)).toEqual({ url: job.url, preset: 45, maxClips: 15, pickFile: false, nonce: 7 });
+    expect(prefillFromJob(job, 'change-url', 7)).toEqual({ url: job.url, preset: 45, maxClips: 15, creationMode: 'ai-highlights', boundaryMode: 'exact', pickFile: false, nonce: 7 });
   });
   it('«Importar archivo» conserva duración y máximo y abre el selector', () => {
     expect(prefillFromJob(job, 'import-file', 8)).toMatchObject({ preset: 45, maxClips: 15, pickFile: true });

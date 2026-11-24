@@ -274,3 +274,12 @@ describe('revisión: último fragmento corto y vídeo sin voz', () => {
     expect(r.clips.some((c) => c.featured)).toBe(false);
   });
 });
+
+describe('revisión: recuperar un trabajo fallido conserva el modo', () => {
+  it('«Importar archivo» tras fallar un «Dividir video completo» vuelve a ese modo y tipo de corte', async () => {
+    const { prefillFromJob } = await import('../src/shared/homePrefill');
+    const p = prefillFromJob({ url: 'https://youtu.be/x', preset: 60, maxClips: 20, creationMode: 'full-split', split: { boundaryMode: 'smart', segments: 0, coveredSec: 0 } }, 'import-file', 1);
+    expect([p.creationMode, p.boundaryMode]).toEqual(['full-split', 'smart']);
+    expect(prefillFromJob({ url: 'https://youtu.be/x', preset: 30, maxClips: 5 }, 'change-url', 2).creationMode).toBe('ai-highlights');
+  });
+});

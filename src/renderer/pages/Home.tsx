@@ -66,6 +66,9 @@ export function HomePage(props: { prefill?: HomePrefill | null; onPrefillUsed?: 
     setUrl(p.url);
     setPreset(p.preset);
     setTarget(p.maxClips);
+    setMode(p.creationMode);
+    setBoundary(p.boundaryMode);
+    setConfirmLarge(false);
     setLocal(null);
     if (p.pickFile) void pickFile();
     else setTimeout(() => urlInput.current?.select(), 0);
