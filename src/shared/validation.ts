@@ -76,6 +76,8 @@ export interface RawCandidate {
 export interface NormalizeOptions {
   preset: DurationPreset;
   maxClips: number;
+  /** «full-split»: sin tope de 20 y con la duración de segmento (el último puede ser corto). */
+  creationMode?: import('./fullSplit').CreationMode;
   sourceDuration: number;
   /** Límites de palabras para ajustar cortes (opcional). */
   wordBoundaries?: { start: number; end: number }[];
@@ -215,8 +217,10 @@ export function overlaps(a: { start: number; end: number }, b: { start: number; 
 
 /** Comprobación final defensiva usada antes de renderizar. */
 export function assertClipInvariants(clips: { start: number; end: number }[], opts: NormalizeOptions): void {
-  if (clips.length > Math.min(opts.maxClips, MAX_CLIPS)) throw new UserFacingError('Se superó el máximo de clips.');
-  const { min, max } = presetRange(opts.preset);
+  const full = opts.creationMode === 'full-split';
+  if (!full && clips.length > Math.min(opts.maxClips, MAX_CLIPS)) throw new UserFacingError('Se superó el máximo de clips.');
+  // Segmentos de «Dividir video completo»: el último puede ser corto y un corte inteligente, algo más largo.
+  const { min, max } = full ? { min: 0.5, max: opts.preset + 15 } : presetRange(opts.preset);
   const sorted = [...clips].sort((a, b) => a.start - b.start);
   for (let i = 0; i < sorted.length; i++) {
     const c = sorted[i];

@@ -4,12 +4,15 @@ import { NEEDS_CAM } from './layouts';
 import { compositionErrors, compositionOf } from './composition';
 import { sanitizeCues, shiftCue } from './cues';
 import { editorialAfterEdit } from './highlights';
-import { UserFacingError, overlaps, presetRange } from './validation';
+import { clipLimits, type CreationMode } from './fullSplit';
+import { UserFacingError, overlaps } from './validation';
 
 export interface EditContext {
   clips: Clip[];
   preset: DurationPreset;
   sourceDuration: number;
+  /** Trabajos «Dividir video completo»: los segmentos admiten el último corto y cortes inteligentes. */
+  creationMode?: CreationMode;
 }
 
 /** Devuelve el clip actualizado (sin mutar) o lanza un error claro. `dirty` indica que hace falta re-renderizar. */
@@ -25,7 +28,7 @@ export function applyClipPatch(clipId: string, patch: ClipPatch, ctx: EditContex
   if (patch.start !== undefined || patch.end !== undefined) {
     const start = Math.round((patch.start ?? cur.start) * 100) / 100;
     const end = Math.round((patch.end ?? cur.end) * 100) / 100;
-    const { min, max } = presetRange(ctx.preset);
+    const { min, max } = clipLimits(ctx.preset, ctx.creationMode);
     if (start < 0 || end > ctx.sourceDuration + 0.01 || end <= start) throw new UserFacingError('El rango queda fuera del vídeo.');
     if (end - start < min - 0.01 || end - start > max + 0.01) {
       throw new UserFacingError(`El clip debe durar entre ${min} y ${max} s (preset de ${ctx.preset} s).`);
@@ -132,9 +135,9 @@ export function snapTime(t: number, words: { start: number; end: number }[], kin
 export function adjustRange(
   r: { start: number; end: number },
   change: { edge: 'start' | 'end'; to: number },
-  o: { preset: DurationPreset; sourceDuration: number; words?: { start: number; end: number }[]; snap?: boolean },
+  o: { preset: DurationPreset; sourceDuration: number; words?: { start: number; end: number }[]; snap?: boolean; creationMode?: CreationMode },
 ): { start: number; end: number } {
-  const { min, max } = presetRange(o.preset);
+  const { min, max } = clipLimits(o.preset, o.creationMode);
   const D = o.sourceDuration;
   const round = (x: number) => Math.round(x * 100) / 100;
   let t = Math.max(0, Math.min(D, change.to));

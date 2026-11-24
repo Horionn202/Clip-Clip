@@ -117,7 +117,7 @@ function mergeRejected(into: Record<string, number>, add: Record<string, number 
 }
 
 /** Primera pasada: brief editorial. Si la IA falla o devuelve algo inválido, brief local a partir del título. */
-async function makeBrief(input: AnalyzeInput): Promise<EditorialBrief> {
+export async function makeBrief(input: Pick<AnalyzeInput, 'title' | 'description' | 'duration' | 'segments' | 'chat' | 'checkCancelled' | 'log'>): Promise<EditorialBrief> {
   const title = input.title ?? '';
   try {
     input.checkCancelled?.();

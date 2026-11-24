@@ -16,6 +16,8 @@ import type { JobRunner } from './queue';
 import { PROBE_DISPLAY_ENTRIES, SourceError, displaySize, placeLocalSource, readSourceInfo, reuseFirst, withBotRetries, type ProbedStream } from './source';
 import { botRetryMessage } from '../shared/sourceErrors';
 import { analyzeClips } from './analysis';
+import { rateSegments } from './segmentRating';
+import { FULL_SPLIT_HARD_LIMIT, FULL_SPLIT_SAFE_LIMIT, coverage, splitFullVideo, splitSummary } from '../shared/fullSplit';
 import { qualitySummary } from '../shared/editorialBrief';
 import { renderClip, renderThumb, type RenderEnv } from './clipRender';
 import { frameEdgeAnalyzer, sampleFrames } from './visual';
@@ -332,7 +334,42 @@ export function createPipeline(ctx: PipelineContext): JobRunner {
         freeOtherModels(s.ollamaHost, ours, model, (old) => update({ message: `Liberando «${old}» de la memoria de la GPU para cargar «${model}»…` }));
       let selectionPlacement: Placement | null = null;
       if (!reuseClips) await freeFor(s.ollamaModel);
-      const { clips: chosen, report } = reuseClips ? { clips: job.clips, report: job.analysis! } : await analyzeClips({
+      // «Dividir video completo»: todo el vídeo en segmentos consecutivos; la IA sólo los califica.
+      const fullSplit = job.creationMode === 'full-split';
+      const splitSegs = fullSplit && !reuseClips ? splitFullVideo(duration, job.preset, job.split?.boundaryMode ?? 'exact', words.length ? words : wordsFromSegments(segments)) : [];
+      if (fullSplit && !reuseClips) {
+        if (splitSegs.length > FULL_SPLIT_HARD_LIMIT) throw new UserFacingError(`El vídeo daría ${splitSegs.length} segmentos (máximo ${FULL_SPLIT_HARD_LIMIT}). Elige una duración de clip mayor.`);
+        if (splitSegs.length > FULL_SPLIT_SAFE_LIMIT && !job.split?.confirmedLarge) {
+          throw new UserFacingError(`El vídeo daría ${splitSegs.length} segmentos (más de ${FULL_SPLIT_SAFE_LIMIT}). Confírmalo en Inicio o elige una duración de clip mayor.`);
+        }
+        const cov = coverage(splitSegs, duration);
+        update({ split: { boundaryMode: job.split?.boundaryMode ?? 'exact', segments: splitSegs.length, coveredSec: cov.coveredSec, confirmedLarge: job.split?.confirmedLarge } });
+      }
+      const verifierFor = async () => {
+        const model = verifierModel(await listModels(s.ollamaHost).catch(() => []), s.ollamaModel);
+        // Dónde corrió la selección se mide antes de descargar su modelo.
+        selectionPlacement = await modelPlacement(s.ollamaHost, s.ollamaModel);
+        await freeFor(model);
+        check(signal);
+        update({ message: `Momentos seleccionados · cargando «${model}» para verificar destacados…` });
+        return { model, ask: (system: string, user: string, schema: object) => chatJson(s.ollamaHost, model, system, user, signal, { schema, numPredict: 700, temperature: 0, timeoutMs: 3 * 60 * 1000 }) };
+      };
+      const { clips: chosen, report } = reuseClips ? { clips: job.clips, report: job.analysis! } : fullSplit ? await rateSegments({
+        segs: splitSegs,
+        segments,
+        words,
+        duration,
+        preset: job.preset,
+        title: job.sourceTitle ?? info.title,
+        description: job.sourceDescription ?? info.description,
+        minScore: s.minClipScore,
+        // maxItems = 0 es el brief (respuesta larga): con 300 tokens su JSON llegaría cortado.
+        chat: (system, user, maxItems, schema) => chatJson(s.ollamaHost, s.ollamaModel, system, user, signal, { schema, numPredict: maxItems ? Math.min(4096, 300 + maxItems * 260) : 1600 }),
+        verifier: verifierFor,
+        checkCancelled: () => check(signal),
+        onProgress: (p, message) => update({ progress: p, message }),
+        log: (m, extra) => log.info(`[${job.id}] segmentos: ${m}`, extra),
+      }) : await analyzeClips({
         segments,
         words,
         duration,
@@ -344,15 +381,7 @@ export function createPipeline(ctx: PipelineContext): JobRunner {
         minScore: s.minClipScore,
         chat: (system, user, maxItems, schema) =>
           chatJson(s.ollamaHost, s.ollamaModel, system, user, signal, schema ? { schema, numPredict: 1600 } : { maxItems, numPredict: Math.min(4096, 400 + maxItems * 320) }),
-        verifier: async () => {
-          const model = verifierModel(await listModels(s.ollamaHost).catch(() => []), s.ollamaModel);
-          // Dónde corrió la selección se mide antes de descargar su modelo.
-          selectionPlacement = await modelPlacement(s.ollamaHost, s.ollamaModel);
-          await freeFor(model);
-          check(signal);
-          update({ message: `Momentos seleccionados · cargando «${model}» para verificar destacados…` });
-          return { model, ask: (system, user, schema) => chatJson(s.ollamaHost, model, system, user, signal, { schema, numPredict: 700, temperature: 0, timeoutMs: 3 * 60 * 1000 }) };
-        },
+        verifier: verifierFor,
         checkCancelled: () => check(signal),
         onProgress: (p, message) => update({ progress: p, message }),
         log: (m, extra) => log.info(`[${job.id}] análisis: ${m}`, extra),
@@ -381,11 +410,11 @@ export function createPipeline(ctx: PipelineContext): JobRunner {
         score: c.score,
         ...(c.editorial ? { editorial: c.editorial } : {}),
       }));
-      update({ clips, message: qualitySummary(clips.length, report.effectiveTarget, report.featured ?? 0) });
+      update({ clips, message: fullSplit ? splitSummary(clips.length, report.featured ?? 0) : qualitySummary(clips.length, report.effectiveTarget, report.featured ?? 0) });
       check(signal);
 
       // 7. Render
-      assertClipInvariants(clips, { preset: job.preset, maxClips: job.maxClips, sourceDuration: duration });
+      assertClipInvariants(clips, { preset: job.preset, maxClips: job.maxClips, sourceDuration: duration, creationMode: job.creationMode });
       // 7a. Análisis visual ligero sólo sobre los clips elegidos (pocos fotogramas por clip) y layout seguro.
       enter('rendering', 'Analizando la composición de los clips…');
       const clipsDir = path.join(dir, 'clips');
@@ -435,7 +464,7 @@ export function createPipeline(ctx: PipelineContext): JobRunner {
 
       metrics.clipsFinal = clips.length;
       flushMetrics();
-      const summary = report.minScore !== undefined ? qualitySummary(clips.length, report.effectiveTarget, report.featured ?? 0) : resultSummary(clips.length, report.effectiveTarget, report.partialReason);
+      const summary = fullSplit ? splitSummary(clips.length, report.featured ?? 0) : report.minScore !== undefined ? qualitySummary(clips.length, report.effectiveTarget, report.featured ?? 0) : resultSummary(clips.length, report.effectiveTarget, report.partialReason);
       update({ resultSummary: summary, message: summary });
       event('job_done', { job: job.id, summary, metrics });
     } catch (e) {

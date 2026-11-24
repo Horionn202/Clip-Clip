@@ -22,6 +22,9 @@ export const createJobSchema = z
     preset: presetSchema,
     maxClips: z.number().int().min(1).max(MAX_CLIPS),
     rightsConfirmed: z.literal(true, { message: 'Debes confirmar que tienes derechos para usar este contenido.' }),
+    creationMode: z.enum(['ai-highlights', 'full-split']).optional(),
+    boundaryMode: z.enum(['exact', 'smart']).optional(),
+    confirmLarge: z.boolean().optional(),
     allowModelDownload: z.boolean().optional(),
   })
   .strict();
@@ -32,6 +35,9 @@ export const createLocalJobSchema = z
     preset: presetSchema,
     maxClips: z.number().int().min(1).max(MAX_CLIPS),
     rightsConfirmed: z.literal(true, { message: 'Debes confirmar que tienes derechos para usar este contenido.' }),
+    creationMode: z.enum(['ai-highlights', 'full-split']).optional(),
+    boundaryMode: z.enum(['exact', 'smart']).optional(),
+    confirmLarge: z.boolean().optional(),
     allowModelDownload: z.boolean().optional(),
   })
   .strict();

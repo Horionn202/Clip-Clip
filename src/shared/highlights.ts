@@ -406,6 +406,10 @@ export async function verifyHighlights(o: {
   context: HighlightContext;
   max: number;
   model: string;
+  /** false = los tramos no se pueden mover (segmentos de «Dividir video completo»: cubren el vídeo). */
+  allowMove?: boolean;
+  /** Cuántos aspirantes de la selección se verifican (por defecto 6). */
+  maxAspirants?: number;
   ask: (system: string, user: string, schema: object) => Promise<string>;
   onProgress?: (n: number, of: number) => void;
   checkCancelled?: () => void;
@@ -415,7 +419,7 @@ export async function verifyHighlights(o: {
   const aspirants = o.selected
     .filter((x) => x.editorial?.featured)
     .sort((a, b) => b.score - a.score)
-    .slice(0, 6);
+    .slice(0, o.maxAspirants ?? 6);
   const extra = o.moments.filter((m) => !aspirants.some((a) => Math.abs(a.start - m.start) < 5));
   const rejected: HighlightRun['rejected'] = [];
   // Un clip largo sólo puede ser destacado con gancho y desenlace claros, venga de la selección o de la evidencia.
@@ -451,8 +455,8 @@ export async function verifyHighlights(o: {
         break;
       }
       if (d.kind === 'move') {
-        reason = 'La evidencia no está cerca del inicio.';
-        const w = attempt === 0 ? windowAt(d.to, c) : null;
+        reason = o.allowMove === false ? 'El evento ocurre a mitad del segmento: ajusta su inicio en el editor si quieres publicarlo.' : 'La evidencia no está cerca del inicio.';
+        const w = attempt === 0 && o.allowMove !== false ? windowAt(d.to, c) : null;
         if (!w) break;
         clip = { ...clip, ...w };
         continue;

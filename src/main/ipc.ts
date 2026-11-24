@@ -16,6 +16,14 @@ import { log } from './logger';
 import { runDiagnostics, type ResolvedTools } from './deps';
 import { editorialAfterEdit } from '../shared/highlights';
 import { createLocalJobSchema } from './ipcSchemas';
+import { copyClipOut } from './exportClip';
+import { FULL_SPLIT_HARD_LIMIT, splitPlan, type BoundaryMode, type CreationMode } from '../shared/fullSplit';
+
+/** Campos del trabajo según el modo de creación (sin modo = «IA encuentra momentos», como siempre). */
+function modeFields(r: { creationMode?: CreationMode; boundaryMode?: BoundaryMode; confirmLarge?: boolean }): Partial<Job> {
+  if (r.creationMode !== 'full-split') return {};
+  return { creationMode: 'full-split', split: { boundaryMode: r.boundaryMode ?? 'exact', segments: 0, coveredSec: 0, confirmedLarge: r.confirmLarge === true } };
+}
 import { benchmarkModel, chatJson, listModels, pullModel, unloadModel } from './ollama';
 import { PublishStore } from './publishStore';
 import { retranscribeJob } from './retranscribe';
@@ -152,26 +160,10 @@ function requireJob(ctx: IpcContext, id: unknown): Job {
   return job;
 }
 
-function uniquePath(dir: string, file: string): string {
-  const ext = path.extname(file);
-  const base = path.basename(file, ext);
-  let p = path.join(dir, file);
-  for (let i = 2; fs.existsSync(p); i++) p = path.join(dir, `${base} (${i})${ext}`);
-  return p;
-}
-
-function exportOne(ctx: IpcContext, job: Job, clipId: string): string {
+function exportOne(ctx: IpcContext, job: Job, clipId: string, subfolder?: 'Destacados'): string {
   const clip = job.clips.find((c) => c.id === clipId);
-  if (!clip?.file) throw new UserFacingError('El clip no está renderizado.');
-  if (clip.archived) throw new UserFacingError('Este clip está archivado: ya está exportado en ' + (clip.exportedPath ?? 'tu carpeta de exportación') + '.');
-  if (clip.dirty) throw new UserFacingError(`El clip ${clip.index} tiene cambios sin renderizar: vuelve a renderizarlo antes de exportarlo.`);
-  const clipsDir = path.join(jobDir(ctx.jobsDir, job.id), 'clips');
-  const src = path.join(clipsDir, clip.file);
-  if (!isInside(clipsDir, src) || !fs.existsSync(src)) throw new UserFacingError('No se encuentra el archivo del clip.');
-  const exportDir = ctx.settings.get().exportDir;
-  fs.mkdirSync(exportDir, { recursive: true });
-  const dest = uniquePath(exportDir, clip.file);
-  fs.copyFileSync(src, dest, fs.constants.COPYFILE_EXCL); // nunca sobrescribe archivos del usuario
+  if (!clip) throw new UserFacingError('El clip no existe.');
+  const dest = copyClipOut({ jobsDir: ctx.jobsDir, clipsDir: path.join(jobDir(ctx.jobsDir, job.id), 'clips'), clip, exportDir: ctx.settings.get().exportDir, subfolder });
   clip.exportedPath = dest;
   clip.exportVerified = verifyExport(ctx.jobsDir, job.id, clip);
   ctx.jobs.put(job);
@@ -419,9 +411,15 @@ export function registerIpc(ctx: IpcContext): void {
     const r = createLocalJobSchema.parse(req);
     const v = chosen.get(r.token);
     if (!v) throw new UserFacingError('Vuelve a seleccionar el archivo de vídeo.');
+    // Con la duración conocida, el límite de segmentos se comprueba ya (sin esperar a transcribir).
+    if (r.creationMode === 'full-split') {
+      const plan = splitPlan(v.duration, r.preset);
+      if (plan.tooMany) throw new UserFacingError(`Daría ${plan.count} segmentos (máximo ${FULL_SPLIT_HARD_LIMIT}). Elige una duración de clip mayor.`);
+      if (plan.needsConfirm && !r.confirmLarge) throw new UserFacingError(`Daría ${plan.count} segmentos: confirma que quieres procesarlos o elige una duración mayor.`);
+    }
     return enqueueJob(
       { url: `local:${v.name}`, preset: r.preset, maxClips: r.maxClips, allowModelDownload: r.allowModelDownload },
-      { localSource: v.path, localFile: true, sourceTitle: v.title, sourceDuration: v.duration, sourceVideo: { width: v.width, height: v.height } },
+      { ...modeFields(r), localSource: v.path, localFile: true, sourceTitle: v.title, sourceDuration: v.duration, sourceVideo: { width: v.width, height: v.height } },
     );
   });
   // ---- yt-dlp: comprobar y actualizar desde el repositorio oficial, con hash verificado y confirmación ----
@@ -614,7 +612,10 @@ export function registerIpc(ctx: IpcContext): void {
     ctx.onSettingsChanged();
   });
 
-  h('jobs:create', async (req: unknown) => enqueueJob(createJobSchema.parse(req)));
+  h('jobs:create', async (req: unknown) => {
+    const r = createJobSchema.parse(req);
+    return enqueueJob(r, modeFields(r));
+  });
   // Reintentar = trabajo nuevo con la misma URL, duración y meta (el original se conserva en el historial).
   let retranscribing = false;
   let retranscribeCtrl: AbortController | null = null;
@@ -743,11 +744,13 @@ export function registerIpc(ctx: IpcContext): void {
       {
         reuse,
         resumedFrom: prev.id,
-        ...(keepClips ? { clips: prev.clips.map((c) => ({ id: c.id, index: c.index, start: c.start, end: c.end, title: c.title, hook: c.hook, reason: c.reason, score: c.score })), analysis: prev.analysis } : {}),
+        ...(keepClips ? { clips: prev.clips.map((c) => ({ id: c.id, index: c.index, start: c.start, end: c.end, title: c.title, hook: c.hook, reason: c.reason, score: c.score, ...(c.editorial ? { editorial: c.editorial } : {}) })), analysis: prev.analysis } : {}),
         sourceTitle: prev.sourceTitle,
         sourceDuration: prev.sourceDuration,
         localSource: prev.localSource,
         localFile: prev.localFile,
+        creationMode: prev.creationMode,
+        split: prev.split,
         sourceVideo: prev.sourceVideo,
         live: prev.live,
       },
@@ -774,7 +777,7 @@ export function registerIpc(ctx: IpcContext): void {
     if (!TERMINAL.includes(prev.status)) throw new UserFacingError('El trabajo sigue en curso.');
     // Un bloque de directo se reintenta con su vídeo grabado (no con la URL del directo).
     if (prev.localSource) return retryFromStage(prev, 'validating');
-    return enqueueJob({ url: prev.url, preset: prev.preset, maxClips: prev.maxClips, allowModelDownload: prev.allowModelDownload });
+    return enqueueJob({ url: prev.url, preset: prev.preset, maxClips: prev.maxClips, allowModelDownload: prev.allowModelDownload }, modeFields({ creationMode: prev.creationMode, boundaryMode: prev.split?.boundaryMode, confirmLarge: prev.split?.confirmedLarge }));
   });
   async function enqueueJob(r: { url: string; preset: Job['preset']; maxClips: number; allowModelDownload?: boolean }, extra: Partial<Job> = {}, prepare?: (dir: string) => void): Promise<Job> {
     // Mientras se instala o verifica la GPU no se encolan trabajos (tampoco reintentos): competirían por la VRAM y el entorno puede estar cambiando.
@@ -884,7 +887,7 @@ export function registerIpc(ctx: IpcContext): void {
     // Mientras se re-renderiza un clip del trabajo no se aceptan cambios (evita perder el resultado del render).
     if (rerendering.has(job.id)) throw new UserFacingError('Se está volviendo a renderizar un clip de este trabajo; espera a que termine.');
     if (bulk.isDeleting(job.id)) throw new UserFacingError('Se está eliminando este trabajo o alguno de sus clips; espera a que termine.');
-    const next = applyClipPatch(id, p, { clips: job.clips, preset: job.preset, sourceDuration: job.sourceDuration ?? 0 });
+    const next = applyClipPatch(id, p, { clips: job.clips, preset: job.preset, sourceDuration: job.sourceDuration ?? 0, creationMode: job.creationMode });
     // Un cambio que exige re-render sólo se guarda si se puede renderizar (vídeo original, transcripción…);
     // así nunca queda un clip marcado como pendiente sin forma de resolverlo. Los cambios de título/hook siempre se permiten.
     const prev = job.clips.find((c) => c.id === id);
@@ -936,7 +939,7 @@ export function registerIpc(ctx: IpcContext): void {
     if (NEEDS_CAM.includes(l) && !cam) throw new UserFacingError('Este layout necesita la posición de la facecam.');
     // Rango en edición (sin guardar): se valida igual que al guardar para previsualizar lo que se renderizará.
     const r = range == null ? null : previewRangeSchema.parse(range);
-    const draft = r ? applyClipPatch(id, { start: r.start, end: r.end }, { clips: job.clips, preset: job.preset, sourceDuration: job.sourceDuration ?? 0 }) : clip;
+    const draft = r ? applyClipPatch(id, { start: r.start, end: r.end }, { clips: job.clips, preset: job.preset, sourceDuration: job.sourceDuration ?? 0, creationMode: job.creationMode }) : clip;
     const env = renderEnvFor(ctx, job);
     const name = `${String(clip.index).padStart(2, '0')}_preview_${l}.jpg`;
     const comp = composition == null ? undefined : compositionSchema.parse(composition);
@@ -960,6 +963,34 @@ export function registerIpc(ctx: IpcContext): void {
     emitJob(job);
     await applyExportPolicies(ctx, job).catch((e) => log.error('políticas tras exportar', e));
     return p;
+  });
+  // ---- Exportar destacados: sólo copias fuera de la app; dentro del trabajo cada clip existe una vez ----
+  const idList = z.array(idSchema).min(1).max(FULL_SPLIT_HARD_LIMIT);
+  const exportable = (job: Job, ids: string[]) => job.clips.filter((c) => ids.includes(c.id) && c.file && !c.dirty && !c.archived);
+  h('clips:exportPlan', (jobId: unknown, ids: unknown) => {
+    const job = requireJob(ctx, jobId);
+    const clipsDir = path.join(jobDir(ctx.jobsDir, job.id), 'clips');
+    const list = exportable(job, idList.parse(ids));
+    let bytes = 0;
+    for (const c of list) {
+      try {
+        bytes += fs.statSync(path.join(clipsDir, c.file!)).size;
+      } catch {
+        /* sin archivo: no cuenta */
+      }
+    }
+    const dir = path.join(ctx.settings.get().exportDir, 'Destacados');
+    return { files: list.length, bytes, freeBytes: freeDiskBytes(fs.existsSync(ctx.settings.get().exportDir) ? ctx.settings.get().exportDir : path.parse(ctx.settings.get().exportDir).root), dir };
+  });
+  h('clips:exportTo', async (jobId: unknown, ids: unknown, folder: unknown) => {
+    const job = requireJob(ctx, jobId);
+    z.literal('Destacados').parse(folder);
+    const list = exportable(job, idList.parse(ids));
+    if (!list.length) throw new UserFacingError('No hay clips renderizados y sin cambios pendientes para exportar.');
+    for (const c of list) exportOne(ctx, job, c.id, 'Destacados');
+    emitJob(job);
+    await applyExportPolicies(ctx, job).catch((e) => log.error('políticas tras exportar', e));
+    return { count: list.length, dir: path.join(ctx.settings.get().exportDir, 'Destacados') };
   });
   h('clips:exportAll', async (jobId: unknown) => {
     const job = requireJob(ctx, jobId);

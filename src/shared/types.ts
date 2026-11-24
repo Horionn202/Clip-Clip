@@ -420,6 +420,10 @@ export interface Job {
   localSource?: string;
   /** Archivo importado por el usuario desde su equipo (no un bloque de directo). */
   localFile?: boolean;
+  /** Cómo se crean los clips. Ausente = «ai-highlights» (todos los trabajos anteriores). */
+  creationMode?: import('./fullSplit').CreationMode;
+  /** «Dividir video completo»: tipo de corte, segmentos y cobertura. */
+  split?: { boundaryMode: import('./fullSplit').BoundaryMode; segments: number; coveredSec: number; confirmedLarge?: boolean };
   /** Por qué falló la lectura o descarga del vídeo (tipo, versión de yt-dlp, intentos). */
   sourceFailure?: import('./sourceErrors').SourceFailure;
   /** Bloque de un monitor de directo. */
@@ -441,6 +445,10 @@ export interface CreateJobRequest {
   preset: DurationPreset;
   maxClips: number;
   rightsConfirmed: boolean;
+  creationMode?: import('./fullSplit').CreationMode;
+  boundaryMode?: import('./fullSplit').BoundaryMode;
+  /** Confirmación explícita para dividir en más de 200 segmentos. */
+  confirmLarge?: boolean;
   /** Permite descargar el modelo de Whisper si no está en caché (confirmación explícita). */
   allowModelDownload?: boolean;
 }
@@ -470,6 +478,9 @@ export interface CreateLocalJobRequest {
   preset: DurationPreset;
   maxClips: number;
   rightsConfirmed: boolean;
+  creationMode?: import('./fullSplit').CreationMode;
+  boundaryMode?: import('./fullSplit').BoundaryMode;
+  confirmLarge?: boolean;
   allowModelDownload?: boolean;
 }
 
@@ -689,6 +700,10 @@ export interface ClipsApi {
   /** Palabras de la transcripción en el tramo del clip (para el editor de subtítulos). */
   clipWords(jobId: string, clipId: string, range?: { start: number; end: number } | null): Promise<{ start: number; end: number; text: string }[]>;
   exportClip(jobId: string, clipId: string): Promise<string>;
+  /** Espacio que ocuparán las copias exportadas (los MP4 internos no se duplican). */
+  exportPlan(jobId: string, clipIds: string[]): Promise<{ files: number; bytes: number; freeBytes?: number; dir: string }>;
+  /** Copia los clips a una subcarpeta de la carpeta de exportación (p. ej. «Destacados»). */
+  exportClipsTo(jobId: string, clipIds: string[], folder: 'Destacados'): Promise<{ count: number; dir: string }>;
   exportAll(jobId: string): Promise<number>;
   listPublishedExports(platforms?: import('./publish').Platform[], jobId?: string, clipId?: string): Promise<{ items: PublishedExportInfo[]; totalBytes: number }>;
   deletePublishedExports(items: { jobId: string; clipId: string }[]): Promise<{ deleted: number; freedBytes: number; errors: { clipId: string; message: string }[] }>;
