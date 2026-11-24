@@ -258,3 +258,19 @@ describe('texto y lotes de la calificación por segmento', () => {
     expect(b.flat()).toEqual(segs.map((_, i) => i));
   });
 });
+
+describe('revisión: último fragmento corto y vídeo sin voz', () => {
+  it('un corte inteligente hacia el final no deja un último clip de menos de 5 s', () => {
+    const s = splitFullVideo(65, 60, 'smart', [{ start: 61, end: 62, text: 'fin.' }, { start: 64, end: 65, text: 'siguiente' }]);
+    expect(s.at(-1)!.end - s.at(-1)!.start).toBeGreaterThanOrEqual(SPLIT_MIN_TAIL);
+    expect(s.at(-1)!.end).toBe(65);
+    expect(s[0].start).toBe(0);
+  });
+  it('sin voz: todos los segmentos se califican en local, sin estrellas', async () => {
+    const segs = splitFullVideo(90, 30);
+    const chat: ChatFn = async () => '{}';
+    const r = await rateSegments({ segs, segments: [], words: [], duration: 90, preset: 30, title: 'Gameplay sin comentarios', chat });
+    expect(r.clips).toHaveLength(3);
+    expect(r.clips.some((c) => c.featured)).toBe(false);
+  });
+});

@@ -306,7 +306,8 @@ export function createPipeline(ctx: PipelineContext): JobRunner {
       const { segments } = parsed;
       metrics.wordTimestamps = parsed.words.length > 0;
       fs.renameSync(tFile, path.join(dir, 'transcript.json'));
-      if (segments.length === 0) throw new UserFacingError('No se detectó voz en el vídeo; no es posible proponer clips.');
+      // «Dividir video completo» no necesita voz: un vídeo sin habla (música, gameplay) se divide igual, con nota local.
+      if (segments.length === 0 && job.creationMode !== 'full-split') throw new UserFacingError('No se detectó voz en el vídeo; no es posible proponer clips.');
       event('transcribed', { job: job.id, engine: usedPlan.engine, device: usedPlan.device, model: usedPlan.model, speed: metrics.transcribeSpeed, audioSec: Math.round(duration) });
       return parsed;
       };
@@ -315,7 +316,7 @@ export function createPipeline(ctx: PipelineContext): JobRunner {
       if (reuseTranscript) {
         enter('transcribing', 'Reutilizando la transcripción anterior…');
         ({ words, segments } = parseWhisperJson(fs.readFileSync(tPath, 'utf8')));
-        if (segments.length === 0) throw new UserFacingError('La transcripción reutilizada no contiene voz.');
+        if (segments.length === 0 && job.creationMode !== 'full-split') throw new UserFacingError('La transcripción reutilizada no contiene voz.');
       } else ({ words, segments } = await runTranscription());
       check(signal);
 

@@ -77,6 +77,9 @@ export function splitFullVideo(duration: number, preset: DurationPreset, boundar
       }
       if (best !== null) bounds[i] = best;
     }
+    // Un corte movido hacia el final no puede dejar un último fragmento < 5 s: se une al anterior
+    // (como mucho preset + 10 s, dentro del rango permitido).
+    if (bounds.length > 2 && bounds[bounds.length - 1] - bounds[bounds.length - 2] < SPLIT_MIN_TAIL) bounds.splice(bounds.length - 2, 1);
   }
   const out: Segment[] = [];
   for (let i = 0; i + 1 < bounds.length; i++) out.push({ start: round2(bounds[i]), end: round2(bounds[i + 1]) });
