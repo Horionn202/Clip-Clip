@@ -4,6 +4,7 @@
 // (FFmpeg -f segment sobre el HLS), sin descargar nunca el directo entero ni repetir ventanas. Cada segmento
 // completo se procesa como un bloque con S s de solape con el anterior, para no cortar frases en los bordes.
 
+import { isDurationPreset, presetLabel } from './types';
 export type MonitorStatus = 'esperando' | 'verificando' | 'en-directo' | 'procesando' | 'pausado' | 'finalizando' | 'finalizado' | 'detenido' | 'error';
 
 export const MONITOR_STATUS_LABELS: Record<MonitorStatus, string> = {
@@ -24,7 +25,7 @@ export interface LiveSettings {
   /** Solape técnico con el bloque anterior (s). */
   overlapSec: number;
   /** Duración de los clips (preset) y máximo por bloque. */
-  preset: 15 | 30 | 45 | 60;
+  preset: import('./types').DurationPreset;
   maxClipsPerBlock: number;
   /** Cada cuánto se comprueba si el canal empezó un directo (s). */
   pollSec: number;
@@ -269,10 +270,26 @@ export function recoverMonitor(m: LiveMonitor, now: string): LiveMonitor {
   return { ...m, status: 'pausado', updatedAt: now, gaps: [...m.gaps, { at: now, reason: 'La aplicación se cerró mientras se vigilaba el directo.' }], notice: 'La app se cerró. Pulsa «Reanudar» para seguir desde el momento actual del directo; lo emitido mientras estaba cerrada no se puede recuperar sin DVR.' };
 }
 
+/**
+ * Bloque mínimo seguro para un preset: hasta 60 s, preset + 10 s (como siempre); con clips de 90 s o 2 min, 1,5 veces el
+ * clip, para que quepa entero con margen para cortar en una frase.
+ */
+export function minLiveBlockSec(preset: import('./types').DurationPreset): number {
+  return Math.max(30, preset <= 60 ? preset + 10 : Math.ceil(preset * 1.5));
+}
+
+/** Configuración imposible (p. ej. bloque de 60 s para clips de 2 min). null si es válida. */
+export function liveSettingsError(s: Pick<LiveSettings, 'preset' | 'blockSec'>): string | null {
+  if (!isDurationPreset(s.preset)) return 'Duración de clip no válida.';
+  const min = minLiveBlockSec(s.preset);
+  return s.blockSec < min ? `Con clips de ${presetLabel(s.preset)} el bloque debe durar al menos ${min} s.` : null;
+}
+
 export function validateLiveSettings(s: Partial<LiveSettings>): LiveSettings {
   const n = (v: unknown, a: number, b: number, d: number) => (typeof v === 'number' && Number.isFinite(v) ? Math.min(b, Math.max(a, Math.round(v))) : d);
-  const preset = ([15, 30, 45, 60] as const).find((p) => p === s.preset) ?? LIVE_DEFAULTS.preset;
-  const blockSec = n(s.blockSec, Math.max(30, preset + 10), 600, Math.max(LIVE_DEFAULTS.blockSec, preset + 10));
+  const preset = isDurationPreset(s.preset) ? s.preset : LIVE_DEFAULTS.preset;
+  const min = minLiveBlockSec(preset);
+  const blockSec = n(s.blockSec, min, 600, Math.max(LIVE_DEFAULTS.blockSec, min));
   return {
     blockSec,
     overlapSec: n(s.overlapSec, 3, 5, LIVE_DEFAULTS.overlapSec),

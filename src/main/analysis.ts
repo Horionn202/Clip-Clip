@@ -2,7 +2,7 @@
 // promesa del título) y después rondas que buscan HASTA N momentos que cumplan esa promesa. `maxClips` es un
 // máximo: si sólo hay 4 momentos buenos, se devuelven 4 (nunca relleno para llegar a la cifra).
 import type { AnalysisReport, AnalysisRound, DurationPreset, RankingEntry } from '../shared/types';
-import { MAX_CLIPS } from '../shared/types';
+import { LONG_CLIP_SEC, MAX_CLIPS } from '../shared/types';
 import { UserFacingError, overlaps, parseModelResponse } from '../shared/validation';
 import { REJECT_LABELS, effectiveTarget, feasibleMax, freeGaps, selectRound, type Candidate, type TimedWord, type TopicOptions } from '../shared/selection';
 import { otherMoments } from '../shared/otherMoments';
@@ -82,6 +82,13 @@ Reglas obligatorias:
 - why_selected y reason: por qué funciona, mencionando el contenido.
 - Nunca uses textos de relleno como «título», «hook», «por qué funciona» o «momento interesante».
 - Escribe title, hook, reason y why_selected en el idioma del vídeo.`;
+
+/** Clips de 90 s o 2 min: necesitan estructura; si no hay material, mejor no proponerlos. */
+export function longClipRules(preset: DurationPreset): string {
+  if (preset < LONG_CLIP_SEC) return '';
+  return `
+CLIPS LARGOS (${preset} s): cada clip debe tener, en este orden, un gancho en los primeros 5 s, el contexto justo para entenderlo, el desarrollo del evento y un desenlace, resultado o cierre antes del final. Si un tramo de ${preset} s no tiene acción, tiene silencios largos o es conversación sin relación con el tema, NO lo propongas: devuelve menos clips.`;
+}
 
 function lines(segments: TimedWord[]): string {
   return segments.map((g) => `[${g.start.toFixed(1)}-${g.end.toFixed(1)}] ${g.text.replace(/\s+/g, ' ').trim()}`).join('\n');
@@ -210,7 +217,7 @@ export async function analyzeClips(input: AnalyzeInput): Promise<AnalyzeResult> 
   let failedChunks = 0;
   for (const [i, chunk] of chunks.entries()) {
     const perChunk = chunks.length === 1 ? eff : Math.min(eff, 6);
-    const user = `${context}Duración total del vídeo: ${duration.toFixed(1)} s. Duración de cada clip: ${preset} s.
+    const user = `${context}Duración total del vídeo: ${duration.toFixed(1)} s. Duración de cada clip: ${preset} s.${longClipRules(preset)}
 ${ask(perChunk)}${chunks.length > 1 ? ' Sólo de este fragmento.' : ''}
 
 TRANSCRIPCIÓN:
@@ -242,7 +249,7 @@ ${lines(chunk)}`;
     const pooledFill: unknown[] = [];
     let failedFill = 0;
     for (const chunk of freeChunks) {
-      const user = `${context}Duración total del vídeo: ${duration.toFixed(1)} s. Duración de cada clip: ${preset} s.
+      const user = `${context}Duración total del vídeo: ${duration.toFixed(1)} s. Duración de cada clip: ${preset} s.${longClipRules(preset)}
 Ya están elegidos estos intervalos (NO los repitas ni los solapes): ${takenTxt || 'ninguno'}.
 Faltan ${need} como máximo. ${ask(need)} Sólo dentro de los tramos de abajo. Si aquí no hay nada bueno, devuelve una lista vacía.
 

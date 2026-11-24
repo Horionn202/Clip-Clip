@@ -1,5 +1,8 @@
 import { z } from 'zod';
-import { DURATION_PRESETS, ENGINE_IDS, MAX_CLIPS, type Settings } from '../shared/types';
+import { DURATION_PRESETS, ENGINE_IDS, MAX_CLIPS, isDurationPreset, type DurationPreset, type Settings } from '../shared/types';
+
+/** Cualquiera de los presets cerrados (15–120 s); nada de duraciones libres. */
+const presetSchema = z.number().refine(isDurationPreset, { message: `La duración de cada clip debe ser ${DURATION_PRESETS.slice(0, -1).join(', ')} s o 2 min.` }).transform((v) => v as DurationPreset);
 import { validateVideoUrl } from '../shared/validation';
 import { LAYOUT_IDS, validRect } from '../shared/layouts';
 import { validateExecutablePath } from './paths';
@@ -16,7 +19,7 @@ export const createJobSchema = z
         return z.NEVER;
       }
     }),
-    preset: z.union(DURATION_PRESETS.map((p) => z.literal(p)) as [z.ZodLiteral<15>, z.ZodLiteral<30>, z.ZodLiteral<45>, z.ZodLiteral<60>]),
+    preset: presetSchema,
     maxClips: z.number().int().min(1).max(MAX_CLIPS),
     rightsConfirmed: z.literal(true, { message: 'Debes confirmar que tienes derechos para usar este contenido.' }),
     allowModelDownload: z.boolean().optional(),
@@ -26,7 +29,7 @@ export const createJobSchema = z
 export const createLocalJobSchema = z
   .object({
     token: z.string().uuid(),
-    preset: z.union(DURATION_PRESETS.map((p) => z.literal(p)) as [z.ZodLiteral<15>, z.ZodLiteral<30>, z.ZodLiteral<45>, z.ZodLiteral<60>]),
+    preset: presetSchema,
     maxClips: z.number().int().min(1).max(MAX_CLIPS),
     rightsConfirmed: z.literal(true, { message: 'Debes confirmar que tienes derechos para usar este contenido.' }),
     allowModelDownload: z.boolean().optional(),
