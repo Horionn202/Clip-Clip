@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
-import { CLIP_TARGET_PRESETS, DURATION_PRESETS, ENGINE_LABELS, LONG_CLIP_SEC, presetLabel, MAX_CLIPS, WHISPER_MODEL_OPTIONS, type Diagnostics, type DurationPreset, type Job, type LocalVideoChoice, type UrlProbe } from '../../shared/types';
+import { CLIP_TARGET_PRESETS, DURATION_PRESETS, ENGINE_LABELS, LONG_CLIP_SEC, clipLengthLabel, presetLabel, MAX_CLIPS, WHISPER_MODEL_OPTIONS, type Diagnostics, type DurationPreset, type Job, type LocalVideoChoice, type UrlProbe } from '../../shared/types';
 import type { SourceFailure } from '../../shared/sourceErrors';
 import type { HomePrefill } from '../../shared/homePrefill';
+import { BOUNDARY_MODE_LABELS, CREATION_MODE_LABELS, FULL_SPLIT_HARD_LIMIT, FULL_SPLIT_SAFE_LIMIT, splitPlan, type BoundaryMode, type CreationMode } from '../../shared/fullSplit';
 import { SourceErrorModal } from '../components/SourceErrorModal';
 import { LONG_VIDEO_SEC, engineLabel, estimateJob, humanBytes, humanDuration } from '../../shared/estimates';
 import { validateVideoUrl } from '../../shared/validation';
@@ -12,6 +13,11 @@ import { api, errMsg } from '../api';
 export function HomePage(props: { prefill?: HomePrefill | null; onPrefillUsed?: () => void; ollamaModel?: string; jobs: Job[]; diag: Diagnostics | null; onCreated: () => void; goSettings: () => void; goPolicy: () => void }) {
   const [url, setUrl] = useState('');
   const [preset, setPreset] = useState<DurationPreset>(30);
+  /** «IA encuentra momentos» (como siempre) o «Dividir video completo». */
+  const [mode, setMode] = useState<CreationMode>('ai-highlights');
+  const [boundary, setBoundary] = useState<BoundaryMode>('exact');
+  const [confirmLarge, setConfirmLarge] = useState(false);
+  const fullSplit = mode === 'full-split';
   const [target, setTarget] = useState<number | null>(null); // sin valor implícito: el usuario elige
   const [rights, setRights] = useState(false);
   const [allowDownload, setAllowDownload] = useState(false);
@@ -60,6 +66,9 @@ export function HomePage(props: { prefill?: HomePrefill | null; onPrefillUsed?: 
     setUrl(p.url);
     setPreset(p.preset);
     setTarget(p.maxClips);
+    setMode(p.creationMode);
+    setBoundary(p.boundaryMode);
+    setConfirmLarge(false);
     setLocal(null);
     if (p.pickFile) void pickFile();
     else setTimeout(() => urlInput.current?.select(), 0);
@@ -91,10 +100,21 @@ export function HomePage(props: { prefill?: HomePrefill | null; onPrefillUsed?: 
   const src = local ? { duration: local.duration, filesizeBytes: local.sizeBytes } : probe;
   const isLong = !!src && src.duration > LONG_VIDEO_SEC;
   // Hay que comprobar el vídeo antes de iniciar: así se ven duración, estimaciones y máximo de clips.
+  // «Dividir video completo»: tantos segmentos como hagan falta para cubrir el vídeo (sin el tope de 20).
+  const split = fullSplit && src ? splitPlan(src.duration, preset) : null;
+  const splitOk = !split || (!split.tooMany && (!split.needsConfirm || confirmLarge) && split.count > 0);
   const canStart =
-    (local ? true : !!url.trim() && !urlError) && rights && depsOk && !busy && target !== null && !!src && (!isLong || longOk) && (modelCached || allowDownload) && feasibleMax(src.duration, preset) > 0;
+    (local ? true : !!url.trim() && !urlError) &&
+    rights &&
+    depsOk &&
+    !busy &&
+    (fullSplit || target !== null) &&
+    !!src &&
+    (!isLong || longOk) &&
+    (modelCached || allowDownload) &&
+    (fullSplit ? splitOk : feasibleMax(src.duration, preset) > 0);
   // Espacio y render según cuántos clips caben de verdad y cuánto dura cada uno (los de 2 min ocupan y tardan más).
-  const clipsOut = src && target !== null ? { count: effectiveTarget(target, src.duration, preset), preset } : undefined;
+  const clipsOut = split ? { count: split.count, preset } : src && target !== null ? { count: effectiveTarget(target, src.duration, preset), preset } : undefined;
   const est = src ? estimateJob(src.duration, local ? undefined : src.filesizeBytes, plan, props.jobs, clipsOut) : null;
   const feas = src ? feasibleMax(src.duration, preset) : null;
   const eff = src && target !== null ? effectiveTarget(target, src.duration, preset) : null;
@@ -117,12 +137,16 @@ export function HomePage(props: { prefill?: HomePrefill | null; onPrefillUsed?: 
   };
 
   const start = async () => {
-    if (target === null) return;
+    if (target === null && !fullSplit) return;
+    // En «Dividir video completo» el máximo de clips no se usa (se generan todos los segmentos).
+    const maxClips = fullSplit ? MAX_CLIPS : target!;
+    const modeReq = fullSplit ? { creationMode: mode, boundaryMode: boundary, confirmLarge } : {};
     setError('');
     setBusy(true);
     try {
-      if (local) await api().createLocalJob({ token: local.token, preset, maxClips: target, rightsConfirmed: rights, allowModelDownload: allowDownload });
-      else await api().createJob({ url: url.trim(), preset, maxClips: target, rightsConfirmed: rights, allowModelDownload: allowDownload });
+      if (local) await api().createLocalJob({ token: local.token, preset, maxClips, rightsConfirmed: rights, allowModelDownload: allowDownload, ...modeReq });
+      else await api().createJob({ url: url.trim(), preset, maxClips, rightsConfirmed: rights, allowModelDownload: allowDownload, ...modeReq });
+      setConfirmLarge(false);
       setUrl('');
       setLocal(null);
       setRights(false);
@@ -234,6 +258,18 @@ export function HomePage(props: { prefill?: HomePrefill | null; onPrefillUsed?: 
         </div>
       )}
 
+      <div className="field" role="radiogroup" aria-label="Modo de creación">
+        <span>Modo de creación</span>
+        <div className="mode-pick">
+          {(Object.keys(CREATION_MODE_LABELS) as CreationMode[]).map((m) => (
+            <button key={m} role="radio" aria-checked={mode === m} className={`mode-card ${mode === m ? 'on' : ''}`} onClick={() => setMode(m)}>
+              <b>{CREATION_MODE_LABELS[m].label}</b>
+              <small>{CREATION_MODE_LABELS[m].help}</small>
+            </button>
+          ))}
+        </div>
+      </div>
+
       <div className="field">
         <span>Duración de cada clip (no es la duración del vídeo)</span>
         <div className="seg">
@@ -246,6 +282,45 @@ export function HomePage(props: { prefill?: HomePrefill | null; onPrefillUsed?: 
         {preset >= LONG_CLIP_SEC && <small className="muted">Los clips largos tardan más en renderizar y suelen requerir más contexto para mantener la retención.</small>}
       </div>
 
+      {fullSplit && (
+        <div className="field">
+          <span>Tipo de corte</span>
+          <div className="seg" role="radiogroup" aria-label="Tipo de corte">
+            {(Object.keys(BOUNDARY_MODE_LABELS) as BoundaryMode[]).map((b) => (
+              <button key={b} role="radio" aria-checked={boundary === b} className={boundary === b ? 'on' : ''} onClick={() => setBoundary(b)}>
+                {BOUNDARY_MODE_LABELS[b].label}
+              </button>
+            ))}
+          </div>
+          <small className="muted">{BOUNDARY_MODE_LABELS[boundary].help}</small>
+          <div className="banner warn small">Este modo procesa todo el video y puede ocupar bastante espacio.</div>
+          {src && split ? (
+            <table className="table kv small">
+              <tbody>
+                <tr><td>Duración total del vídeo</td><td>{humanDuration(src.duration)}</td></tr>
+                <tr><td>Duración de cada bloque</td><td>{presetLabel(preset)}</td></tr>
+                <tr><td>Clips estimados</td><td><b>{split.count}</b> (cubren todo el vídeo, sin huecos)</td></tr>
+                <tr><td>Último bloque</td><td>{clipLengthLabel(split.lastSec)}</td></tr>
+                {est && <tr><td>Espacio en disco (aprox.)</td><td>{humanBytes(est.diskBytes)}</td></tr>}
+                {est && est.renderSec > 0 && <tr><td>Render de todos los clips (aprox.)</td><td>{humanDuration(est.renderSec)}</td></tr>}
+              </tbody>
+            </table>
+          ) : (
+            <small className="muted">Comprueba el vídeo o elige un archivo para ver cuántos clips saldrán.</small>
+          )}
+          {split?.tooMany && <div className="banner error small">Saldrían {split.count} clips (máximo {FULL_SPLIT_HARD_LIMIT}). Elige una duración de clip mayor.</div>}
+          {split?.needsConfirm && !split.tooMany && (
+            <label className="check">
+              <input type="checkbox" checked={confirmLarge} onChange={(e) => setConfirmLarge(e.target.checked)} />
+              <span>
+                Saldrían {split.count} clips (más de {FULL_SPLIT_SAFE_LIMIT}). Te recomendamos una duración mayor. Confirmo que quiero procesarlos todos.
+              </span>
+            </label>
+          )}
+        </div>
+      )}
+
+      {!fullSplit && (
       <div className="field">
         <span>Máximo de clips (hasta {MAX_CLIPS}: la IA prioriza calidad sobre cantidad)</span>
         <div className="seg">
@@ -268,6 +343,7 @@ export function HomePage(props: { prefill?: HomePrefill | null; onPrefillUsed?: 
         )}
         {advice && <div className="banner warn">{advice}</div>}
       </div>
+      )}
 
       {plan && !modelCached && (
         <label className="check">

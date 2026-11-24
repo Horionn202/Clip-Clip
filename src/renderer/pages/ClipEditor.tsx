@@ -594,6 +594,7 @@ export function EditClipModal({ open, onClose, job, clip, onError, onInfo }: { o
             jobId={job.id}
             clipId={clip.id}
             preset={job.preset}
+            creationMode={job.creationMode}
             sourceDuration={job.sourceDuration ?? clip.end}
             original={{ start: clip.start, end: clip.end }}
             start={Number(start)}

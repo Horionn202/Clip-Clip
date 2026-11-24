@@ -1,6 +1,8 @@
 import { Fragment, useEffect, useState } from 'react';
 import { clipLengthLabel, type Clip, type ClipEditorial, type Job } from '../../shared/types';
 import { EVENT_INFO, isVerifiedHighlight } from '../../shared/highlights';
+import { SEGMENT_FILTERS, filterSegments, segmentLabel, type SegmentFilter } from '../../shared/fullSplit';
+import { MOMENT_LABELS } from '../../shared/editorialBrief';
 import { formatTime } from '../../shared/validation';
 import { LAYOUT_LABELS } from '../../shared/layouts';
 import { EditClipModal } from './ClipEditor';
@@ -63,13 +65,13 @@ function ExportConfirm({ open, onClose, what, onConfirm }: { open: boolean; onCl
 }
 
 /** Destacado verificado con su prueba, u «Otro momento» sin nada que parezca una recomendación. */
-function ClipWhy({ e }: { e: ClipEditorial }) {
+function ClipWhy({ e, segment = false }: { e: ClipEditorial; segment?: boolean }) {
   const v = e.verification;
   if (!v || !isVerifiedHighlight(e))
     return (
       <div className="clip-why small">
         <div className="clip-why-row">
-          <span className="clip-other">Otro momento</span>
+          <span className="clip-other">{segment ? "Otro segmento" : "Otro momento"}</span>
           {e.auto && <span className="muted">Elegido por la app</span>}
         </div>
         <p className="muted clip-why-text">Sin verificar. Puedes revisarlo y subirlo si te gusta.</p>
@@ -92,7 +94,7 @@ function ClipWhy({ e }: { e: ClipEditorial }) {
   );
 }
 
-function ClipCard({ job, clip, pub, onPub, onError, onInfo, selecting, selected, onToggle }: { job: Job; clip: Clip; pub?: ClipPublish; onPub: (d: Record<string, ClipPublish>) => void; onError: (m: string) => void; onInfo: (m: string) => void; selecting: boolean; selected: boolean; onToggle: () => void }) {
+function ClipCard({ job, clip, pub, onPub, onError, onInfo, selecting, selected, onToggle, segment }: { segment?: { n: number; of: number }; job: Job; clip: Clip; pub?: ClipPublish; onPub: (d: Record<string, ClipPublish>) => void; onError: (m: string) => void; onInfo: (m: string) => void; selecting: boolean; selected: boolean; onToggle: () => void }) {
   const [modal, setModal] = useState<'' | 'edit' | 'publish' | 'export'>('');
   const close = () => setModal('');
 
@@ -113,6 +115,16 @@ function ClipCard({ job, clip, pub, onPub, onError, onInfo, selecting, selected,
       )}
       {videoSrc ? <video src={videoSrc} controls preload="metadata" /> : <div className="video-ph">{clip.exportDeletedAfterPublish ? 'Exportado eliminado tras publicar' : 'Sin renderizar'}</div>}
       <div>
+        {segment && (
+          <div className="small segment-label">
+            <b>{segmentLabel(segment.n, segment.of)}</b> · {formatTime(clip.start)} – {formatTime(clip.end)}
+            {clip.editorial && (
+              <>
+                {' '}· {clip.editorial.score}/100{clip.editorial.momentType ? ` · ${MOMENT_LABELS[clip.editorial.momentType]}` : ''}
+              </>
+            )}
+          </div>
+        )}
         <div className="clip-title">{clip.title}</div>
         <div className="muted small">
           {clipLengthLabel(clip.end - clip.start)} · {formatTime(clip.start)} → {formatTime(clip.end)} · {LAYOUT_LABELS[clip.layout ?? 'gameplay_full']}
@@ -126,7 +138,7 @@ function ClipCard({ job, clip, pub, onPub, onError, onInfo, selecting, selected,
         <PublishBadges pub={pub} />
       </div>
       {clip.hook && <p className="hook small muted">«{clip.hook}»</p>}
-      {clip.editorial && <ClipWhy e={clip.editorial} />}
+      {clip.editorial && <ClipWhy e={clip.editorial} segment={!!segment} />}
       <div className="clip-actions">
         <Button variant="primary" icon="download" disabled={!clip.file || clip.dirty} title={clip.dirty ? 'Vuelve a renderizar el clip antes de exportarlo' : undefined} aria-haspopup="dialog" onClick={() => setModal('export')}>
           Exportar
@@ -287,6 +299,17 @@ export function ResultsPage(props: { jobs: Job[]; selected: string | null; onSel
   const [retrPrecise, setRetrPrecise] = useState(false);
   const [retrBusy, setRetrBusy] = useState(false);
   const [selecting, setSelecting] = useState(false);
+  const [segFilter, setSegFilter] = useState<SegmentFilter>('todos');
+  /** Exportar a «Destacados»: ids y espacio que ocuparán las copias (nunca dentro de la app). */
+  const [hlExport, setHlExport] = useState<{ ids: string[]; files: number; bytes: number; freeBytes?: number; dir: string } | null>(null);
+  const askExportHighlights = async (ids: string[]) => {
+    try {
+      if (!ids.length) return setMsg({ kind: 'error', text: 'No hay destacados renderizados para exportar.' });
+      setHlExport({ ids, ...(await api().exportPlan(job!.id, ids)) });
+    } catch (e) {
+      setMsg({ kind: 'error', text: errMsg(e) });
+    }
+  };
   const [sel, setSel] = useState<Set<string>>(new Set());
   const [bulkBusy, setBulkBusy] = useState(false);
   const [delIds, setDelIds] = useState<string[]>([]);
@@ -306,7 +329,11 @@ export function ResultsPage(props: { jobs: Job[]; selected: string | null; onSel
   const isStar = (c: Clip) => isVerifiedHighlight(c.editorial);
   const featured = job.clips.filter(isStar).sort((a, b) => b.editorial!.verification!.confidence - a.editorial!.verification!.confidence);
   const hasFeatured = featured.length > 0;
-  const ordered = hasFeatured ? [...featured, ...job.clips.filter((c) => !isStar(c))] : job.clips;
+  // «Dividir video completo»: pestañas por tipo de segmento (los destacados son los mismos clips, no copias).
+  const isSplit = job.creationMode === 'full-split';
+  const segOrder = new Map([...job.clips].sort((x, y) => x.start - y.start).map((c, i) => [c.id, i + 1]));
+  const ordered = isSplit ? filterSegments(job.clips, segFilter, isStar) : hasFeatured ? [...featured, ...job.clips.filter((c) => !isStar(c))] : job.clips;
+  const counts = isSplit ? Object.fromEntries(SEGMENT_FILTERS.map((f) => [f.id, filterSegments(job.clips, f.id, isStar).length])) : {};
   // Trabajos de versiones anteriores: su resumen hablaba de destacados que nunca se verificaron.
   const a = job.analysis;
   const unverifiedLegacy = a?.minScore !== undefined && !a.verification && (a.featured ?? 0) > 0;
@@ -338,6 +365,11 @@ export function ResultsPage(props: { jobs: Job[]; selected: string | null; onSel
             <Button variant="ghost" aria-pressed={selecting} onClick={() => (setSelecting((v) => !v), setSel(new Set()))}>
               {selecting ? 'Terminar selección' : 'Seleccionar'}
             </Button>
+            {isSplit && (
+              <Button variant="primary" icon="download" aria-haspopup="dialog" disabled={!featured.some((c) => exportable.includes(c.id))} onClick={() => void askExportHighlights(featured.filter((c) => exportable.includes(c.id)).map((c) => c.id))}>
+                Exportar destacados
+              </Button>
+            )}
             <Button icon="download" aria-haspopup="dialog" onClick={() => setExportAllOpen(true)}>
               Exportar todos
             </Button>
@@ -382,6 +414,11 @@ export function ResultsPage(props: { jobs: Job[]; selected: string | null; onSel
           >
             Exportar seleccionados
           </Button>
+          {isSplit && (
+            <Button icon="download" aria-haspopup="dialog" onClick={() => void askExportHighlights([...sel].filter((id) => exportable.includes(id)))}>
+              Exportar a «Destacados»
+            </Button>
+          )}
           <Button variant="danger" icon="trash" aria-haspopup="dialog" onClick={() => setDelIds([...sel])}>
             Eliminar seleccionados…
           </Button>
@@ -471,12 +508,47 @@ export function ResultsPage(props: { jobs: Job[]; selected: string | null; onSel
           {msg.text}
         </div>
       )}
+      {isSplit && (
+        <div className="seg segment-tabs" role="tablist" aria-label="Filtrar segmentos">
+          {SEGMENT_FILTERS.map((f) => (
+            <button key={f.id} role="tab" aria-selected={segFilter === f.id} className={segFilter === f.id ? 'on' : ''} onClick={() => setSegFilter(f.id)}>
+              {f.label} ({counts[f.id] ?? 0})
+            </button>
+          ))}
+        </div>
+      )}
+      {hlExport && (
+        <ConfirmModal
+          open
+          title="Exportar destacados"
+          confirmLabel={`Exportar ${hlExport.files} clip${hlExport.files === 1 ? '' : 's'}`}
+          onClose={() => setHlExport(null)}
+          onConfirm={async () => {
+            const p = hlExport;
+            setHlExport(null);
+            try {
+              const r = await api().exportClipsTo(job.id, p.ids, 'Destacados');
+              setMsg({ kind: 'info', text: `${r.count} clip${r.count === 1 ? '' : 's'} exportado${r.count === 1 ? '' : 's'} a ${r.dir}` });
+            } catch (e) {
+              setMsg({ kind: 'error', text: errMsg(e) });
+            }
+          }}
+        >
+          <p>
+            Se copiarán {hlExport.files} clip{hlExport.files === 1 ? '' : 's'} a <code>{hlExport.dir}</code>.
+          </p>
+          <p className="small">
+            Ocuparán <b>{humanSize(hlExport.bytes)}</b> más en esa carpeta{hlExport.freeBytes !== undefined ? ` (libres: ${humanSize(hlExport.freeBytes)})` : ''}. Dentro de la app no se duplica nada: un destacado es el mismo clip.
+          </p>
+        </ConfirmModal>
+      )}
       <div className="gallery">
+        {isSplit && ordered.length === 0 && <p className="muted small">No hay segmentos en esta pestaña.</p>}
         {ordered.map((c, i) => (
           <Fragment key={c.id}>
-            {hasFeatured && i === 0 && <h3 className="gallery-h">★ Destacados verificados</h3>}
-            {hasFeatured && i === featured.length && <h3 className="gallery-h">Otros momentos</h3>}
-          <ClipCard job={job} clip={c} selecting={selecting} selected={sel.has(c.id)} onToggle={() => setSel((x) => toggle(x, c.id))} pub={pub[c.id]} onPub={(d) => setPub(job.id, d)} onError={(t) => setMsg({ kind: 'error', text: t })} onInfo={(t) => setMsg({ kind: 'info', text: t })} />
+            {!isSplit && hasFeatured && i === 0 && <h3 className="gallery-h">★ Destacados verificados</h3>}
+            {!isSplit && hasFeatured && i === featured.length && <h3 className="gallery-h">Otros momentos</h3>}
+          <ClipCard segment={isSplit ? { n: segOrder.get(c.id) ?? 0, of: job.clips.length } : undefined} job={job} clip={c} selecting={selecting} selected={sel.has(c.id)} onToggle={() => setSel((x) => toggle(x, c.id))} pub={pub[c.id]} onPub={(d) => setPub(job.id, d)} onError={(t) => setMsg({ kind: 'error', text: t })} onInfo={(t) => setMsg({ kind: 'info', text: t })} />
           </Fragment>
         ))}
       </div>

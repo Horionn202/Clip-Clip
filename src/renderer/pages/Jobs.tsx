@@ -179,8 +179,10 @@ function JobCard(props: {
               {STATUS_LABELS[j.status]}
             </StatusPill>
             {j.localFile && <StatusPill>Archivo local</StatusPill>}
+            {j.creationMode === "full-split" && <StatusPill>Vídeo completo{j.split?.segments ? ` · ${j.split.segments} segmentos` : ""}</StatusPill>}
             <StatusPill>Clips de {j.preset} s</StatusPill>
-            <StatusPill>{j.status === 'completed' ? `${got} de hasta ${j.analysis?.effectiveTarget ?? j.maxClips} clips` : `Hasta ${j.maxClips} clips`}</StatusPill>
+            {/* En «Vídeo completo» no hay máximo: se generan todos los segmentos. */}
+            {j.creationMode !== 'full-split' && <StatusPill>{j.status === 'completed' ? `${got} de hasta ${j.analysis?.effectiveTarget ?? j.maxClips} clips` : `Hasta ${j.maxClips} clips`}</StatusPill>}
             {j.sourceDuration ? <StatusPill>Vídeo de {humanDuration(j.sourceDuration)}</StatusPill> : null}
             {model && <StatusPill>Whisper {model}</StatusPill>}
             <DeviceBadge job={j} />

@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState, type PointerEvent as RPointerEvent } from 'react';
 import { LONG_CLIP_SEC, clipLengthLabel, presetLabel, type DurationPreset } from '../../shared/types';
 import { adjustRange } from '../../shared/clipEdit';
-import { formatTime, presetRange } from '../../shared/validation';
+import { formatTime } from '../../shared/validation';
+import { clipLimits, type CreationMode } from '../../shared/fullSplit';
 import { api } from '../api';
 
 type Word = { start: number; end: number; text: string };
@@ -16,6 +17,8 @@ export function TimeRangeEditor(props: {
   jobId: string;
   clipId: string;
   preset: DurationPreset;
+  /** «Dividir video completo»: el último segmento puede ser corto y los cortes inteligentes, algo más largos. */
+  creationMode?: CreationMode;
   sourceDuration: number;
   /** Tramo guardado (referencia en la línea de tiempo). */
   original: { start: number; end: number };
@@ -33,7 +36,7 @@ export function TimeRangeEditor(props: {
   const track = useRef<HTMLDivElement>(null);
   const drag = useRef<'start' | 'end' | null>(null);
   const video = useRef<HTMLVideoElement>(null);
-  const { min, max } = presetRange(preset);
+  const { min, max } = clipLimits(preset, props.creationMode);
   // Ventana visible: el tramo original con margen (y siempre el tramo actual dentro).
   // Margen visible proporcional al clip (al menos 60 s): con clips de 2 min se ve contexto suficiente a ambos lados.
   const margin = Math.max(60, preset);
@@ -55,7 +58,7 @@ export function TimeRangeEditor(props: {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [props.jobId, props.clipId, Math.round(w0 / 30), Math.round(w1 / 30)]);
 
-  const move = (edge: 'start' | 'end', to: number) => props.onChange(adjustRange({ start: props.start, end: props.end }, { edge, to }, { preset, sourceDuration: D, words, snap }));
+  const move = (edge: 'start' | 'end', to: number) => props.onChange(adjustRange({ start: props.start, end: props.end }, { edge, to }, { preset, sourceDuration: D, words, snap, creationMode: props.creationMode }));
   const commit = (edge: 'start' | 'end') => {
     const raw = draft[edge];
     setDraft((d) => ({ ...d, [edge]: undefined }));
